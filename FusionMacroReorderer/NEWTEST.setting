@@ -1,0 +1,107 @@
+{
+	Tools = ordered() {
+		NEWTEST = GroupOperator {
+			CtrlWZoom = false,
+			NameSet = true,
+			Outputs = {
+				Output1 = InstanceOutput {
+					SourceOp = "Transform2",
+					Source = "Output",
+				}
+			},
+			ViewInfo = GroupInfo {
+				Pos = { 660, 766.864 },
+				Flags = {
+					AllowPan = false,
+					GridSnap = true,
+					AutoSnap = true,
+					RemoveRouters = true
+				},
+				Size = { 346, 66.3636, 173, 24.2424 },
+				Direction = "Horizontal",
+				PipeStyle = "Direct",
+				Scale = 1,
+				Offset = { -660, -766.864 }
+			},
+			Tools = ordered() {
+				Background1 = Background {
+					Inputs = {
+						GlobalOut = Input { Value = 149, },
+						Width = Input { Value = 3840, },
+						Height = Input { Value = 2160, },
+						UseFrameFormatSettings = Input { Value = 1, },
+						["Gamut.SLogVersion"] = Input { Value = FuID { "SLog2" }, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 550, 775.5 } },
+					UserControls = ordered() {
+						ButtonTest = {
+							LINKS_Name = "ButtonTest",
+							LINKID_DataType = "Number",
+							INPID_InputControl = "ButtonControl",
+							INP_Integer = false,
+							INP_SplineType = "Default",
+							ICD_Width = 1,
+						},
+						ButtonTest2 = {
+							LINKS_Name = "ButtonTest2",
+							LINKID_DataType = "Number",
+							INPID_InputControl = "ButtonControl",
+							INP_Integer = false,
+							INP_SplineType = "Default",
+							ICD_Width = 1,
+						}
+					}
+				},
+				Transform2 = Transform {
+					Inputs = {
+						Center = Input {
+							SourceOp = "Perturb1",
+							Source = "Value",
+						},
+						Size = Input {
+							SourceOp = "AnimCurves1",
+							Source = "Value",
+						},
+						Input = Input {
+							SourceOp = "Transform1",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 770, 775.5 } },
+				},
+				Transform1 = Transform {
+					Inputs = {
+						Input = Input {
+							SourceOp = "Background1",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 660, 775.5 } },
+				}
+			},
+		},
+		Perturb1 = PerturbPoint {
+		},
+		AnimCurves1 = LUTLookup {
+			CtrlWZoom = false,
+			Inputs = {
+				Lookup = Input {
+					SourceOp = "AnimCurves1Lookup",
+					Source = "Value",
+				},
+				Scale = Input { Value = 5, }
+			},
+		},
+		AnimCurves1Lookup = LUTBezier {
+			KeyColorSplines = {
+				[0] = {
+					[0] = { 0, RH = { 0.333333333333333, 0.333333333333333 }, Flags = { Linear = true } },
+					[1] = { 1, LH = { 0.666666666666667, 0.666666666666667 }, Flags = { Linear = true } }
+				}
+			},
+			SplineColor = { Red = 0, Green = 0, Blue = 0 },
+			CtrlWZoom = false,
+			NameSet = true,
+		}
+	}
+}

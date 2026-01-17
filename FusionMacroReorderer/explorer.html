@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Macro Explorer</title>
+    <link rel="stylesheet" href="explorer.css" />
+  </head>
+  <body>
+    <header class="explorer-header">
+      <div class="title">
+        <h1>Macro Explorer</h1>
+        <p>Browse Fusion Templates/Macros and enable or disable presets.</p>
+      </div>
+      <div class="toolbar">
+        <label class="toolbar-field">
+          Location
+          <select id="rootSelect"></select>
+        </label>
+        <button id="chooseRootBtn" type="button">Choose folder</button>
+        <button id="refreshBtn" type="button">Refresh</button>
+        <button id="exportFolderBtn" type="button">Use for exports</button>
+      </div>
+    </header>
+    <main class="explorer-main">
+      <div class="search-row">
+        <label class="search-label" for="searchInput">Search</label>
+        <input id="searchInput" type="text" placeholder="Search presets..." />
+        <button id="clearSearchBtn" type="button" disabled>Clear</button>
+      </div>
+      <div class="path-row">
+        <span class="label">Browser path:</span>
+        <div class="path-nav">
+          <button id="pathBackBtn" type="button" aria-label="Back">←</button>
+          <button id="pathForwardBtn" type="button" aria-label="Forward">→</button>
+          <span id="currentPath" class="path-value"></span>
+        </div>
+      </div>
+      <div class="bulk-actions">
+        <span id="bulkCount" class="bulk-count">0 selected</span>
+        <button id="createFolderBtn" type="button">New Folder</button>
+        <button id="setThumbBtn" type="button" disabled>Set Thumbnail</button>
+        <button id="bulkEnableBtn" type="button" disabled>Enable Selected</button>
+        <button id="bulkDisableBtn" type="button" disabled>Disable Selected</button>
+        <button id="bulkDeleteBtn" type="button" disabled>Delete Selected</button>
+        <button id="bulkClearBtn" type="button" disabled>Clear Selection</button>
+      </div>
+      <table class="entries">
+        <thead>
+          <tr>
+            <th class="select-col">Select</th>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Status</th>
+            <th>Modified</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="entriesBody"></tbody>
+      </table>
+      <div id="status" class="status"></div>
+    </main>
+    <div id="drfxModal" class="modal" hidden>
+      <div class="modal-content">
+        <header class="modal-header">
+          <div>
+            <h2>DRFX Presets</h2>
+            <p id="drfxPath" class="modal-subtitle"></p>
+          </div>
+          <button id="closeDrfxBtn" type="button">Close</button>
+        </header>
+        <div class="modal-body">
+          <div id="drfxWarning" class="warning" hidden></div>
+          <div id="drfxStatus" class="status"></div>
+          <div class="search-row">
+            <label class="search-label" for="drfxSearchInput">Search</label>
+            <input id="drfxSearchInput" type="text" placeholder="Search presets..." />
+            <button id="drfxClearSearchBtn" type="button" disabled>Clear</button>
+          </div>
+          <div class="drfx-bulk">
+            <span id="drfxBulkCount" class="bulk-count">0 selected</span>
+            <button id="drfxSetThumbBtn" type="button" disabled>Set Thumbnail</button>
+            <button id="drfxBulkEnableBtn" type="button" disabled>Enable Selected</button>
+            <button id="drfxBulkDisableBtn" type="button" disabled>Disable Selected</button>
+            <button id="drfxBulkDeleteBtn" type="button" disabled>Delete Selected</button>
+            <button id="drfxBulkClearBtn" type="button" disabled>Clear Selection</button>
+            <button id="drfxImportAllBtn" type="button" disabled>Import All to Macro Machine</button>
+          </div>
+          <div id="drfxList" class="drfx-list"></div>
+        </div>
+      </div>
+    </div>
+    <input id="thumbFileInput" type="file" accept=".png" hidden />
+    <script src="explorer.js"></script>
+  </body>
+</html>

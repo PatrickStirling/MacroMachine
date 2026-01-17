@@ -1,0 +1,1619 @@
+{
+	Tools = ordered() {
+		SSC_PiP_Pro = GroupOperator {
+			UserControls = ordered() {
+			
+				Controls = ControlPage {
+					CT_Visible = true,
+					CT_Priority = 0,
+				},},
+
+			CtrlWZoom = false,
+			CustomData = {
+				Path = {
+					Map = {
+						["Setting:"] = "/Users/patrick/Desktop/MACRO MACHINE/FusionMacroReorderer/"
+					}
+				},
+			},
+						Inputs = ordered() {
+
+					MainInput1 = InstanceInput {
+										SourceOp = "Footage_XF",
+										Source = "Input",
+									},
+					Input1 = InstanceInput {
+										SourceOp = "ContentXF",
+										Source = "MasterTransformControls",
+										Page = "Controls",
+						Default = 0,
+									},
+					Input3 = InstanceInput {
+										SourceOp = "ContentXF",
+										Source = "Size",
+										Default = 0.5,
+									},
+					Input2 = InstanceInput {
+										SourceOp = "ContentXF",
+										Source = "Center",
+										Name = "Position",
+									},
+					Input4 = InstanceInput {
+										SourceOp = "ContentXF",
+										Source = "Angle",
+										Name = "Rotation",
+									},
+					Input5 = InstanceInput {
+										SourceOp = "ContentXF",
+										Source = "MaskShapeControls",
+										Page = "Controls",
+						Default = 0,
+									},
+					Input6 = InstanceInput {
+										SourceOp = "Switch1",
+										Source = "Source",
+										Name = "Shape Selection",
+										Default = 1,
+									},
+					Input7 = InstanceInput {
+										SourceOp = "ContentXF",
+										Source = "nGonControls",
+										Page = "Controls",
+						Default = 0,
+									},
+					Input8 = InstanceInput {
+										SourceOp = "sNGon1",
+										Source = "Sides",
+									},
+					Input9 = InstanceInput {
+										SourceOp = "sNGon1",
+										Source = "Width",
+									},
+					Input10 = InstanceInput {
+										SourceOp = "sNGon1",
+										Source = "Height",
+									},
+					Input11 = InstanceInput {
+										SourceOp = "sNGon1",
+										Source = "Angle",
+									},
+					Input12 = InstanceInput {
+										SourceOp = "ContentXF",
+										Source = "RectangleControls",
+										Page = "Controls",
+						Default = 1,
+									},
+					Input13 = InstanceInput {
+										SourceOp = "sRectangle1",
+										Source = "Width",
+									},
+					Input14 = InstanceInput {
+										SourceOp = "sRectangle1",
+										Source = "Height",
+									},
+					Input15 = InstanceInput {
+										SourceOp = "sRectangle1",
+										Source = "CornerRadius",
+										Default = 0.369,
+									},
+					Input16 = InstanceInput {
+										SourceOp = "sRectangle1",
+										Source = "Angle",
+									},
+					Input17 = InstanceInput {
+										SourceOp = "ContentXF",
+										Source = "EllipseControls",
+										Page = "Controls",
+						Default = 0,
+									},
+					Input18 = InstanceInput {
+										SourceOp = "sEllipse1",
+										Source = "Width",
+									},
+					Input19 = InstanceInput {
+										SourceOp = "sEllipse1",
+										Source = "Height",
+									},
+					Input20 = InstanceInput {
+										SourceOp = "sEllipse1",
+										Source = "Angle",
+									},
+					Input21 = InstanceInput {
+										SourceOp = "ContentXF",
+										Source = "StarControls",
+										Page = "Controls",
+						Default = 0,
+									},
+					Input22 = InstanceInput {
+										SourceOp = "sStar1",
+										Source = "Points",
+										Default = 10,
+									},
+					Input23 = InstanceInput {
+										SourceOp = "sStar1",
+										Source = "Depth",
+										Default = 0.803,
+									},
+					Input24 = InstanceInput {
+										SourceOp = "sStar1",
+										Source = "Width",
+									},
+					Input25 = InstanceInput {
+										SourceOp = "sStar1",
+										Source = "Height",
+									},
+					Input26 = InstanceInput {
+										SourceOp = "sStar1",
+										Source = "Angle",
+									},
+					Input27 = InstanceInput {
+										SourceOp = "ContentXF",
+										Source = "FootageControls",
+										Page = "Controls",
+						Default = 0,
+									},
+					Input28 = InstanceInput {
+										SourceOp = "Footage_XF",
+										Source = "Center",
+										Name = "Footage Position",
+									},
+					Input29 = InstanceInput {
+										SourceOp = "Footage_XF",
+										Source = "Size",
+										Name = "Footage Scale",
+										Default = 0.6,
+									},
+					Input30 = InstanceInput {
+										SourceOp = "Footage_XF",
+										Source = "Angle",
+										Name = "Footage Rotation",
+									},
+					Input31 = InstanceInput {
+										SourceOp = "Footage_Maske_Blur",
+										Source = "MatteBlur",
+										Name = "Footage Edge Blur",
+									},
+					Input32 = InstanceInput {
+										SourceOp = "ContentXF",
+										Source = "LayerControls",
+										Page = "Controls",
+						Default = 0,
+									},
+					Input33 = InstanceInput {
+										SourceOp = "ContentXF",
+										Source = "OutlineControls",
+										Page = "Controls",
+						Default = 0,
+									},
+					Input34 = InstanceInput {
+										SourceOp = "Outline1_Color",
+										Source = "Opacity",
+										Name = "Outline",
+										Page = "Controls",
+										Default = 1,
+									},
+					Input35 = InstanceInput {
+										SourceOp = "Outline1_sOutline",
+										Source = "Thickness",
+										Default = 0.016,
+									},
+					Input36 = InstanceInput {
+										SourceOp = "Outline1_sOutline",
+										Source = "WritePosition",
+									},
+					Input37 = InstanceInput {
+										SourceOp = "Outline1_sOutline",
+										Source = "WriteLength",
+									},
+					Input38 = InstanceInput {
+										SourceOp = "Outline1_Color",
+										Source = "Red",
+										Name = "Color",
+										ControlGroup = 4,
+									},
+					Input39 = InstanceInput {
+										SourceOp = "Outline1_Color",
+										Source = "Green",
+										Name = "Color",
+										ControlGroup = 4,
+									},
+					Input40 = InstanceInput {
+										SourceOp = "Outline1_Color",
+										Source = "Blue",
+										Name = "Color",
+										ControlGroup = 4,
+									},
+					Input41 = InstanceInput {
+										SourceOp = "Outline1_Color",
+										Source = "Alpha",
+										Name = "Color",
+										ControlGroup = 4,
+									},
+					Input42 = InstanceInput {
+										SourceOp = "ContentXF",
+										Source = "OutlineCopy1",
+										Page = "Controls",
+						Default = 0,
+									},
+					Input43 = InstanceInput {
+										SourceOp = "Outline2_Color",
+										Source = "Opacity",
+										Name = "Outline Copy 1",
+										Page = "Controls",
+										Default = 0,
+									},
+					Input44 = InstanceInput {
+										SourceOp = "Outline2_sOutline",
+										Source = "Thickness",
+										Default = 0.065,
+									},
+					Input45 = InstanceInput {
+										SourceOp = "Outline2_sOutline",
+										Source = "Outline_Position",
+										Name = "Position",
+										Page = "Controls",
+										Default = 1,
+									},
+					Input46 = InstanceInput {
+										SourceOp = "Outline2_sOutline",
+										Source = "Rotate",
+										Page = "Controls",
+										Default = 1,
+									},
+					Input47 = InstanceInput {
+										SourceOp = "Outline2_sOutline",
+										Source = "Speed",
+										Name = "Rotate Speed",
+										Page = "Controls",
+										Default = 2.724,
+									},
+					Input48 = InstanceInput {
+										SourceOp = "Outline2_sOutline",
+										Source = "WriteLength",
+										Default = 0.354,
+									},
+					Input49 = InstanceInput {
+										SourceOp = "Outline2_Color",
+										Source = "Red",
+										Name = "Color",
+										ControlGroup = 5,
+									},
+					Input50 = InstanceInput {
+										SourceOp = "Outline2_Color",
+										Source = "Green",
+										Name = "Color",
+										ControlGroup = 5,
+									},
+					Input51 = InstanceInput {
+										SourceOp = "Outline2_Color",
+										Source = "Blue",
+										Name = "Color",
+										ControlGroup = 5,
+									},
+					Input52 = InstanceInput {
+										SourceOp = "Outline2_Color",
+										Source = "Alpha",
+										Name = "Color",
+										ControlGroup = 5,
+									},
+					Input53 = InstanceInput {
+										SourceOp = "ContentXF",
+										Source = "OutlineControl2",
+										Page = "Controls",
+						Default = 0,
+									},
+					Input54 = InstanceInput {
+										SourceOp = "Outline3_Color",
+										Source = "Opacity",
+										Name = "Outline Copy 2",
+										Page = "Controls",
+										Default = 0,
+									},
+					Input55 = InstanceInput {
+										SourceOp = "Outline3_sOutline",
+										Source = "Thickness",
+										Default = 0.0765,
+									},
+					Input56 = InstanceInput {
+										SourceOp = "Outline3_sOutline",
+										Source = "Outline_Position",
+										Name = "Position",
+										Page = "Controls",
+										Default = 1,
+									},
+					Input57 = InstanceInput {
+										SourceOp = "Outline3_sOutline",
+										Source = "Rotate",
+										Page = "Controls",
+										Default = 1,
+									},
+					Input58 = InstanceInput {
+										SourceOp = "Outline3_sOutline",
+										Source = "Speed",
+										Name = "Rotate Speed",
+										Page = "Controls",
+										Default = 1,
+									},
+					Input59 = InstanceInput {
+										SourceOp = "Outline3_sOutline",
+										Source = "WriteLength",
+										Default = 0.244,
+									},
+					Input60 = InstanceInput {
+										SourceOp = "Outline3_Color",
+										Source = "Red",
+										Name = "Color",
+										ControlGroup = 6,
+									},
+					Input61 = InstanceInput {
+										SourceOp = "Outline3_Color",
+										Source = "Green",
+										Name = "Color",
+										ControlGroup = 6,
+									},
+					Input62 = InstanceInput {
+										SourceOp = "Outline3_Color",
+										Source = "Blue",
+										Name = "Color",
+										ControlGroup = 6,
+									},
+					Input63 = InstanceInput {
+										SourceOp = "Outline3_Color",
+										Source = "Alpha",
+										Name = "Color",
+										ControlGroup = 6,
+									},
+					Input64 = InstanceInput {
+										SourceOp = "ContentXF",
+										Source = "DisplaceControls",
+										Page = "Controls",
+						Default = 0,
+									},
+					Input65 = InstanceInput {
+										SourceOp = "Outlines_Displace",
+										Source = "Blend",
+										Name = "Texture",
+										Page = "Controls",
+										Default = 0,
+									
+						INPID_InputControl = "SliderControl",},
+					Input66 = InstanceInput {
+										SourceOp = "Outlines_FastNoise",
+										Source = "Detail",
+										Name = "Texture Detail",
+										Default = 5.97,
+									},
+					Input67 = InstanceInput {
+										SourceOp = "Outlines_FastNoise",
+										Source = "Contrast",
+										Name = "Texture Contrast",
+										Default = 1.51,
+									},
+					Input68 = InstanceInput {
+										SourceOp = "Outlines_FastNoise",
+										Source = "Brightness",
+										Name = "Texture Power",
+										Default = -0.14,
+									},
+					Input69 = InstanceInput {
+										SourceOp = "Outlines_FastNoise",
+										Source = "XScale",
+										Name = "Texture Scale",
+										Default = 7.09,
+									},
+					Input70 = InstanceInput {
+										SourceOp = "Outlines_FastNoise",
+										Source = "SeetheRate",
+										Name = "Texture Speed",
+										Default = 0.331,
+									},
+					Input71 = InstanceInput {
+										SourceOp = "ContentXF",
+										Source = "ShapeCopy",
+										Page = "Controls",
+						Default = 0,
+									},
+					Input72 = InstanceInput {
+										SourceOp = "Switch2",
+										Source = "Source",
+										Name = "Copy Style",
+									},
+					Input73 = InstanceInput {
+										SourceOp = "Layer_ShapeCopy",
+										Source = "Blend",
+										Name = "On/Off",
+										Page = "Controls",
+										Default = 0,
+									
+						INPID_InputControl = "SliderControl",},
+					Input74 = InstanceInput {
+										SourceOp = "Copy_sOutline",
+										Source = "Thickness",
+										Name = "Outline Thickness",
+									},
+					Input75 = InstanceInput {
+										SourceOp = "CopyXF",
+										Source = "XOffset",
+										Name = "Copy X Offset",
+									},
+					Input76 = InstanceInput {
+										SourceOp = "CopyXF",
+										Source = "YOffset",
+										Name = "Copy Y Offset",
+									},
+					Input77 = InstanceInput {
+										SourceOp = "Publish",
+										Source = "Value",
+										Name = "Copy Scale",
+										Default = 1,
+									},
+					Input78 = InstanceInput {
+										SourceOp = "ShapeCopy_Color",
+										Source = "Red",
+										Name = "Copy Color",
+										ControlGroup = 7,
+									},
+					Input79 = InstanceInput {
+										SourceOp = "ShapeCopy_Color",
+										Source = "Green",
+										Name = "Copy Color",
+										ControlGroup = 7,
+									},
+					Input80 = InstanceInput {
+										SourceOp = "ShapeCopy_Color",
+										Source = "Blue",
+										Name = "Copy Color",
+										ControlGroup = 7,
+									},
+					Input81 = InstanceInput {
+										SourceOp = "ShapeCopy_Color",
+										Source = "Alpha",
+										Name = "Copy Color",
+										ControlGroup = 7,
+									},
+					Input82 = InstanceInput {
+										SourceOp = "Copy_WiggleXF",
+										Source = "Blend",
+										Name = "Copy Wiggle",
+										Page = "Controls",
+										Default = 0,
+									
+						INPID_InputControl = "SliderControl",},
+					Input83 = InstanceInput {
+										SourceOp = "Perturb1",
+										Source = "XScale",
+										Name = "Wiggle X Scale",
+										Default = 0.1,
+									},
+					Input84 = InstanceInput {
+										SourceOp = "Perturb1",
+										Source = "YScale",
+										Name = "Wiggle Y Scale",
+										Default = 0.1,
+									},
+					Input85 = InstanceInput {
+										SourceOp = "Perturb1",
+										Source = "Strength",
+										Name = "Wiggle Strength",
+									},
+					Input86 = InstanceInput {
+										SourceOp = "Perturb1",
+										Source = "Wobble",
+										Name = "Wiggle Wobble",
+									},
+					Input87 = InstanceInput {
+										SourceOp = "Perturb1",
+										Source = "Speed",
+										Name = "Wiggle Speed",
+									},
+					Input88 = InstanceInput {
+										SourceOp = "ContentXF",
+										Source = "OutlineImage",
+										Page = "Controls",
+						Default = 0,
+									},
+					Input89 = InstanceInput {
+										SourceOp = "Dissolve1",
+										Source = "Mix",
+										Name = "Outline Image",
+										Page = "Controls",
+										Default = 0,
+									},
+					Input90 = InstanceInput {
+										SourceOp = "Loader1",
+										Source = "Clip",
+									},
+					Input91 = InstanceInput {
+										SourceOp = "Transform1",
+										Source = "Center",
+										Name = "Image Position",
+									},
+					Input92 = InstanceInput {
+										SourceOp = "Transform1",
+										Source = "Size",
+										Name = "Image Scale",
+										Default = 1,
+									},
+					Input93 = InstanceInput {
+										SourceOp = "Transform1",
+										Source = "Angle",
+										Name = "Image Rotation",
+									},
+					Input94 = InstanceInput {
+										SourceOp = "ContentXF",
+										Source = "DropShadowControls",
+										Page = "Controls",
+						Default = 0,
+									},
+					Input95 = InstanceInput {
+										SourceOp = "DropShadow",
+										Source = "Blend",
+										Name = "On/Off",
+										Page = "Controls",
+										Default = 1,
+									
+						INPID_InputControl = "SliderControl",},
+					Input96 = InstanceInput {
+										SourceOp = "DropShadow",
+										Source = "shadowStrength",
+										Default = 0.685,
+									},
+					Input97 = InstanceInput {
+										SourceOp = "DropShadow",
+										Source = "shadowAngle",
+										Name = "Shadow Angle",
+										Default = 23,
+									},
+					Input98 = InstanceInput {
+										SourceOp = "DropShadow",
+										Source = "ShadowDistance",
+										Name = "Shadow Distance",
+										Default = 0.0449,
+									},
+							},
+			Outputs = {
+				MainOutput1 = InstanceOutput {
+					SourceOp = "ContentXF",
+					Source = "Output",
+				}
+			},
+			ViewInfo = GroupInfo {
+				Pos = { 85.2802, 180.276 },
+				Flags = {
+					AllowPan = false,
+					GridSnap = true,
+					ConnectedSnap = true,
+					PipesAlways = true,
+					AutoSnap = true,
+					RemoveRouters = true
+				},
+				Size = { 1511.07, 803.551, 281.53, 262.893 },
+				Direction = "Horizontal",
+				PipeStyle = "Direct",
+				Scale = 1,
+				Offset = { 0, 0 }
+			},
+			Tools = ordered() {
+				Loader1 = Loader {
+					Clips = {
+					},
+					CtrlWShown = false,
+					Inputs = {
+						["Clip1.PNGFormat.PostMultiply"] = Input {
+							Value = Number {
+								Value = 1
+							},
+						},
+						MissingFrames = Input { Value = 1, },
+						["Gamut.SLogVersion"] = Input { Value = FuID { "SLog2" }, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 605, -49.5 } },
+				
+					},
+				Switch1 = Switch {
+					CtrlWShown = false,
+					Inputs = {
+						NumberOfInputs = Input { Value = 4, },
+						Source = Input { Value = 1, },
+						Name0 = Input { Value = "mGon", },
+						Input0 = Input {
+							SourceOp = "sNGon1",
+							Source = "Output",
+						},
+						Name1 = Input { Value = "Rectangle", },
+						Input1 = Input {
+							SourceOp = "sRectangle1",
+							Source = "Output",
+						},
+						Name2 = Input { Value = "Ellipse", },
+						Input2 = Input {
+							SourceOp = "sEllipse1",
+							Source = "Output",
+						},
+						Name3 = Input { Value = "Star", },
+						Input3 = Input {
+							SourceOp = "sStar1",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 110, 280.5 } },
+					Colors = { TileColor = { R = 0.584313725490196, G = 0.294117647058824, B = 0.803921568627451 }, }
+				
+					UserControls = ordered() {
+					
+						Source = {
+							ICS_ControlPage = "Controls",
+							LINKS_Name = "Source",
+						
+							INPS_ExecuteOnChange = "local tool = comp:FindTool(\"ContentXF\")\nif Switch1:GetInput(\"Source\") == 0 then\ntool.nGonControls = 1\ntool.RectangleControls = 0\ntool.EllipseControls = 0\ntool.StarControls = 0\nif Switch1:GetInput(\"Source\") == 1 then\ntool.nGonControls = 0\ntool.RectangleControls = 1\ntool.EllipseControls = 0\ntool.StarControls = 0\nif Switch1:GetInput(\"Source\") == 2 then\ntool.nGonControls = 0\ntool.RectangleControls = 0\ntool.EllipseControls = 1\ntool.StarControls = 0\nif Switch1:GetInput(\"Source\") == 3 then\ntool.nGonControls = 0\ntool.RectangleControls = 0\ntool.EllipseControls = 0\ntool.StarControls = 1\nend",},
+},
+},
+				sStar1 = sStar {
+					CtrlWShown = false,
+					Inputs = {
+						Points = Input { Value = 10, },
+						Depth = Input { Value = 0.803, },
+						BorderWidth = Input { Value = -0.028, },
+						JoinStyle = Input { Value = 2, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 0, 280.5 } },
+				
+					},
+				sEllipse1 = sEllipse {
+					CtrlWShown = false,
+					Inputs = {
+						BorderWidth = Input { Value = 0.022, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 0, 247.5 } },
+				
+					},
+				sNGon1 = sNGon {
+					CtrlWShown = false,
+					Inputs = {
+						BorderWidth = Input { Value = -0.016, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 0, 181.5 } },
+				
+					},
+				sRectangle1 = sRectangle {
+					CtrlWShown = false,
+					Inputs = {
+						BorderWidth = Input { Value = -0.006, },
+						CornerRadius = Input { Value = 0.369, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 0, 214.5 } },
+				
+					},
+				Outlines_FastNoise = FastNoise {
+					ExtentSet = true,
+					CtrlWShown = false,
+					NameSet = true,
+					Inputs = {
+						GlobalIn = Input { Value = -9999, },
+						GlobalOut = Input { Value = 99999, },
+						Width = Input { Value = 1920, },
+						Height = Input { Value = 1080, },
+						UseFrameFormatSettings = Input { Value = 1, },
+						["Gamut.SLogVersion"] = Input { Value = FuID { "SLog2" }, },
+						Detail = Input { Value = 5.97, },
+						Contrast = Input { Value = 1.51, },
+						Brightness = Input { Value = -0.14, },
+						XScale = Input { Value = 7.09, },
+						SeetheRate = Input { Value = 0.331, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 495, 115.5 } },
+				
+					},
+				Copy_sOutline = sOutline {
+					CtrlWShown = false,
+					NameSet = true,
+					Inputs = {
+						JoinStyle = Input { Value = 2, },
+						Input = Input {
+							SourceOp = "Shape_XF",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 275, 280.5 } },
+				
+					},
+				CopyXF = sTransform {
+					CtrlWShown = false,
+					NameSet = true,
+					Inputs = {
+						XSize = Input {
+							SourceOp = "Publish",
+							Source = "Value",
+						},
+						YSize = Input {
+							SourceOp = "Publish",
+							Source = "Value",
+						},
+						Input = Input {
+							SourceOp = "Switch2",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 275, 214.5 } },
+				
+					},
+				Shape_XF = sTransform {
+					CtrlWShown = false,
+					NameSet = true,
+					Inputs = {
+						XOffset = Input { Value = 0.025, },
+						XSize = Input {
+							SourceOp = "Publish2",
+							Source = "Value",
+						},
+						YSize = Input {
+							SourceOp = "Publish2",
+							Source = "Value",
+						},
+						Input = Input {
+							SourceOp = "Switch1",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 110, 313.5 } },
+				},
+				Outline2_sOutline = sOutline {
+					CtrlWShown = false,
+					NameSet = true,
+					Inputs = {
+						Thickness = Input { Value = 0.065, },
+						JoinStyle = Input { Value = 2, },
+						CapStyle = Input { Value = 0, },
+						WritePosition = Input {
+							Value = 0.569016152716593,
+							Expression = "(time*Rotate/(100*Speed))+Outline_Position",
+						},
+						WriteLength = Input { Value = 0.354, },
+						Input = Input {
+							SourceOp = "Shape_XF",
+							Source = "Output",
+						},
+						Rotate = Input { Value = 1, },
+						Speed = Input { Value = 2.724, },
+						Outline_Position = Input { Value = 1, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 275, 379.5 } },
+					UserControls = ordered() {						Outline_Position = {
+							ICS_ControlPage = "Controls",
+							INP_Integer = false,
+							LINKID_DataType = "Number",
+							INPID_InputControl = "SliderControl",
+							INP_MinScale = 0,
+							INP_MaxScale = 1,
+							LINKS_Name = "Outline_Position",
+						},
+
+						Rotate = {
+							ICS_ControlPage = "Controls",
+							CBC_TriState = false,
+							INP_Integer = false,
+							LINKID_DataType = "Number",
+							INPID_InputControl = "CheckboxControl",
+							LINKS_Name = "Rotate",
+						},
+						Speed = {
+							ICS_ControlPage = "Controls",
+							INP_MaxAllowed = 1000000,
+							INP_Integer = false,
+							INP_MinAllowed = -1000000,
+							LINKID_DataType = "Number",
+							INPID_InputControl = "SliderControl",
+							INP_MinScale = 0.100000001490116,
+							INP_MaxScale = 5,
+							LINKS_Name = "Speed",
+						},
+}
+				},
+				Outline3_sOutline = sOutline {
+					CtrlWShown = false,
+					NameSet = true,
+					Inputs = {
+						Thickness = Input { Value = 0.0765, },
+						JoinStyle = Input { Value = 2, },
+						CapStyle = Input { Value = 0, },
+						WritePosition = Input {
+							Value = -0.55,
+							Expression = "(-time*Rotate/(100*Speed))+Outline_Position",
+						},
+						WriteLength = Input { Value = 0.244, },
+						Input = Input {
+							SourceOp = "Shape_XF",
+							Source = "Output",
+						},
+						Rotate = Input { Value = 1, },
+						Speed = Input { Value = 1, },
+						Outline_Position = Input { Value = 1, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 275, 412.5 } },
+					UserControls = ordered() {						Outline_Position = {
+							ICS_ControlPage = "Controls",
+							INP_Integer = false,
+							LINKID_DataType = "Number",
+							INPID_InputControl = "SliderControl",
+							INP_MinScale = 0,
+							INP_MaxScale = 1,
+							LINKS_Name = "Outline_Position",
+						},
+
+						Rotate = {
+							ICS_ControlPage = "Controls",
+							CBC_TriState = false,
+							INP_Integer = false,
+							LINKID_DataType = "Number",
+							INPID_InputControl = "CheckboxControl",
+							LINKS_Name = "Rotate",
+						},
+						Speed = {
+							ICS_ControlPage = "Controls",
+							INP_MaxAllowed = 1000000,
+							INP_Integer = false,
+							INP_MinAllowed = -1000000,
+							LINKID_DataType = "Number",
+							INPID_InputControl = "SliderControl",
+							INP_MinScale = 0.100000001490116,
+							INP_MaxScale = 5,
+							LINKS_Name = "Speed",
+						},
+}
+				},
+				NullBG = Background {
+					CtrlWShown = false,
+					NameSet = true,
+					Inputs = {
+						GlobalOut = Input { Value = 149, },
+						Width = Input { Value = 1920, },
+						Height = Input { Value = 1080, },
+						UseFrameFormatSettings = Input { Value = 1, },
+						["Gamut.SLogVersion"] = Input { Value = FuID { "SLog2" }, },
+						TopLeftAlpha = Input { Value = 0, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 110, 49.5 } },
+				},
+				Outline1_sOutline = sOutline {
+					CtrlWShown = false,
+					NameSet = true,
+					Inputs = {
+						Thickness = Input { Value = 0.016, },
+						JoinStyle = Input { Value = 2, },
+						Input = Input {
+							SourceOp = "Shape_XF",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 275, 346.5 } },
+				
+					},
+				Footage_Mask_sRender = sRender {
+					CtrlWShown = false,
+					NameSet = true,
+					Inputs = {
+						GlobalOut = Input { Value = 149, },
+						Width = Input { Value = 1920, },
+						Height = Input { Value = 1080, },
+						UseFrameFormatSettings = Input { Value = 1, },
+						["Gamut.SLogVersion"] = Input { Value = FuID { "SLog2" }, },
+						Input = Input {
+							SourceOp = "Shape_XF",
+							Source = "Output",
+						},
+						ShapeControl = Input { Value = 2, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 770, 313.5 } },
+					UserControls = ordered() {
+						ShapeControl = {
+							{ CCS_AddString = "Star" },
+							{ CCS_AddString = "Circle" },
+							{ CCS_AddString = "square" },
+							{ CCS_AddString = "nGon" },
+							INP_Integer = false,
+							LINKID_DataType = "Number",
+							CC_LabelPosition = "Horizontal",
+							INPID_InputControl = "ComboControl",
+							LINKS_Name = "ShapeControl",
+						}
+					}
+				},
+				Outlines_sRender = sRender {
+					CtrlWShown = false,
+					NameSet = true,
+					Inputs = {
+						GlobalOut = Input { Value = 149, },
+						Width = Input { Value = 1920, },
+						Height = Input { Value = 1080, },
+						UseFrameFormatSettings = Input { Value = 1, },
+						["Gamut.SLogVersion"] = Input { Value = FuID { "SLog2" }, },
+						Input = Input {
+							SourceOp = "OutlinesMerge",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 385, 181.5 } },
+				},
+				Layer_ShapeCopy = Merge {
+					CtrlWShown = false,
+					NameSet = true,
+					Inputs = {
+						Background = Input {
+							SourceOp = "NullBG",
+							Source = "Output",
+						},
+						Foreground = Input {
+							SourceOp = "Copy_WiggleXF",
+							Source = "Output",
+						},
+						PerformDepthMerge = Input { Value = 0, },
+						Blend = Input { Value = 0, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 275, 82.5 } },
+					UserControls = ordered() {
+						Blend = {
+							INP_MaxAllowed = 1,
+							INP_Integer = false,
+							INPID_InputControl = "CheckboxControl",
+							INP_MaxScale = 1,
+							INP_Default = 1,
+							INP_MinScale = 0,
+							INP_MinAllowed = 0,
+							LINKID_DataType = "Number",
+							ICS_ControlPage = "Controls",
+							CBC_TriState = false,
+							LINKS_Name = "On Off"
+						}
+}
+				},
+				Copy_WiggleXF = Transform {
+					CtrlWShown = false,
+					NameSet = true,
+					Inputs = {
+						Center = Input {
+							SourceOp = "Perturb1",
+							Source = "Value",
+						},
+						Input = Input {
+							SourceOp = "sRender1",
+							Source = "Output",
+						},
+						Blend = Input { Value = 0, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 275, 115.5 } },
+					UserControls = ordered() {
+						Blend = {
+							INP_MaxAllowed = 1,
+							INP_Integer = false,
+							INPID_InputControl = "CheckboxControl",
+							INP_MaxScale = 1,
+							INP_Default = 1,
+							INP_MinScale = 0,
+							INP_MinAllowed = 0,
+							LINKID_DataType = "Number",
+							ICS_ControlPage = "Controls",
+							CBC_TriState = false,
+							LINKS_Name = "On Off"
+						}
+}
+				},
+				Perturb1 = PerturbPoint {
+					CtrlWZoom = false,
+					Inputs = {
+						XScale = Input { Value = 0.1, },
+						YScale = Input { Value = 0.1, }
+					},
+				
+					},
+				Footage_Maske_Blur = MatteControl {
+					CtrlWShown = false,
+					NameSet = true,
+					Inputs = {
+						Filter = Input { Value = FuID { "Fast Gaussian" }, },
+						Background = Input {
+							SourceOp = "Footage_Mask_sRender",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 770, 115.5 } },
+				
+					},
+				Outlines_Displace = Displace {
+					CtrlWShown = false,
+					NameSet = true,
+					Inputs = {
+						Input = Input {
+							SourceOp = "Outlines_sRender",
+							Source = "Output",
+						},
+						Foreground = Input {
+							SourceOp = "Outlines_FastNoise",
+							Source = "Output",
+						},
+						Blend = Input { Value = 0, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 385, 115.5 } },
+					UserControls = ordered() {
+						Blend = {
+							INP_MaxAllowed = 1,
+							INP_Integer = false,
+							INPID_InputControl = "CheckboxControl",
+							INP_MaxScale = 1,
+							INP_Default = 1,
+							INP_MinScale = 0,
+							INP_MinAllowed = 0,
+							LINKID_DataType = "Number",
+							ICS_ControlPage = "Controls",
+							CBC_TriState = false,
+							LINKS_Name = "On Off"
+						}
+}
+				},
+				Layer_Outlines = Merge {
+					CtrlWShown = false,
+					NameSet = true,
+					Inputs = {
+						Background = Input {
+							SourceOp = "Layer_ShapeCopy",
+							Source = "Output",
+						},
+						Foreground = Input {
+							SourceOp = "Outlines_Displace",
+							Source = "Output",
+						},
+						PerformDepthMerge = Input { Value = 0, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 385, 82.5 } },
+				},
+				DropShadow = ofx.com.blackmagicdesign.resolvefx.DropShadow {
+					CtrlWZoom = false,
+					CtrlWShown = false,
+					NameSet = true,
+					Inputs = {
+						Source = Input {
+							SourceOp = "FootageMerge",
+							Source = "Output",
+						},
+						shadowStrength = Input { Value = 0.685, },
+						shadowAngle = Input { Value = 23, },
+						ShadowDistance = Input { Value = 0.0449, },
+						shadowBlur = Input { Value = 0.661, },
+						shadowColorRed = Input { Value = 0, },
+						shadowColorGreen = Input { Value = 0, },
+						shadowColorBlue = Input { Value = 0, },
+						isLegacyComp = Input { Value = 0, },
+						blendGroup = Input { Value = 0, },
+						blendIn = Input { Value = 1, },
+						blend = Input { Value = 0, },
+						ignoreContentShape = Input { Value = 0, },
+						legacyIsProcessRGBOnly = Input { Value = 0, },
+						IsNoTemporalFramesReqd = Input { Value = 0, },
+						refreshTrigger = Input { Value = 1, },
+						srcProcessingAlphaMode = Input { Value = 0, },
+						dstProcessingAlphaMode = Input { Value = 0, },
+						resolvefxVersion = Input { Value = "2.0", }
+					},
+					ViewInfo = OperatorInfo { Pos = { 935, 82.5 } },
+					UserControls = ordered() {
+						Blend = {
+							INP_MaxAllowed = 1,
+							INP_Integer = false,
+							INPID_InputControl = "CheckboxControl",
+							INP_MaxScale = 1,
+							INP_Default = 1,
+							INP_MinScale = 0,
+							INP_MinAllowed = 0,
+							LINKID_DataType = "Number",
+							ICS_ControlPage = "Controls",
+							CBC_TriState = false,
+							LINKS_Name = "On Off"
+						}
+					}
+				},
+				FootageMerge = Merge {
+					CtrlWShown = false,
+					NameSet = true,
+					Inputs = {
+						EffectMask = Input {
+							SourceOp = "Footage_Maske_Blur",
+							Source = "Output",
+						},
+						Background = Input {
+							SourceOp = "Dissolve1",
+							Source = "Output",
+						},
+						Foreground = Input {
+							SourceOp = "Footage_XF",
+							Source = "Output",
+						},
+						PerformDepthMerge = Input { Value = 0, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 770, 82.5 } },
+				},
+				ContentXF = Transform {
+					CtrlWShown = false,
+					NameSet = true,
+					Inputs = {
+						Size = Input { Value = 0.5, },
+						Input = Input {
+							SourceOp = "DropShadow",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 1045, 82.5 } },
+					UserControls = ordered() {
+						MasterTransformControls = {
+							ICS_ControlPage = "Controls",
+							INP_Integer = false,
+							LBLC_DropDownButton = true,
+							LINKID_DataType = "Number",
+							LBLC_NumInputs = 3,
+							LBLC_NestLevel = 1,
+							INPID_InputControl = "LabelControl",
+							LINKS_Name = "Master Transform Controls",
+						
+							INP_Default = 0,},
+						MaskShapeControls = {
+							ICS_ControlPage = "Controls",
+							INP_Integer = false,
+							LBLC_DropDownButton = true,
+							LINKID_DataType = "Number",
+							LBLC_NumInputs = 21,
+							LBLC_NestLevel = 1,
+							INPID_InputControl = "LabelControl",
+							LINKS_Name = "Mask Shape Controls",
+						
+							INP_Default = 0,},
+						nGonControls = {
+							ICS_ControlPage = "Controls",
+							INP_Integer = false,
+							LBLC_DropDownButton = true,
+							LINKID_DataType = "Number",
+							LBLC_NumInputs = 4,
+							LBLC_NestLevel = 2,
+							INPID_InputControl = "LabelControl",
+							LINKS_Name = "nGon Controls",
+						
+							IC_Visible = false,
+							INP_Passive = true,
+							INP_Default = 0,},
+						RectangleControls = {
+							ICS_ControlPage = "Controls",
+							INP_Integer = false,
+							LBLC_DropDownButton = true,
+							LINKID_DataType = "Number",
+							LBLC_NumInputs = 4,
+							LBLC_NestLevel = 2,
+							INPID_InputControl = "LabelControl",
+							LINKS_Name = "Rectangle Controls",
+						
+							IC_Visible = false,
+							INP_Passive = true,
+							INP_Default = 1,},
+						EllipseControls = {
+							ICS_ControlPage = "Controls",
+							INP_Integer = false,
+							LBLC_DropDownButton = true,
+							LINKID_DataType = "Number",
+							LBLC_NumInputs = 3,
+							LBLC_NestLevel = 2,
+							INPID_InputControl = "LabelControl",
+							LINKS_Name = "Ellipse Controls",
+						
+							IC_Visible = false,
+							INP_Passive = true,
+							INP_Default = 0,},
+						StarControls = {
+							ICS_ControlPage = "Controls",
+							INP_Integer = false,
+							LBLC_DropDownButton = true,
+							LINKID_DataType = "Number",
+							LBLC_NumInputs = 5,
+							LBLC_NestLevel = 2,
+							INPID_InputControl = "LabelControl",
+							LINKS_Name = "Star Controls",
+						
+							IC_Visible = false,
+							INP_Passive = true,
+							INP_Default = 0,},
+						FootageControls = {
+							ICS_ControlPage = "Controls",
+							INP_Integer = false,
+							LBLC_DropDownButton = true,
+							LINKID_DataType = "Number",
+							LBLC_NumInputs = 4,
+							LBLC_NestLevel = 1,
+							INPID_InputControl = "LabelControl",
+							LINKS_Name = "Footage Controls",
+						
+							INP_Default = 0,},
+						LayerControls = {
+							ICS_ControlPage = "Controls",
+							INP_MaxAllowed = 1000000,
+							INP_Integer = false,
+							LBLC_DropDownButton = true,
+							INPID_InputControl = "LabelControl",
+							LBLC_NumInputs = 55,
+							INP_MaxScale = 1,
+							INP_MinScale = 0,
+							INP_MinAllowed = -1000000,
+							LINKID_DataType = "Number",
+							LBLC_NestLevel = 1,
+							INP_SplineType = "Default",
+							LINKS_Name = "Layer Controls",
+						
+							INP_Default = 0,},
+						OutlineControls = {
+							ICS_ControlPage = "Controls",
+							INP_MaxAllowed = 1000000,
+							INP_Integer = false,
+							LBLC_DropDownButton = true,
+							INPID_InputControl = "LabelControl",
+							LBLC_NumInputs = 8,
+							INP_MaxScale = 1,
+							INP_MinScale = 0,
+							INP_MinAllowed = -1000000,
+							LINKID_DataType = "Number",
+							LBLC_NestLevel = 2,
+							INP_SplineType = "Default",
+							LINKS_Name = "Outline Controls",
+						
+							INP_Default = 0,},
+						OutlineCopy1 = {
+							ICS_ControlPage = "Controls",
+							INP_MaxAllowed = 1000000,
+							INP_Integer = false,
+							LBLC_DropDownButton = true,
+							INPID_InputControl = "LabelControl",
+							LBLC_NumInputs = 10,
+							INP_MaxScale = 1,
+							INP_MinScale = 0,
+							INP_MinAllowed = -1000000,
+							LINKID_DataType = "Number",
+							LBLC_NestLevel = 2,
+							INP_SplineType = "Default",
+							LINKS_Name = "Outline Copy 1",
+						
+							INP_Default = 0,},
+						OutlineControl2 = {
+							ICS_ControlPage = "Controls",
+							INP_MaxAllowed = 1000000,
+							INP_Integer = false,
+							LBLC_DropDownButton = true,
+							INPID_InputControl = "LabelControl",
+							LBLC_NumInputs = 10,
+							INP_MaxScale = 1,
+							INP_MinScale = 0,
+							INP_MinAllowed = -1000000,
+							LINKID_DataType = "Number",
+							LBLC_NestLevel = 2,
+							INP_SplineType = "Default",
+							LINKS_Name = "Outline Copy 2",
+						
+							INP_Default = 0,},
+						DisplaceControls = {
+							ICS_ControlPage = "Controls",
+							INP_MaxAllowed = 1000000,
+							INP_Integer = false,
+							LBLC_DropDownButton = true,
+							INPID_InputControl = "LabelControl",
+							LBLC_NumInputs = 6,
+							INP_MaxScale = 1,
+							INP_MinScale = 0,
+							INP_MinAllowed = -1000000,
+							LINKID_DataType = "Number",
+							LBLC_NestLevel = 2,
+							INP_SplineType = "Default",
+							LINKS_Name = "Displace Controls",
+						
+							INP_Default = 0,},
+						ShapeCopy = {
+							ICS_ControlPage = "Controls",
+							INP_MaxAllowed = 1000000,
+							INP_Integer = false,
+							LBLC_DropDownButton = true,
+							INPID_InputControl = "LabelControl",
+							LBLC_NumInputs = 16,
+							INP_MaxScale = 1,
+							INP_MinScale = 0,
+							INP_MinAllowed = -1000000,
+							LINKID_DataType = "Number",
+							LBLC_NestLevel = 2,
+							INP_SplineType = "Default",
+							LINKS_Name = "Shape Copy",
+						
+							INP_Default = 0,},
+						OutlineImage = {
+							ICS_ControlPage = "Controls",
+							INP_MaxAllowed = 1000000,
+							INP_Integer = false,
+							LBLC_DropDownButton = true,
+							INPID_InputControl = "LabelControl",
+							LBLC_NumInputs = 5,
+							INP_MaxScale = 1,
+							INP_MinScale = 0,
+							INP_MinAllowed = -1000000,
+							LINKID_DataType = "Number",
+							LBLC_NestLevel = 0,
+							INP_SplineType = "Default",
+							LINKS_Name = "Outline Image",
+						
+							INP_Default = 0,},
+						DropShadowControls = {
+							ICS_ControlPage = "Controls",
+							INP_Integer = false,
+							LBLC_DropDownButton = true,
+							LINKID_DataType = "Number",
+							LBLC_NumInputs = 4,
+							LBLC_NestLevel = 1,
+							INPID_InputControl = "LabelControl",
+							LINKS_Name = "Drop Shadow Controls",
+						
+							INP_Default = 0,},
+}
+				},
+				Footage_XF = Transform {
+					CtrlWShown = false,
+					NameSet = true,
+					Inputs = {
+						Size = Input { Value = 0.6, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 770, 16.5 } },
+				
+					},
+				Merge1 = Merge {
+					CtrlWShown = false,
+					Inputs = {
+						Background = Input {
+							SourceOp = "Merge2",
+							Source = "Output",
+						},
+						Foreground = Input {
+							SourceOp = "Layer_Outlines",
+							Source = "Output",
+						},
+						Operator = Input { Value = FuID { "Mask" }, },
+						PerformDepthMerge = Input { Value = 0, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 605, 49.5 } },
+				},
+				Merge2 = Merge {
+					CtrlWShown = false,
+					Inputs = {
+						Background = Input {
+							SourceOp = "NullBG",
+							Source = "Output",
+						},
+						Foreground = Input {
+							SourceOp = "Transform1",
+							Source = "Output",
+						},
+						PerformDepthMerge = Input { Value = 0, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 605, 16.5 } },
+				},
+				Dissolve1 = Dissolve {
+					Transitions = {
+						[0] = "DFTDissolve"
+					},
+					CtrlWShown = false,
+					Inputs = {
+						Background = Input {
+							SourceOp = "Layer_Outlines",
+							Source = "Output",
+						},
+						Foreground = Input {
+							SourceOp = "Merge1",
+							Source = "Output",
+						},
+						Mix = Input { Value = 0, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 605, 82.5 } },
+					UserControls = ordered() {
+						Mix = {
+							ICS_ControlPage = "Controls",
+							INP_MaxAllowed = 1,
+							INP_Integer = false,
+							INPID_InputControl = "CheckboxControl",
+							INP_MaxScale = 1,
+							INP_Default = 1,
+							INP_MinScale = 0,
+							INP_MinAllowed = 0,
+							LINKID_DataType = "Number",
+							CBC_TriState = false,
+							INP_SplineType = "Default",
+							LINKS_Name = "Background/Foreground",
+						}
+}
+				},
+				Transform1 = Transform {
+					CtrlWShown = false,
+					Inputs = {
+						Input = Input {
+							SourceOp = "Loader1",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 605, -16.5 } },
+				
+					},
+				Switch2 = Switch {
+					CtrlWShown = false,
+					Inputs = {
+						Name0 = Input { Value = "Outline", },
+						Input0 = Input {
+							SourceOp = "Copy_sOutline",
+							Source = "Output",
+						},
+						Name1 = Input { Value = "Solid", },
+						Input1 = Input {
+							SourceOp = "Shape_XF",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 275, 247.5 } },
+					Colors = { TileColor = { R = 0.584313725490196, G = 0.294117647058824, B = 0.803921568627451 }, }
+				
+					},
+				sRender1 = sRender {
+					ExtentSet = true,
+					CtrlWShown = false,
+					Inputs = {
+						GlobalIn = Input { Value = -9999, },
+						GlobalOut = Input { Value = 99999, },
+						Width = Input { Value = 1920, },
+						Height = Input { Value = 1080, },
+						UseFrameFormatSettings = Input { Value = 1, },
+						["Gamut.SLogVersion"] = Input { Value = FuID { "SLog2" }, },
+						Input = Input {
+							SourceOp = "ShapeCopy_Color",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 275, 148.5 } },
+				},
+				ShapeCopy_Color = sBoolean {
+					CtrlWShown = false,
+					NameSet = true,
+					Inputs = {
+						Input1 = Input {
+							SourceOp = "CopyXF",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 275, 181.5 } },
+				
+					},
+				OutlinesMerge = sMerge {
+					CtrlWShown = false,
+					NameSet = true,
+					Inputs = {
+						Input1 = Input {
+							SourceOp = "Outline3_Color",
+							Source = "Output",
+						},
+						Input2 = Input {
+							SourceOp = "Outline2_Color",
+							Source = "Output",
+						},
+						Input3 = Input {
+							SourceOp = "Outline1_Color",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 385, 214.5 } },
+				},
+				Outline1_Color = sChangeStyle {
+					CtrlWShown = false,
+					NameSet = true,
+					Inputs = {
+						Input = Input {
+							SourceOp = "Outline1_sOutline",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 385, 346.5 } },
+					UserControls = ordered() {
+						Opacity = {
+							ICS_ControlPage = "Controls",
+							INP_MaxAllowed = 1000000,
+							INP_Integer = false,
+							INPID_InputControl = "CheckboxControl",
+							INP_MaxScale = 1,
+							INP_Default = 1,
+							INP_MinScale = 0,
+							INP_MinAllowed = -1000000,
+							LINKID_DataType = "Number",
+							CBC_TriState = false,
+							INP_SplineType = "Default",
+							LINKS_Name = "Opacity",
+						},
+}
+				},
+				Outline2_Color = sChangeStyle {
+					CtrlWShown = false,
+					NameSet = true,
+					Inputs = {
+						Input = Input {
+							SourceOp = "Outline2_sOutline",
+							Source = "Output",
+						},
+						Opacity = Input { Value = 0, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 385, 379.5 } },
+					UserControls = ordered() {
+						Opacity = {
+							ICS_ControlPage = "Controls",
+							INP_MaxAllowed = 1000000,
+							INP_Integer = false,
+							INPID_InputControl = "CheckboxControl",
+							INP_MaxScale = 1,
+							INP_Default = 1,
+							INP_MinScale = 0,
+							INP_MinAllowed = -1000000,
+							LINKID_DataType = "Number",
+							CBC_TriState = false,
+							INP_SplineType = "Default",
+							LINKS_Name = "Opacity",
+						},
+}
+				},
+				Outline3_Color = sChangeStyle {
+					CtrlWZoom = false,
+					CtrlWShown = false,
+					NameSet = true,
+					Inputs = {
+						Input = Input {
+							SourceOp = "Outline3_sOutline",
+							Source = "Output",
+						},
+						Opacity = Input { Value = 0, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 385, 412.5 } },
+					UserControls = ordered() {
+						Opacity = {
+							ICS_ControlPage = "Controls",
+							INP_MaxAllowed = 1000000,
+							INP_Integer = false,
+							INPID_InputControl = "CheckboxControl",
+							INP_MaxScale = 1,
+							INP_Default = 1,
+							INP_MinScale = 0,
+							INP_MinAllowed = -1000000,
+							LINKID_DataType = "Number",
+							CBC_TriState = false,
+							INP_SplineType = "Default",
+							LINKS_Name = "Opacity",
+						},
+}
+				}
+			},
+		},
+		Publish = PublishNumber {
+			CtrlWZoom = false,
+			CustomData = {
+				Path = {
+					Map = {
+						["Setting:"] = "/Users/patrick/Desktop/MACRO MACHINE/FusionMacroReorderer/"
+					}
+				},
+			},
+			Inputs = {
+				Value = Input { Value = 1, }
+			},
+		},
+		Publish2 = PublishNumber {
+			CtrlWZoom = false,
+			CustomData = {
+				Path = {
+					Map = {
+						["Setting:"] = "/Users/patrick/Desktop/MACRO MACHINE/FusionMacroReorderer/"
+					}
+				},
+			},
+			Inputs = {
+				Value = Input { Value = 0.557, }
+			},
+		}
+	}
+}

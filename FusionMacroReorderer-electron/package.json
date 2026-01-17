@@ -1,0 +1,54 @@
+{
+  "name": "fusion-macro-reorderer-electron",
+  "version": "0.2.11",
+  "description": "Desktop wrapper for Macro Machine",
+  "main": "main.js",
+  "dependencies": {
+    "archiver": "^5.3.2",
+    "electron-updater": "^6.2.1",
+    "yauzl": "^2.10.0"
+  },
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.stirlingsupply.macromachine",
+    "productName": "Macro Machine",
+    "files": [
+      "**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../FusionMacroReorderer",
+        "to": "FusionMacroReorderer",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.video",
+      "hardenedRuntime": true,
+      "entitlements": "entitlements.plist",
+      "entitlementsInherit": "entitlements.plist",
+      "gatekeeperAssess": false
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "PatrickStirling",
+        "repo": "MacroMachine",
+        "releaseType": "release"
+      }
+    ]
+  }
+}

@@ -1,0 +1,28 @@
+# Node / Electron
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build output
+dist/
+out/
+build/
+
+# Electron-builder artifacts
+*.dmg
+*.exe
+*.msi
+*.blockmap
+latest.yml
+latest-mac.yml
+
+# Signing keys / certificates
+*.p12
+*.pfx
+*.key
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Stirling Supply Co Macro Machine</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main>
+      <section id="introPanel" class="intro-panel">
+        <div class="intro-grid">
+          <section class="title-panel" id="titlePanel">
+            <h1 id="appTitle">Macro Machine</h1>
+            <p id="appSubtitle"></p>
+          </section>
+          <section id="macroExplorerMini" class="macro-explorer-mini">
+            <header class="macro-explorer-mini-header">
+              <div>
+                <h2>Template Folders</h2>
+                <p>Select a folder for Export to Edit Page.</p>
+              </div>
+              <button id="openExplorerBtn" type="button">Open Macro Explorer</button>
+            </header>
+            <iframe id="macroExplorerMiniFrame" title="Template folders" src="explorer.html?mode=folders"></iframe>
+          </section>
+          <section class="file-loader drop-zone" id="dropZone" aria-label="Drop .setting file here">
+            <label for="fileInput" class="file-label">Select or drop a .setting file</label>
+            <div class="file-actions">
+              <input type="file" id="fileInput" accept=".setting,.setting.txt,.txt" />
+              <button id="importClipboardBtn" type="button">Import from clipboard</button>
+            </div>
+            <div class="file-info" id="fileInfo">No file loaded</div>
+            <div class="drop-hint" id="dropHint">Drop file here...</div>
+          </section>
+        </div>
+      </section>
+      <div id="introToggleBar" class="intro-toggle-bar">
+        <button id="introToggleBtn" class="intro-toggle-btn" type="button" aria-label="Toggle import and explorer panel">
+          <span class="hamburger-line"></span>
+          <span class="hamburger-line"></span>
+          <span class="hamburger-line"></span>
+        </button>
+      </div>
+      <div id="docTabsWrap" class="doc-tabs-wrap" hidden>
+        <button id="docTabsPrev" class="doc-tabs-scroll" type="button" aria-label="Scroll tabs left">&lt;</button>
+        <div id="docTabs" class="doc-tabs"></div>
+        <button id="docTabsNext" class="doc-tabs-scroll" type="button" aria-label="Scroll tabs right">&gt;</button>
+      </div>
+      <div id="docExportPath" class="doc-export-path" hidden></div>
+
+      <section id="macroExplorerPanel" class="macro-explorer-panel" hidden>
+        <header class="macro-explorer-header">
+          <h2>Macro Explorer</h2>
+          <button id="closeExplorerPanelBtn" class="macro-explorer-close" type="button">Close</button>
+        </header>
+        <iframe id="macroExplorerFrame" title="Macro Explorer" src="explorer.html"></iframe>
+      </section>
+
+      <section class="controls" id="controlsSection" hidden>
+        <div class="split">
+          <div class="pane pane-left">
+            <div class="meta">
+              <div><span id="macroName" class="macro-name"></span></div>
+              <div><strong>Controls found:</strong> <span id="ctrlCount">0</span></div>
+              <div class="operator-select">
+                <strong>Operator:</strong>
+                <select id="operatorType">
+                  <option value="GroupOperator">GroupOperator</option>
+                  <option value="MacroOperator">MacroOperator</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="actions">
+              <div class="actions-row">
+                <button id="deselectAllBtn" type="button" disabled>Clear selection</button>
+                <button id="resetOrder" type="button" disabled>Reset to original order</button>
+                <button id="removeSelected" type="button" disabled>Remove selected</button>
+              </div>
+              <div class="actions-row">
+                <button id="removeCommonPageBtn" type="button" disabled>Remove Settings page</button>
+                <div class="export-menu-wrap">
+                  <button id="exportMenuBtn" type="button" disabled>Export as...</button>
+                  <div id="exportMenu" class="export-menu" hidden></div>
+                </div>
+                <button id="exportClipboardBtn" type="button" disabled hidden>Export to clipboard</button>
+                <button id="exportBtn" type="button" disabled hidden>Export reordered .setting</button>
+                <button id="exportTemplatesBtn" type="button" disabled hidden>Export to Edit Page</button>
+              </div>
+            </div>
+
+            <div class="list-wrapper">
+              <div class="editor-actions">
+                <button id="openCatalogEditorBtn" type="button" hidden>Catalog Editor (temp)</button>
+              </div>
+              <h2>Published Controls</h2>
+              <div class="nodes-toolbar"><div class="toolbar-left"><input type="text" id="publishedSearch" placeholder="Search published controls" /></div></div>
+              <div class="page-tabs" id="pageTabs" hidden></div>
+              <ul id="controlsList" class="list" aria-label="Published Controls"></ul></div></div>
+
+          <div class="pane pane-right" id="nodesPane">
+            <h2>Nodes</h2>
+            <div class="nodes-toolbar">
+              <div class="toolbar-left">
+                <input type="text" id="nodesSearch" placeholder="Search nodes and controls" />
+              </div>
+              <div class="toolbar-right">
+                <label style="display:inline-flex;align-items:center;gap:6px;">
+                  <input type="checkbox" id="hideReplaced" />
+                  Hide replaced controls
+                </label>
+              </div>
+            </div>
+            <div class="nodes-utility-row" hidden>
+              <button id="addUtilityNodeBtn" type="button" disabled>Add Utility Node</button>
+              <label class="utility-toggle">
+                <input type="checkbox" id="autoUtilityNode" />
+                Auto-add Utility node
+              </label>
+            </div>
+            <div class="nodes-actions">
+              <button id="publishSelectedBtn" type="button" disabled>Publish Selected</button>
+              <button id="clearNodeSelectionBtn" type="button" disabled>Clear Selection</button>
+            </div>
+            <div id="nodesList" class="nodes-list"></div>
+            <div id="addControlModal" class="add-control-modal" hidden>
+              <form id="addControlForm" class="add-control-form" role="dialog" aria-modal="true" aria-labelledby="addControlTitle">
+                <header>
+                  <div>
+                    <p class="eyebrow">Add control to</p>
+                    <h3 id="addControlTitle"></h3>
+                  </div>
+                  <button type="button" id="addControlCloseBtn" aria-label="Close add control dialog">&times;</button>
+                </header>
+                <div class="form-body">
+                  <label>
+                    Control name
+                    <input type="text" id="addControlName" required placeholder="Enter a label or button name" />
+                  </label>
+                  <label>
+                    Control type
+                    <select id="addControlType">
+                      <option value="label">Label</option>
+                      <option value="separator">Separator</option>
+                      <option value="button">Button</option>
+                      <option value="slider">Slider</option>
+                      <option value="screw">Screw</option>
+                    </select>
+                  </label>
+                  <div class="label-options" id="addLabelOptions">
+                    <div class="field-row">
+                      <label>
+                        Label count
+                        <input type="number" id="addControlLabelCount" min="0" step="1" value="0" />
+                      </label>
+                      <label>
+                        Default state
+                        <select id="addControlLabelDefault">
+                          <option value="open">Open</option>
+                          <option value="closed">Closed</option>
+                        </select>
+                      </label>
+                    </div>
+                  </div>
+                  <label>
+                    Page
+                    <input type="text" id="addControlPage" list="addControlPageOptions" placeholder="Controls" />
+                    <datalist id="addControlPageOptions"></datalist>
+                  </label>
+                  <p class="form-hint">Pages help organize controls in Fusion. Leave blank for the default Controls page.</p>
+                </div>
+                <div id="addControlError" class="form-error" role="alert"></div>
+                <footer>
+                  <button type="button" id="addControlCancelBtn">Cancel</button>
+                  <button type="submit" id="addControlSubmitBtn" class="primary">Add control</button>
+                </footer>
+              </form>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="messages" id="messages"></section>
+      <aside id="detailDrawer" class="detail-drawer" hidden aria-label="Control details">
+        <header class="detail-drawer-header">
+          <div>
+            <h3 id="detailDrawerTitle">Control Details</h3>
+            <p id="detailDrawerSubtitle" class="detail-drawer-subtitle">Select a control to view details.</p>
+          </div>
+          <button type="button" id="detailDrawerToggleBtn" class="detail-drawer-toggle" aria-label="Hide details">
+            <span class="icon">&rsaquo;</span>
+          </button>
+        </header>
+        <div class="detail-drawer-body" id="detailDrawerBody">
+          <p class="detail-placeholder">Select a published control to see its metadata and advanced options.</p>
+        </div>
+      </aside>
+      <aside id="codePane" class="code-pane" aria-label="Macro source">
+        <header class="code-pane-header">
+          <div>
+            <h2>Macro Source</h2>
+            <p class="code-pane-note">Live view of the imported .setting</p>
+          </div>
+          <label class="pane-switch" aria-label="Toggle macro source visibility">
+            <input type="checkbox" id="codePaneToggle" checked />
+            <span class="slider" aria-hidden="true"></span>
+            <span class="label">Show macro source</span>
+          </label>
+        </header>
+        <div class="code-pane-body" id="codePaneBody">
+          <pre id="codeView" class="code-view" tabindex="0" aria-label="Macro source" spellcheck="false"></pre>
+        </div>
+      </aside>
+      <div class="diagnostics-controls">
+        <label class="diag-switch">
+          <input type="checkbox" id="toggleDiagnosticsBtn" />
+          <span class="slider" aria-hidden="true"></span>
+          <span class="label">Show diagnostics</span>
+        </label>
+      </div>
+      <section class="diagnostics" id="diagnostics" hidden></section>
+      <section class="catalog-editor-overlay" id="catalogEditor" hidden>
+        <div class="catalog-editor-panel">
+          <header class="catalog-editor-header">
+            <div>
+              <h2>Catalog Editor</h2>
+              <p class="catalog-editor-note">Temporary tool to reorder default controls in Fusion catalogs.</p>
+            </div>
+            <button type="button" id="closeCatalogEditorBtn" aria-label="Close catalog editor">Close</button>
+          </header>
+          <div class="catalog-editor-body">
+            <div class="catalog-editor-toolbar">
+              <label>
+                Dataset
+                <select id="catalogDatasetSelect">
+                  <option value="nodes">Node Catalog</option>
+                  <option value="modifiers">Modifier Catalog</option>
+                </select>
+              </label>
+              <label>
+                Search Types
+                <input type="text" id="catalogTypeSearch" placeholder="Search tool type" />
+              </label>
+              <button type="button" id="catalogDownloadBtn">Download JSON</button>
+            </div>
+            <div class="catalog-editor-columns">
+              <div class="catalog-types">
+                <h3>Types</h3>
+                <ul id="catalogTypeList"></ul>
+              </div>
+              <div class="catalog-controls">
+                <h3>Controls</h3>
+                <p id="catalogEmptyState" class="catalog-empty-state">Select a type to edit its default controls.</p>
+                <ul id="catalogControlList" hidden></ul>
+              </div>
+            </div>
+          </div>
+          <footer class="catalog-editor-footer">
+            <small>Edits export as JSON files. Replace your local catalog files to apply permanently.</small>
+          </footer>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <small>
+        Works offline. No uploads. All parsing happens locally in your browser.
+      </small>
+    </footer>
+
+    <script type="module" src="main.js"></script>
+  </body>
+  </html>
