@@ -17,7 +17,7 @@ jobs:
         os: [windows-latest, macos-latest]
     defaults:
       run:
-        working-directory: MACRO MACHINE/FusionMacroReorderer-electron
+        working-directory: FusionMacroReorderer-electron
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,7 +27,7 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: MACRO MACHINE/FusionMacroReorderer-electron/package-lock.json
+          cache-dependency-path: FusionMacroReorderer-electron/package-lock.json
 
       - name: Install dependencies
         run: npm ci
