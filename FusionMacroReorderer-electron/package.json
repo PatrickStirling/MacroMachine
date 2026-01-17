@@ -1,6 +1,6 @@
 {
   "name": "fusion-macro-reorderer-electron",
-  "version": "0.2.15",
+  "version": "0.2.16",
   "description": "Desktop wrapper for Macro Machine",
   "main": "main.js",
   "dependencies": {
@@ -38,7 +38,9 @@
       "entitlements": "entitlements.plist",
       "entitlementsInherit": "entitlements.plist",
       "gatekeeperAssess": false,
-      "notarize": {}
+      "notarize": {
+        "teamId": "GK88Z35UG6"
+      }
     },
     "win": {
       "target": "nsis"
