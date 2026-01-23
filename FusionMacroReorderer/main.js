@@ -4325,7 +4325,8 @@ async function handleFile(file) {
       exportOrder.forEach(i => {
         const entry = result.entries[i];
         if (!entry) return;
-        const raw = applyEntryOverrides(entry, applyNameIfEdited(entry, eol), eol);
+        let raw = applyEntryOverrides(entry, applyNameIfEdited(entry, eol), eol);
+        raw = ensureInstanceInputKey(raw, entry);
         let chunk = reindent(raw, entryIndent, eol);
         if (!chunk || !chunk.trim().length) return;
         chunk = ensureTrailingComma(chunk);
@@ -7198,6 +7199,33 @@ function applyBlendCheckboxesToTool(text, bounds, toolName, controls, eol, resul
     return out;
   }
 
+  function isKeyLikelyValid(key) {
+    if (!key) return false;
+    const trimmed = String(key).trim();
+    if (!trimmed) return false;
+    return /[A-Za-z0-9_]/.test(trimmed);
+  }
+
+  function deriveFallbackEntryKey(entry) {
+    if (!entry) return '';
+    if (isKeyLikelyValid(entry.key)) return entry.key;
+    const base = (entry.sourceOp && entry.source)
+      ? `${entry.sourceOp}_${entry.source}`
+      : (entry.source || entry.name || entry.displayName || 'Input');
+    return makeUniqueKey(base);
+  }
+
+  function ensureInstanceInputKey(raw, entry) {
+    if (!raw) return raw;
+    const match = raw.match(/^(\s*)([^\s=]+)\s*=\s*InstanceInput\b/);
+    if (!match) return raw;
+    const currentKey = match[2] || '';
+    if (isKeyLikelyValid(currentKey)) return raw;
+    const fallback = deriveFallbackEntryKey(entry);
+    if (!fallback) return raw;
+    return raw.replace(/^(\s*)([^\s=]+)\s*=\s*InstanceInput\b/, `$1${fallback} = InstanceInput`);
+  }
+
 
 
   function reindent(raw, indent, eol) {
@@ -8280,6 +8308,15 @@ end
       }
       missingControls.forEach(ctrl => {
         issues.push({ type: 'control', control: ctrl, message: `Published control "${ctrl}" has no matching UserControls entry.` });
+      });
+      const invalidKeys = [];
+      for (const entry of (state.parseResult.entries || [])) {
+        if (!entry) continue;
+        if (isKeyLikelyValid(entry.key)) continue;
+        invalidKeys.push(`${entry.sourceOp || '?'}:${entry.source || '?'} (${entry.key || 'blank'})`);
+      }
+      invalidKeys.forEach(keyInfo => {
+        issues.push({ type: 'key', key: keyInfo, message: `Invalid InstanceInput key detected for ${keyInfo}.` });
       });
       state.validationIssues = issues;
       if (issues.length) {
