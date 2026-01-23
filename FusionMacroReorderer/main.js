@@ -15,6 +15,7 @@ import { createPublishedControls } from './src/publishedControls.js';
 import { createHistoryController } from './src/history.js';
 import { createNodesPane } from './src/nodesPane.js';
 import { createCatalogEditor } from './src/catalogEditor.js';
+import { buildLabelMarkup, normalizeLabelStyle, labelStyleEquals } from './src/labelMarkup.js';
 
 (() => {
   try {
@@ -1424,6 +1425,69 @@ import { createCatalogEditor } from './src/catalogEditor.js';
       defaultsField.appendChild(rangeRow);
     }
     detailDrawerBody.appendChild(defaultsField);
+    if (entry.isLabel) {
+      const styleField = document.createElement('div');
+      styleField.className = 'detail-field';
+      const styleLabel = document.createElement('label');
+      styleLabel.textContent = 'Style';
+      styleField.appendChild(styleLabel);
+      const styleRow = document.createElement('div');
+      styleRow.className = 'detail-style-row';
+      const currentStyle = normalizeLabelStyle(entry.labelStyle);
+      const makeToggle = (key, label) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'detail-style-toggle';
+        const active = !!currentStyle[key];
+        btn.classList.toggle('active', active);
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+        btn.textContent = label;
+        btn.addEventListener('click', () => {
+          setEntryLabelStyle(index, { [key]: !currentStyle[key] });
+        });
+        return btn;
+      };
+      styleRow.appendChild(makeToggle('bold', 'Bold'));
+      styleRow.appendChild(makeToggle('italic', 'Italic'));
+      styleRow.appendChild(makeToggle('underline', 'Underline'));
+      styleRow.appendChild(makeToggle('center', 'Center'));
+      styleField.appendChild(styleRow);
+      const colorRow = document.createElement('div');
+      colorRow.className = 'detail-style-color';
+      const colorToggle = document.createElement('input');
+      colorToggle.type = 'checkbox';
+      colorToggle.checked = !!currentStyle.color;
+      const colorLabel = document.createElement('span');
+      colorLabel.textContent = 'Color';
+      const colorInput = document.createElement('input');
+      colorInput.type = 'color';
+      colorInput.value = currentStyle.color || '#ffffff';
+      colorInput.disabled = !colorToggle.checked;
+      colorToggle.addEventListener('change', () => {
+        if (!colorToggle.checked) {
+          colorInput.disabled = true;
+          setEntryLabelStyle(index, { color: null });
+        } else {
+          colorInput.disabled = false;
+          setEntryLabelStyle(index, { color: colorInput.value });
+        }
+      });
+      colorInput.addEventListener('input', () => {
+        if (colorToggle.checked) {
+          setEntryLabelStyle(index, { color: colorInput.value });
+        }
+      });
+      colorInput.addEventListener('change', () => {
+        if (colorToggle.checked) {
+          setEntryLabelStyle(index, { color: colorInput.value });
+        }
+      });
+      colorRow.appendChild(colorToggle);
+      colorRow.appendChild(colorLabel);
+      colorRow.appendChild(colorInput);
+      styleField.appendChild(colorRow);
+      detailDrawerBody.appendChild(styleField);
+    }
     const onChangeHasValue = !!(entry.onChange && String(entry.onChange).trim());
     const onChangeSection = buildCollapsibleField('On-Change Script', onChangeHasValue);
     const onChangeBody = onChangeSection.body;
@@ -1574,6 +1638,23 @@ import { createCatalogEditor } from './src/catalogEditor.js';
         entry.raw = entry.raw.slice(0, open + 1) + body + entry.raw.slice(close);
       }
     }
+    renderDetailDrawer(index);
+    markContentDirty();
+  }
+
+  function setEntryLabelStyle(index, style) {
+    if (!state.parseResult || !Array.isArray(state.parseResult.entries)) return;
+    const entry = state.parseResult.entries[index];
+    if (!entry || !entry.isLabel) return;
+    const current = normalizeLabelStyle(entry.labelStyle);
+    const next = normalizeLabelStyle({ ...current, ...(style || {}) });
+    if (labelStyleEquals(current, next)) return;
+    const original = normalizeLabelStyle(entry.labelStyleOriginal);
+    pushHistory('label style');
+    entry.labelStyle = next;
+    entry.labelStyleDirty = !labelStyleEquals(original, next);
+    entry.labelStyleEdited = true;
+    renderList(state.parseResult.entries, state.parseResult.order);
     renderDetailDrawer(index);
     markContentDirty();
   }
@@ -3764,7 +3845,7 @@ async function handleFile(file) {
       codePaneRefreshTimer = null;
       try {
         const previousText = state.generatedText || '';
-        const rebuilt = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline);
+        const rebuilt = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, { commitChanges: false });
         state.lastDiffRange = computeDiffRange(previousText, rebuilt);
         updateCodeView(rebuilt);
         applyPendingHighlight();
@@ -4227,7 +4308,7 @@ async function handleFile(file) {
 
 
 
-  function rebuildContentWithNewOrder(original, result, eol) {
+  function rebuildContentWithNewOrder(original, result, eol, options = {}) {
     const { entries } = result;
     const exportOrder = getOrderedEntryIndices(result);
     try {
@@ -4246,7 +4327,7 @@ async function handleFile(file) {
     updated = applyLabelCountEdits(updated, result, eol);
     updated = applyLabelVisibilityEdits(updated, result, eol);
     updated = applyLabelDefaultStateEdits(updated, result, eol);
-    updated = applyUserControlPages(updated, result, eol);
+    updated = applyUserControlPages(updated, result, eol, options);
     // Safety: strip BTNCS_Execute from managed buttons unless explicitly clicked
     updated = stripUnclickedBtncs(updated, result, eol);
     // Insert exact launcher only for explicitly clicked controls
@@ -5391,10 +5472,8 @@ async function handleFile(file) {
       let body = text.slice(openIndex + 1, closeIndex);
       if (hidden) {
         body = upsertControlProp(body, 'IC_Visible', 'false', indent, eol);
-        body = upsertControlProp(body, 'INP_Passive', 'true', indent, eol);
       } else {
-        body = removeControlProp(body, 'IC_Visible');
-        body = removeControlProp(body, 'INP_Passive');
+        body = upsertControlProp(body, 'IC_Visible', 'true', indent, eol);
       }
       return text.slice(0, openIndex + 1) + body + text.slice(closeIndex);
     } catch (_) {
@@ -5925,7 +6004,7 @@ async function handleFile(file) {
           entry.labelHidden = false;
           continue;
         }
-        const hidden = /IC_Visible\s*=\s*false/.test(body) || /INP_Passive\s*=\s*true/.test(body);
+        const hidden = /IC_Visible\s*=\s*false/.test(body);
         entry.labelHidden = !!hidden;
       }
     } catch (_) {
@@ -5954,9 +6033,10 @@ async function handleFile(file) {
     } catch (_) {}
   }
 
-function applyUserControlPages(text, result, eol) {
+  function applyUserControlPages(text, result, eol, options = {}) {
     try {
       if (!result || !Array.isArray(result.entries) || !result.entries.length) return text;
+      const commitChanges = options.commitChanges !== false;
       let bounds = locateMacroGroupBounds(text, result);
       const perTool = new Map();
       const groupControls = new Map();
@@ -6042,7 +6122,8 @@ function applyUserControlPages(text, result, eol) {
         cfg.priority = pr;
       });
       out = ensureControlPagesDeclared(out, bounds, pageDefinitions, eol, result);
-      const nameRes = applyDisplayNameOverrides(out, result, bounds, eol, result);
+      bounds = locateMacroGroupBounds(out, result);
+      const nameRes = applyDisplayNameOverrides(out, result, bounds, eol, result, { commitChanges });
       out = nameRes.text;
       bounds = nameRes.bounds || bounds;
       let metaBounds = bounds;
@@ -6050,8 +6131,10 @@ function applyUserControlPages(text, result, eol) {
         const res = applyControlMetaOverride(out, item.entry, item.diff, metaBounds, eol, result);
         out = res.text;
         metaBounds = res.bounds || metaBounds;
-        item.entry.controlMetaOriginal = { ...(item.entry.controlMeta || {}) };
-        item.entry.controlMetaDirty = false;
+        if (commitChanges) {
+          item.entry.controlMetaOriginal = { ...(item.entry.controlMeta || {}) };
+          item.entry.controlMetaDirty = false;
+        }
       }
       bounds = metaBounds || bounds;
       out = reorderToolUserControlsBlocks(out, bounds, perToolOrder, eol, result);
@@ -6465,24 +6548,58 @@ function applyUserControlPages(text, result, eol) {
     }
   }
 
-  function applyDisplayNameOverrides(text, result, bounds, eol, resultRef) {
+  function applyDisplayNameOverrides(text, result, bounds, eol, resultRef, options = {}) {
     try {
       if (!result || !Array.isArray(result.entries)) return { text, bounds };
+      const commitChanges = options.commitChanges !== false;
       let updated = text;
       let currentBounds = bounds || locateMacroGroupBounds(text, resultRef);
       for (const entry of result.entries) {
         if (!entry || !entry.sourceOp || !entry.source) continue;
+        if (entry.isLabel) {
+          const nameText = entry.displayName || entry.displayNameOriginal || entry.name || entry.source || `${entry.sourceOp}.${entry.source}`;
+          const style = normalizeLabelStyle(entry.labelStyle);
+          const originalStyle = entry.labelStyleOriginal ? normalizeLabelStyle(entry.labelStyleOriginal) : style;
+          const styleChanged = !!entry.labelStyleEdited || !!entry.labelStyleDirty || !labelStyleEquals(style, originalStyle);
+          const nameChanged = !!entry.displayNameDirty;
+          if (!styleChanged && !nameChanged) {
+            if (commitChanges) {
+              entry.displayNameDirty = false;
+              entry.labelStyleDirty = false;
+              entry.labelStyleEdited = false;
+            }
+            continue;
+          }
+          const desiredMarkup = buildLabelMarkup(nameText, style);
+          const res = rewriteToolControlDisplayName(updated, currentBounds, entry.sourceOp, entry.source, desiredMarkup, eol || '\n', resultRef);
+          updated = res.text;
+          currentBounds = res.bounds || currentBounds;
+          if (!res.applied) continue;
+          if (commitChanges) {
+            entry.displayNameOriginal = nameText;
+            entry.displayNameDirty = false;
+            entry.labelStyleOriginal = { ...style };
+            entry.labelStyleDirty = false;
+            entry.labelStyleEdited = false;
+          }
+          continue;
+        }
         const desired = entry.displayName || entry.displayNameOriginal;
         const original = entry.displayNameOriginal || desired;
         if (!desired || desired === original) {
-          entry.displayNameDirty = false;
+          if (commitChanges) {
+            entry.displayNameDirty = false;
+          }
           continue;
         }
         const res = rewriteToolControlDisplayName(updated, currentBounds, entry.sourceOp, entry.source, desired, eol || '\n', resultRef);
         updated = res.text;
         currentBounds = res.bounds || currentBounds;
-        entry.displayNameOriginal = desired;
-        entry.displayNameDirty = false;
+        if (!res.applied) continue;
+        if (commitChanges) {
+          entry.displayNameOriginal = desired;
+          entry.displayNameDirty = false;
+        }
       }
       return { text: updated, bounds: currentBounds };
     } catch (_) {
@@ -6493,22 +6610,22 @@ function applyUserControlPages(text, result, eol) {
   function rewriteToolControlDisplayName(text, bounds, toolName, controlName, label, eol, resultRef) {
     try {
       let currentBounds = bounds || locateMacroGroupBounds(text, resultRef);
-      if (!currentBounds) return { text, bounds };
+      if (!currentBounds) return { text, bounds, applied: false };
       const tb = findToolBlockInGroup(text, currentBounds.groupOpenIndex, currentBounds.groupCloseIndex, toolName);
-      if (!tb) return { text, bounds: currentBounds };
+      if (!tb) return { text, bounds: currentBounds, applied: false };
       let uc = findUserControlsInTool(text, tb.open, tb.close);
       if (!uc) {
         const ensured = ensureToolUserControlsBlock(text, currentBounds, toolName, eol);
         text = ensured.text;
         currentBounds = locateMacroGroupBounds(text, resultRef) || currentBounds;
         uc = ensured.ucBlock || (tb ? findUserControlsInTool(text, tb.open, tb.close) : null);
-        if (!uc) return { text, bounds: currentBounds };
+        if (!uc) return { text, bounds: currentBounds, applied: false };
       }
       let ensuredBlock = ensureControlBlockInUserControls(text, uc, controlName, eol);
       text = ensuredBlock.text;
       if (ensuredBlock.uc) uc = ensuredBlock.uc;
       const block = ensuredBlock.block || findControlBlockInUc(text, uc.open, uc.close, controlName);
-      if (!block) return { text, bounds: currentBounds };
+      if (!block) return { text, bounds: currentBounds, applied: false };
       const indent = (getLineIndent(text, block.open) || '') + '\t';
       let body = text.slice(block.open + 1, block.close);
       const newline = eol || '\n';
@@ -6516,9 +6633,9 @@ function applyUserControlPages(text, result, eol) {
       else body = removeControlProp(body, 'LINKS_Name');
       const updated = text.slice(0, block.open + 1) + body + text.slice(block.close);
       const newBounds = locateMacroGroupBounds(updated, resultRef) || currentBounds;
-      return { text: updated, bounds: newBounds };
+      return { text: updated, bounds: newBounds, applied: true };
     } catch (_) {
-      return { text, bounds };
+      return { text, bounds, applied: false };
     }
   }
 
@@ -7084,23 +7201,27 @@ function applyBlendCheckboxesToTool(text, bounds, toolName, controls, eol, resul
 
   function applyNameIfEdited(entry, eol) {
 
-    if (!entry || !entry.name) return entry.raw;
+    if (!entry) return entry?.raw;
 
     const raw = entry.raw;
+    if (!raw) return raw;
 
     const open = raw.indexOf('{');
-
     if (open < 0) return raw;
 
     const close = findMatchingBrace(raw, open);
-
     if (close < 0) return raw;
 
     const head = raw.slice(0, open + 1);
-
     const body = raw.slice(open + 1, close);
-
     const tail = raw.slice(close);
+
+    if (entry.isLabel) {
+      const cleaned = removeInstanceInputProp(body, 'Name');
+      return head + cleaned + tail;
+    }
+
+    if (!entry.name) return raw;
 
     const nameRe = /(^|[\s,])Name\s*=\s*"([^"]*)"/;
 

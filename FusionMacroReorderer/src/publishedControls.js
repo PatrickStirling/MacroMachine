@@ -1,4 +1,5 @@
 import { getLineIndent, findMatchingBrace, isSpace, isIdentStart, isIdentPart, humanizeName } from './textUtils.js';
+import { buildLabelMarkup, normalizeLabelStyle } from './labelMarkup.js';
 
 export function createPublishedControls({
   controlsList,
@@ -248,13 +249,21 @@ export function createPublishedControls({
     if ((entry.displayName || '') === nextDisplay) {
       entry.displayNameDirty = false;
       entry.displayNameOverride = trimmed ? trimmed : null;
-      entry.name = trimmed || null;
+      if (entry.isLabel) {
+        entry.name = null;
+      } else {
+        entry.name = trimmed || null;
+      }
       renderList(state.parseResult.entries, state.parseResult.order);
       return;
     }
     if (typeof pushHistory === 'function') pushHistory('rename control');
     entry.displayName = nextDisplay;
-    entry.name = trimmed || null;
+    if (entry.isLabel) {
+      entry.name = null;
+    } else {
+      entry.name = trimmed || null;
+    }
     entry.displayNameOverride = trimmed || null;
     entry.displayNameDirty = !!trimmed && nextDisplay !== (entry.displayNameOriginal || fallback);
     renderList(state.parseResult.entries, state.parseResult.order);
@@ -635,7 +644,12 @@ export function createPublishedControls({
       titleRow.className = 'title-row';
       const title = document.createElement('div');
       title.className = 'title';
-      title.textContent = e.displayName;
+      const titleText = e.displayName || e.name || e.source || 'Control';
+      if (e.isLabel) {
+        title.innerHTML = buildLabelMarkup(titleText, normalizeLabelStyle(e.labelStyle));
+      } else {
+        title.textContent = titleText;
+      }
       title.contentEditable = 'true';
       title.spellcheck = false;
       title.addEventListener('keydown', (ev) => {

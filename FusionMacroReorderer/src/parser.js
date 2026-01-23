@@ -7,6 +7,7 @@ import {
   humanizeName,
   isQuoteEscaped,
 } from './textUtils.js';
+import { parseLabelMarkup, normalizeLabelStyle } from './labelMarkup.js';
 
 export function parseSetting(text) {
   let blocks = findAllInputsBlocksWithInstanceInputs(text);
@@ -64,9 +65,25 @@ export function parseSetting(text) {
     if (!e.sourceOp || !e.source) continue;
     const key = `${e.sourceOp}.${e.source}`;
     const meta = labelMap.get(key);
+    const dispRaw = displayMap.get(key);
     if (meta) { e.isLabel = true; e.labelCount = meta.numInputs || 0; }
-    if (!e.name) {
-      const disp = displayMap.get(key) || humanizeName(e.source);
+    if (e.isLabel) {
+      let labelRaw = dispRaw;
+      if (!labelRaw && e.name && /<[^>]+>/.test(e.name)) labelRaw = e.name;
+      if (labelRaw) {
+        const parsed = parseLabelMarkup(labelRaw);
+        e.displayName = parsed.text || labelRaw;
+        e.labelStyle = normalizeLabelStyle(parsed.style);
+        e.labelStyleOriginal = { ...e.labelStyle };
+      } else if (!e.displayName) {
+        e.displayName = e.name || dispRaw || humanizeName(e.source);
+      }
+      if (!e.labelStyle) {
+        e.labelStyle = normalizeLabelStyle(null);
+        e.labelStyleOriginal = { ...e.labelStyle };
+      }
+    } else if (!e.name) {
+      const disp = dispRaw || humanizeName(e.source);
       if (disp) e.displayName = disp;
     }
     const fallback = e.displayName || e.name || `${e.sourceOp || ''}${e.source ? '.' + e.source : ''}`;
