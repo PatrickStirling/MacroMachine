@@ -16,6 +16,7 @@ import { createHistoryController } from './src/history.js';
 import { createNodesPane } from './src/nodesPane.js';
 import { createCatalogEditor } from './src/catalogEditor.js';
 import { buildLabelMarkup, normalizeLabelStyle, labelStyleEquals } from './src/labelMarkup.js';
+import { highlightLua } from './src/luaHighlighter.js';
 
 (() => {
   try {
@@ -798,14 +799,13 @@ import { buildLabelMarkup, normalizeLabelStyle, labelStyleEquals } from './src/l
   try {
     window.addEventListener('beforeunload', (ev) => {
       try {
+        if (IS_ELECTRON) return;
         if (!documents.length) return;
         const dirty = documents.some(doc => doc && doc.isDirty);
         if (!dirty) return;
-        const ok = window.confirm('Close without exporting? Unsaved changes will be lost.');
-        if (!ok) {
-          ev.preventDefault();
-          ev.returnValue = '';
-        }
+        // Use the native unload confirmation dialog instead of window.confirm.
+        ev.preventDefault();
+        ev.returnValue = '';
       } catch (_) {}
     });
   } catch (_) {}
@@ -846,6 +846,7 @@ import { buildLabelMarkup, normalizeLabelStyle, labelStyleEquals } from './src/l
   const controlsList = document.getElementById('controlsList');
 
   const publishedSearch = document.getElementById('publishedSearch');
+  const showCurrentValuesToggle = document.getElementById('showCurrentValues');
   const pageTabsEl = document.getElementById('pageTabs');
 
   // Nodes pane elements
@@ -895,6 +896,7 @@ import { buildLabelMarkup, normalizeLabelStyle, labelStyleEquals } from './src/l
   let codeHighlightActive = false;
   let activeDetailEntryIndex = null;
   let renderIconHtml = () => '';
+  let showCurrentValues = !!(showCurrentValuesToggle && showCurrentValuesToggle.checked);
   const pushHistory = (...args) => {
     historyController?.pushHistory?.(...args);
     if (!suppressDocDirty) markActiveDocumentDirty();
@@ -1232,6 +1234,835 @@ import { buildLabelMarkup, normalizeLabelStyle, labelStyleEquals } from './src/l
     detailDrawerCollapsed = false;
   }
 
+  function isLuaIdentifier(value) {
+    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(String(value || ''));
+  }
+
+  function extractToolNamesAndTypesFromSetting(text, result) {
+    const names = new Set();
+    const types = new Map();
+    try {
+      if (!text) return { names, types };
+      const bounds = locateMacroGroupBounds(text, result);
+      if (!bounds) return { names, types };
+      const toolsPos = text.indexOf('Tools = ordered()', bounds.groupOpenIndex);
+      if (toolsPos < 0 || toolsPos > bounds.groupCloseIndex) return { names, types };
+      const open = text.indexOf('{', toolsPos);
+      if (open < 0) return { names, types };
+      const close = findMatchingBrace(text, open);
+      if (close < 0 || close > bounds.groupCloseIndex) return { names, types };
+      const inner = text.slice(open + 1, close);
+      let i = 0;
+      let depth = 0;
+      let inStr = false;
+      while (i < inner.length) {
+        const ch = inner[i];
+        if (inStr) { if (ch === '"' && !isQuoteEscaped(inner, i)) inStr = false; i++; continue; }
+        if (ch === '"') { inStr = true; i++; continue; }
+        if (ch === '{') { depth++; i++; continue; }
+        if (ch === '}') { depth--; i++; continue; }
+        if (depth === 0 && isIdentStart(ch)) {
+          const nameStart = i; i++;
+          while (i < inner.length && isIdentPart(inner[i])) i++;
+          const toolName = inner.slice(nameStart, i).trim();
+          if (isLuaIdentifier(toolName)) names.add(toolName);
+          while (i < inner.length && isSpace(inner[i])) i++;
+          if (inner[i] !== '=') { i++; continue; }
+          i++;
+          while (i < inner.length && isSpace(inner[i])) i++;
+          const typeStart = i;
+          while (i < inner.length && isIdentPart(inner[i])) i++;
+          const toolType = inner.slice(typeStart, i).trim();
+          if (toolName && toolType) types.set(toolName, toolType);
+          while (i < inner.length && isSpace(inner[i])) i++;
+          if (inner[i] !== '{') { i++; continue; }
+          const tOpen = i;
+          const tClose = findMatchingBrace(inner, tOpen);
+          if (tClose < 0) break;
+          i = tClose + 1;
+          continue;
+        }
+        i++;
+      }
+      return { names, types };
+    } catch (_) {
+      return { names, types };
+    }
+  }
+
+  function extractToolNamesFromSetting(text, result) {
+    return extractToolNamesAndTypesFromSetting(text, result).names;
+  }
+
+  function extractToolTypesFromSetting(text, result) {
+    return extractToolNamesAndTypesFromSetting(text, result).types;
+  }
+
+  function createLuaNameOverlay(getToolNames, getControlNames) {
+    return {
+      token(stream) {
+        if (stream.match('--')) {
+          stream.skipToEnd();
+          return null;
+        }
+        const ch = stream.peek();
+        if (ch === '"' || ch === "'") {
+          const quote = stream.next();
+          let escaped = false;
+          while (!stream.eol()) {
+            const c = stream.next();
+            if (escaped) {
+              escaped = false;
+              continue;
+            }
+            if (c === '\\') {
+              escaped = true;
+              continue;
+            }
+            if (c === quote) break;
+          }
+          return null;
+        }
+        if (stream.match('[[', false)) {
+          stream.match('[[', true);
+          if (!stream.skipTo(']]')) {
+            stream.skipToEnd();
+            return null;
+          }
+          stream.match(']]', true);
+          return null;
+        }
+        if (stream.match(/^[A-Za-z_][A-Za-z0-9_]*/)) {
+          const word = stream.current();
+          const tools = typeof getToolNames === 'function' ? getToolNames() : getToolNames;
+          if (tools && tools.has && tools.has(word)) return 'lua-tool';
+          const controls = typeof getControlNames === 'function' ? getControlNames() : getControlNames;
+          if (controls && controls.has && controls.has(word)) return 'lua-control';
+          return null;
+        }
+        stream.next();
+        return null;
+      },
+    };
+  }
+
+  function validateLuaBasic(source) {
+    const warnings = [];
+    const text = String(source || '');
+    if (!text.trim()) return warnings;
+    let i = 0;
+    let quote = null;
+    let inLong = false;
+    let longType = null;
+    let paren = 0;
+    let brace = 0;
+    let bracket = 0;
+    const blockStack = [];
+    const pushBlock = (token) => blockStack.push(token);
+    const popBlock = (token) => {
+      if (!blockStack.length) {
+        warnings.push(`Unexpected "${token}"`);
+        return;
+      }
+      const last = blockStack[blockStack.length - 1];
+      if (token === 'until') {
+        if (last === 'repeat') blockStack.pop();
+        else warnings.push('Found "until" without matching "repeat"');
+        return;
+      }
+      if (last === 'repeat') {
+        warnings.push('Found "end" but the last block is "repeat" (use "until")');
+        blockStack.pop();
+        return;
+      }
+      blockStack.pop();
+    };
+    while (i < text.length) {
+      const ch = text[i];
+      const next = text[i + 1];
+      if (inLong) {
+        if (ch === ']' && next === ']') {
+          inLong = false;
+          longType = null;
+          i += 2;
+          continue;
+        }
+        i += 1;
+        continue;
+      }
+      if (quote) {
+        if (ch === '\\') {
+          i += 2;
+          continue;
+        }
+        if (ch === quote) {
+          quote = null;
+          i += 1;
+          continue;
+        }
+        i += 1;
+        continue;
+      }
+      if (ch === '-' && next === '-') {
+        if (text[i + 2] === '[' && text[i + 3] === '[') {
+          inLong = true;
+          longType = 'comment';
+          i += 4;
+          continue;
+        }
+        while (i < text.length && text[i] !== '\n') i++;
+        continue;
+      }
+      if (ch === '[' && next === '[') {
+        inLong = true;
+        longType = 'string';
+        i += 2;
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        quote = ch;
+        i += 1;
+        continue;
+      }
+      if (ch === '(') paren++;
+      else if (ch === ')') paren--;
+      else if (ch === '{') brace++;
+      else if (ch === '}') brace--;
+      else if (ch === '[') bracket++;
+      else if (ch === ']') bracket--;
+      if (paren < 0) { warnings.push('Extra ")"'); paren = 0; }
+      if (brace < 0) { warnings.push('Extra "}"'); brace = 0; }
+      if (bracket < 0) { warnings.push('Extra "]"'); bracket = 0; }
+      if (isIdentStart(ch)) {
+        let j = i + 1;
+        while (j < text.length && isIdentPart(text[j])) j++;
+        const word = text.slice(i, j);
+        if (word === 'function' || word === 'if' || word === 'do' || word === 'repeat') {
+          pushBlock(word);
+        } else if (word === 'end') {
+          popBlock('end');
+        } else if (word === 'until') {
+          popBlock('until');
+        }
+        i = j;
+        continue;
+      }
+      i += 1;
+    }
+    if (quote) warnings.push('Unclosed string literal');
+    if (inLong) warnings.push(`Unclosed long ${longType || 'string'}`);
+    if (paren > 0) warnings.push('Unclosed ")"');
+    if (brace > 0) warnings.push('Unclosed "}"');
+    if (bracket > 0) warnings.push('Unclosed "]"');
+    if (blockStack.length) warnings.push('Missing "end" or "until"');
+    return warnings.slice(0, 3);
+  }
+
+  function renderLuaWarnings(container, warnings) {
+    if (!container) return;
+    const items = Array.isArray(warnings) ? warnings.filter(Boolean) : [];
+    container.innerHTML = '';
+    if (!items.length) {
+      container.hidden = true;
+      return;
+    }
+    container.hidden = false;
+    items.forEach((msg) => {
+      const row = document.createElement('div');
+      row.className = 'lua-warning';
+      row.textContent = msg;
+      container.appendChild(row);
+    });
+  }
+
+  function getLuaWordBounds(line, ch) {
+    let start = ch;
+    while (start > 0 && /[A-Za-z0-9_]/.test(line[start - 1])) start--;
+    let end = ch;
+    while (end < line.length && /[A-Za-z0-9_]/.test(line[end])) end++;
+    return { start, end, prefix: line.slice(start, ch) };
+  }
+
+  function collectLuaNameMap(getToolNames, getControlNames, getToolTypes) {
+    const map = new Map();
+    const addName = (name, type) => {
+      if (!name) return;
+      const key = String(name);
+      const existing = map.get(key);
+      if (!existing) map.set(key, { name: key, type });
+      else if (existing.type !== type) existing.type = 'both';
+    };
+    const tools = typeof getToolNames === 'function' ? getToolNames() : getToolNames;
+    if (tools && tools.forEach) tools.forEach((name) => addName(name, 'tool'));
+    const controls = typeof getControlNames === 'function' ? getControlNames() : getControlNames;
+    if (controls && controls.forEach) controls.forEach((name) => addName(name, 'control'));
+    const toolTypes = typeof getToolTypes === 'function' ? getToolTypes() : getToolTypes;
+    if (toolTypes && toolTypes.get) {
+      map.forEach((item) => {
+        if (item.type === 'tool' || item.type === 'both') {
+          const t = toolTypes.get(item.name);
+          if (t) item.toolType = t;
+        }
+      });
+    }
+    return map;
+  }
+
+  function getLuaAutocompleteItems(prefix, getToolNames, getControlNames, getToolTypes) {
+    if (!prefix) return [];
+    const lower = prefix.toLowerCase();
+    const map = collectLuaNameMap(getToolNames, getControlNames, getToolTypes);
+    const out = [];
+    map.forEach((item) => {
+      if (item.name.toLowerCase().startsWith(lower)) out.push(item);
+    });
+    out.sort((a, b) => a.name.localeCompare(b.name));
+    return out.slice(0, 8);
+  }
+
+  function createLuaAutocompleteMenu(wrapper, onSelect) {
+    const menu = document.createElement('div');
+    menu.className = 'lua-autocomplete';
+    menu.hidden = true;
+    const list = document.createElement('div');
+    list.className = 'lua-autocomplete-list';
+    menu.appendChild(list);
+    wrapper.appendChild(menu);
+    const state = { items: [], activeIndex: 0 };
+    const render = () => {
+      list.innerHTML = '';
+      state.items.forEach((item, idx) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'lua-autocomplete-item';
+        if (idx === state.activeIndex) btn.classList.add('active');
+        btn.dataset.type = item.type;
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'lua-autocomplete-name';
+        nameSpan.textContent = item.name;
+        const typeSpan = document.createElement('span');
+        typeSpan.className = 'lua-autocomplete-type';
+        if (item.type === 'tool') {
+          typeSpan.textContent = item.toolType ? item.toolType : 'Tool';
+        } else if (item.type === 'both') {
+          const label = item.toolType ? `${item.toolType} + Control` : 'Tool + Control';
+          typeSpan.textContent = label;
+        } else {
+          typeSpan.textContent = 'Control';
+        }
+        btn.appendChild(nameSpan);
+        btn.appendChild(typeSpan);
+        btn.addEventListener('mousedown', (ev) => {
+          ev.preventDefault();
+          onSelect(item);
+        });
+        list.appendChild(btn);
+      });
+    };
+    return {
+      show(items) {
+        state.items = items;
+        state.activeIndex = 0;
+        render();
+        menu.hidden = items.length === 0;
+      },
+      hide() {
+        menu.hidden = true;
+      },
+      isOpen() {
+        return !menu.hidden;
+      },
+      selectNext() {
+        if (!state.items.length) return;
+        state.activeIndex = (state.activeIndex + 1) % state.items.length;
+        render();
+      },
+      selectPrev() {
+        if (!state.items.length) return;
+        state.activeIndex = (state.activeIndex - 1 + state.items.length) % state.items.length;
+        render();
+      },
+      getActive() {
+        return state.items[state.activeIndex] || null;
+      },
+    };
+  }
+
+  function setupLuaAutocompleteForCodeMirror(cm, wrapper, getToolNames, getControlNames, getToolTypes) {
+    if (!cm || !wrapper) return;
+    const menu = createLuaAutocompleteMenu(wrapper, (item) => {
+      const cursor = cm.getCursor();
+      const line = cm.getLine(cursor.line);
+      const bounds = getLuaWordBounds(line, cursor.ch);
+      if (!bounds.prefix) return;
+      cm.replaceRange(item.name, { line: cursor.line, ch: bounds.start }, { line: cursor.line, ch: cursor.ch });
+      cm.focus();
+      menu.hide();
+    });
+    const update = () => {
+      if (document?.body?.classList.contains('pick-mode')) {
+        menu.hide();
+        return;
+      }
+      const cursor = cm.getCursor();
+      const line = cm.getLine(cursor.line);
+      const bounds = getLuaWordBounds(line, cursor.ch);
+      if (bounds.end !== cursor.ch || bounds.prefix.length < 2) {
+        menu.hide();
+        return;
+      }
+      const items = getLuaAutocompleteItems(bounds.prefix, getToolNames, getControlNames, getToolTypes);
+      if (!items.length) {
+        menu.hide();
+        return;
+      }
+      menu.show(items);
+    };
+    cm.on('inputRead', update);
+    cm.on('cursorActivity', update);
+    cm.on('keydown', (editor, event) => {
+      if (!menu.isOpen()) return;
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        menu.selectNext();
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        menu.selectPrev();
+      } else if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault();
+        const active = menu.getActive();
+        if (active) {
+          const cursor = editor.getCursor();
+          const line = editor.getLine(cursor.line);
+          const bounds = getLuaWordBounds(line, cursor.ch);
+          if (bounds.prefix) {
+            editor.replaceRange(active.name, { line: cursor.line, ch: bounds.start }, { line: cursor.line, ch: cursor.ch });
+          }
+        }
+        menu.hide();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        menu.hide();
+      }
+    });
+    cm.on('blur', () => {
+      setTimeout(() => menu.hide(), 60);
+    });
+  }
+
+  function setupLuaAutocompleteForTextarea(textarea, wrapper, getToolNames, getControlNames, getToolTypes) {
+    if (!textarea || !wrapper) return;
+    const menu = createLuaAutocompleteMenu(wrapper, (item) => {
+      const value = textarea.value || '';
+      const pos = textarea.selectionStart || 0;
+      const lineStart = value.lastIndexOf('\n', pos - 1) + 1;
+      const lineEnd = value.indexOf('\n', pos);
+      const line = value.slice(lineStart, lineEnd < 0 ? value.length : lineEnd);
+      const bounds = getLuaWordBounds(line, pos - lineStart);
+      if (!bounds.prefix) return;
+      const insertStart = lineStart + bounds.start;
+      textarea.setRangeText(item.name, insertStart, lineStart + (pos - lineStart), 'end');
+      textarea.focus();
+      menu.hide();
+    });
+    const update = () => {
+      if (document?.body?.classList.contains('pick-mode')) {
+        menu.hide();
+        return;
+      }
+      const value = textarea.value || '';
+      const pos = textarea.selectionStart || 0;
+      const lineStart = value.lastIndexOf('\n', pos - 1) + 1;
+      const lineEnd = value.indexOf('\n', pos);
+      const line = value.slice(lineStart, lineEnd < 0 ? value.length : lineEnd);
+      const bounds = getLuaWordBounds(line, pos - lineStart);
+      if (bounds.end !== (pos - lineStart) || bounds.prefix.length < 2) {
+        menu.hide();
+        return;
+      }
+      const items = getLuaAutocompleteItems(bounds.prefix, getToolNames, getControlNames, getToolTypes);
+      if (!items.length) {
+        menu.hide();
+        return;
+      }
+      menu.show(items);
+    };
+    textarea.addEventListener('input', update);
+    textarea.addEventListener('keyup', update);
+    textarea.addEventListener('click', update);
+    textarea.addEventListener('keydown', (event) => {
+      if (!menu.isOpen()) return;
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        menu.selectNext();
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        menu.selectPrev();
+      } else if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault();
+        const active = menu.getActive();
+        if (active) {
+          const value = textarea.value || '';
+          const pos = textarea.selectionStart || 0;
+          const lineStart = value.lastIndexOf('\n', pos - 1) + 1;
+          const lineEnd = value.indexOf('\n', pos);
+          const line = value.slice(lineStart, lineEnd < 0 ? value.length : lineEnd);
+          const bounds = getLuaWordBounds(line, pos - lineStart);
+          if (bounds.prefix) {
+            const insertStart = lineStart + bounds.start;
+            textarea.setRangeText(active.name, insertStart, lineStart + (pos - lineStart), 'end');
+          }
+        }
+        menu.hide();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        menu.hide();
+      }
+    });
+    textarea.addEventListener('blur', () => {
+      setTimeout(() => menu.hide(), 60);
+    });
+  }
+
+  const LUA_OVERLAY_MODE_NAME = 'lua-overlay';
+
+  function ensureLuaOverlayMode() {
+    if (typeof window === 'undefined' || !window.CodeMirror || !window.CodeMirror.defineMode) return false;
+    if (window.CodeMirror.modes && window.CodeMirror.modes[LUA_OVERLAY_MODE_NAME]) return true;
+    window.CodeMirror.defineMode(LUA_OVERLAY_MODE_NAME, (config, parserConfig) => {
+      const cfg = parserConfig || {};
+      let baseMode;
+      if (cfg.baseMode) {
+        baseMode = window.CodeMirror.getMode(config, cfg.baseMode);
+      } else if (window.CodeMirror.modes && window.CodeMirror.modes.lua) {
+        baseMode = window.CodeMirror.getMode(config, 'lua');
+      } else {
+        baseMode = createFallbackLuaMode();
+      }
+      if (cfg.overlay && window.CodeMirror.overlayMode) {
+        return window.CodeMirror.overlayMode(baseMode, cfg.overlay, true);
+      }
+      return baseMode;
+    });
+    return true;
+  }
+
+  function createFallbackLuaMode() {
+    const keywords = new Set([
+      'and', 'break', 'do', 'else', 'elseif', 'end', 'false', 'for', 'function',
+      'if', 'in', 'local', 'nil', 'not', 'or', 'repeat', 'return', 'then', 'true',
+      'until', 'while',
+    ]);
+    const atoms = new Set(['true', 'false', 'nil']);
+    return {
+      startState() { return { inLongComment: false, inLongString: false }; },
+      token(stream, state) {
+        if (state.inLongComment) {
+          if (stream.skipTo(']]')) {
+            stream.match(']]', true);
+            state.inLongComment = false;
+          } else {
+            stream.skipToEnd();
+          }
+          return 'comment';
+        }
+        if (state.inLongString) {
+          if (stream.skipTo(']]')) {
+            stream.match(']]', true);
+            state.inLongString = false;
+          } else {
+            stream.skipToEnd();
+          }
+          return 'string';
+        }
+        if (stream.match('--[[')) {
+          state.inLongComment = true;
+          return 'comment';
+        }
+        if (stream.match('[[', true)) {
+          state.inLongString = true;
+          return 'string';
+        }
+        if (stream.match('--')) {
+          stream.skipToEnd();
+          return 'comment';
+        }
+        if (stream.match(/^(0x[0-9a-fA-F]+)/)) {
+          return 'number';
+        }
+        if (stream.match(/^(\d+(\.\d+)?([eE][+-]?\d+)?)/)) {
+          return 'number';
+        }
+        if (stream.match(/^"([^"\\]|\\.)*"/) || stream.match(/^'([^'\\]|\\.)*'/)) {
+          return 'string';
+        }
+        if (stream.match(/^[A-Za-z_][A-Za-z0-9_]*/)) {
+          const word = stream.current();
+          if (keywords.has(word)) return atoms.has(word) ? 'atom' : 'keyword';
+          return null;
+        }
+        stream.next();
+        return null;
+      },
+    };
+  }
+
+  function createLuaEditor({
+    value = '',
+    placeholder = '',
+    onBlur,
+    getToolNames = null,
+    getControlNames = null,
+    getToolTypes = null,
+  } = {}) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'lua-editor';
+    const textarea = document.createElement('textarea');
+    textarea.className = 'lua-input';
+    textarea.spellcheck = false;
+    textarea.value = value || '';
+    if (placeholder) textarea.placeholder = placeholder;
+    wrapper.appendChild(textarea);
+
+    if (typeof window !== 'undefined' && window.CodeMirror && window.CodeMirror.fromTextArea) {
+      wrapper.classList.add('lua-editor-cm');
+      const hasLuaMode = !!(window.CodeMirror.modes && window.CodeMirror.modes.lua);
+      const overlay = createLuaNameOverlay(getToolNames, getControlNames);
+      let mode = null;
+      if (window.CodeMirror.overlayMode && ensureLuaOverlayMode()) {
+        mode = {
+          name: LUA_OVERLAY_MODE_NAME,
+          baseMode: hasLuaMode ? 'lua' : null,
+          overlay,
+        };
+      } else if (hasLuaMode) {
+        mode = 'lua';
+      } else {
+        mode = createFallbackLuaMode();
+      }
+      const cm = window.CodeMirror.fromTextArea(textarea, {
+        mode,
+        lineWrapping: true,
+        tabSize: 2,
+        indentUnit: 2,
+        viewportMargin: 10,
+        placeholder: placeholder || undefined,
+      });
+      try {
+        const modeName = (cm.getMode && cm.getMode().name) || (typeof mode === 'string' ? mode : (mode && mode.name)) || 'unknown';
+        console.log('[LuaEditor] CodeMirror mode:', modeName, 'overlay:', !!window.CodeMirror.overlayMode);
+      } catch (_) {}
+      setupLuaAutocompleteForCodeMirror(cm, wrapper, getToolNames, getControlNames, getToolTypes);
+      cm.on('blur', () => {
+        if (typeof onBlur === 'function') onBlur(cm.getValue());
+      });
+      if (typeof ResizeObserver !== 'undefined') {
+        const ro = new ResizeObserver(() => {
+          try { cm.setSize('100%', '100%'); } catch (_) {}
+        });
+        ro.observe(wrapper);
+      }
+      return {
+        wrapper,
+        getValue: () => cm.getValue(),
+        setValue: (next) => cm.setValue(next || ''),
+        insertAtCursor: (text) => {
+          const value = text == null ? '' : String(text);
+          cm.focus();
+          cm.replaceSelection(value, 'end');
+        },
+      };
+    }
+
+    const pre = document.createElement('pre');
+    pre.className = 'lua-highlight';
+    const code = document.createElement('code');
+    code.className = 'language-lua';
+    pre.appendChild(code);
+    wrapper.appendChild(pre);
+    if (placeholder) {
+      const placeholderEl = document.createElement('div');
+      placeholderEl.className = 'lua-placeholder';
+      placeholderEl.textContent = placeholder;
+      wrapper.appendChild(placeholderEl);
+    }
+    const syncScroll = () => {
+      pre.scrollTop = textarea.scrollTop;
+      pre.scrollLeft = textarea.scrollLeft;
+    };
+    const syncHighlight = () => {
+      code.innerHTML = highlightLua(textarea.value, {
+        toolNames: (typeof getToolNames === 'function') ? getToolNames() : getToolNames,
+        controlNames: (typeof getControlNames === 'function') ? getControlNames() : getControlNames,
+      });
+      wrapper.classList.toggle('is-empty', !textarea.value);
+      syncScroll();
+    };
+    syncHighlight();
+    setupLuaAutocompleteForTextarea(textarea, wrapper, getToolNames, getControlNames, getToolTypes);
+    textarea.addEventListener('input', syncHighlight);
+    textarea.addEventListener('scroll', syncScroll);
+    textarea.addEventListener('blur', () => {
+      if (typeof onBlur === 'function') onBlur(textarea.value);
+    });
+    return {
+      wrapper,
+      textarea,
+      getValue: () => textarea.value,
+      setValue: (next) => {
+        textarea.value = next || '';
+        syncHighlight();
+      },
+      insertAtCursor: (text) => {
+        const value = text == null ? '' : String(text);
+        const start = textarea.selectionStart ?? textarea.value.length;
+        const end = textarea.selectionEnd ?? start;
+        textarea.setRangeText(value, start, end, 'end');
+        syncHighlight();
+        textarea.focus();
+      },
+    };
+  }
+
+  let activePickSession = null;
+  let activePickHighlight = null;
+
+  function stopPickSession() {
+    activePickSession = null;
+    if (activePickHighlight) {
+      try { activePickHighlight.classList.remove('pick-target'); } catch (_) {}
+      activePickHighlight = null;
+    }
+    try { document.body && document.body.classList.remove('pick-mode'); } catch (_) {}
+  }
+
+  function findPickHighlightTarget(target) {
+    try {
+      if (nodesList && nodesList.contains(target)) {
+        const row = target.closest('.node-row');
+        if (row) return row;
+        const title = target.closest('.node-title');
+        if (title) return title;
+      }
+      if (controlsList && controlsList.contains(target)) {
+        const li = target.closest('li[data-index]');
+        if (li) return li;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function updatePickHighlight(target) {
+    const next = findPickHighlightTarget(target);
+    if (next === activePickHighlight) return;
+    if (activePickHighlight) {
+      try { activePickHighlight.classList.remove('pick-target'); } catch (_) {}
+    }
+    activePickHighlight = next;
+    if (activePickHighlight) {
+      try { activePickHighlight.classList.add('pick-target'); } catch (_) {}
+    }
+  }
+
+  function startPickSession(insertFn) {
+    stopPickSession();
+    activePickSession = { insertFn, pendingValue: null };
+    try {
+      document.querySelectorAll('.lua-autocomplete').forEach((el) => {
+        el.hidden = true;
+      });
+    } catch (_) {}
+    try { document.body && document.body.classList.add('pick-mode'); } catch (_) {}
+    info('Pick mode: click a node or published control to insert its name. Press Esc to cancel.');
+  }
+
+  function resolvePickValue(target) {
+    try {
+      if (nodesList && nodesList.contains(target)) {
+        const row = target.closest('.node-row');
+        if (row) {
+          if (row.dataset.kind === 'control' && row.dataset.source && row.dataset.sourceOp) {
+            return `${row.dataset.sourceOp}.${row.dataset.source}`;
+          }
+          if (row.dataset.kind === 'group' && row.dataset.groupBase && row.dataset.sourceOp) {
+            return `${row.dataset.sourceOp}.${row.dataset.groupBase}`;
+          }
+        }
+        const title = target.closest('.node-title');
+        if (title) {
+          const wrap = title.closest('.node');
+          const op = wrap && wrap.dataset ? wrap.dataset.op : null;
+          if (op) return op;
+        }
+      }
+      if (controlsList && controlsList.contains(target)) {
+        const li = target.closest('li[data-index]');
+        if (!li) return null;
+        const idx = parseInt(li.dataset.index || '-1', 10);
+        const entry = (state.parseResult && Array.isArray(state.parseResult.entries)) ? state.parseResult.entries[idx] : null;
+        if (!entry) return null;
+        if (entry.sourceOp && entry.source) return `${entry.sourceOp}.${entry.source}`;
+        return entry.source || entry.sourceOp || null;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function handlePickPointer(ev) {
+    if (!activePickSession) return;
+    const value = activePickSession.pendingValue || resolvePickValue(ev.target);
+    if (!value) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (ev.type === 'mousedown') {
+      activePickSession.pendingValue = String(value);
+      return;
+    }
+    try {
+      if (activePickSession && typeof activePickSession.insertFn === 'function') {
+        activePickSession.insertFn(String(value));
+      }
+    } catch (_) {}
+    stopPickSession();
+  }
+
+  function handlePickMove(ev) {
+    if (!activePickSession) return;
+    updatePickHighlight(ev.target);
+  }
+
+  function handlePickKey(ev) {
+    if (!activePickSession) return;
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      stopPickSession();
+    }
+  }
+
+  if (typeof document !== 'undefined') {
+    document.addEventListener('mousedown', handlePickPointer, true);
+    document.addEventListener('click', handlePickPointer, true);
+    document.addEventListener('mousemove', handlePickMove, true);
+    document.addEventListener('keydown', handlePickKey, true);
+  }
+
+  function buildPickRow(editor) {
+    const row = document.createElement('div');
+    row.className = 'detail-actions detail-actions-pick';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = 'Pick from list';
+    btn.addEventListener('click', () => {
+      startPickSession((value) => {
+        if (editor && typeof editor.insertAtCursor === 'function') {
+          editor.insertAtCursor(value);
+        }
+      });
+    });
+    row.appendChild(btn);
+    return row;
+  }
+
   function renderDetailDrawer(index) {
     if (!detailDrawer || !detailDrawerTitle || !detailDrawerSubtitle || !detailDrawerBody) return;
     if (!state.parseResult || !Array.isArray(state.parseResult.entries) || !state.parseResult.entries[index]) {
@@ -1265,7 +2096,7 @@ import { buildLabelMarkup, normalizeLabelStyle, labelStyleEquals } from './src/l
     };
     detailDrawerSubtitle.textContent = `${entry.sourceOp || 'Unknown'}${entry.source ? '.' + entry.source : ''}`;
     detailDrawerBody.innerHTML = '';
-    const buildCollapsibleField = (title, defaultOpen = false) => {
+    const buildCollapsibleField = (title, defaultOpen = false, stateKey = null) => {
       const field = document.createElement('div');
       field.className = 'detail-field detail-collapsible';
       const header = document.createElement('button');
@@ -1282,9 +2113,19 @@ import { buildLabelMarkup, normalizeLabelStyle, labelStyleEquals } from './src/l
       const body = document.createElement('div');
       body.className = 'detail-collapsible-body';
       let open = !!defaultOpen;
+      if (stateKey) {
+        entry._ui = entry._ui || {};
+        if (typeof entry._ui[stateKey] === 'boolean') {
+          open = entry._ui[stateKey];
+        }
+      }
       const sync = () => {
         body.hidden = !open;
         field.classList.toggle('open', open);
+        if (stateKey) {
+          entry._ui = entry._ui || {};
+          entry._ui[stateKey] = open;
+        }
         if (typeof createIcon === 'function') {
           iconSpan.innerHTML = createIcon(open ? 'chevron-down' : 'chevron-right', 12);
         } else {
@@ -1395,6 +2236,36 @@ import { buildLabelMarkup, normalizeLabelStyle, labelStyleEquals } from './src/l
       toggleWrap.appendChild(stateText);
       defaultsField.appendChild(toggleWrap);
     } else {
+      const currentRow = document.createElement('div');
+      currentRow.className = 'detail-default-row';
+      const currentGroup = document.createElement('div');
+      currentGroup.className = 'detail-default-item';
+      const currentLabel = document.createElement('span');
+      currentLabel.textContent = 'Current';
+      const currentInput = document.createElement('input');
+      currentInput.type = 'text';
+      const currentNote = document.createElement('span');
+      currentNote.className = 'detail-default-note';
+      const refreshCurrent = () => {
+        const info = getCurrentInputInfo(entry);
+        currentInput.value = info.value || '';
+        currentInput.placeholder = info.value ? '' : (info.note || '');
+        currentNote.textContent = info.note || '';
+        currentNote.hidden = !info.note;
+      };
+      const commitCurrent = () => {
+        setEntryCurrentValue(index, currentInput.value);
+        refreshCurrent();
+      };
+      currentInput.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') { ev.preventDefault(); commitCurrent(); }
+      });
+      currentInput.addEventListener('blur', commitCurrent);
+      currentGroup.appendChild(currentLabel);
+      currentGroup.appendChild(currentInput);
+      currentGroup.appendChild(currentNote);
+      currentRow.appendChild(currentGroup);
+      refreshCurrent();
       const defaultRow = document.createElement('div');
       defaultRow.className = 'detail-default-row';
       const rangeRow = document.createElement('div');
@@ -1421,6 +2292,7 @@ import { buildLabelMarkup, normalizeLabelStyle, labelStyleEquals } from './src/l
       defaultRow.appendChild(buildDefaultInput('Default', 'defaultValue', (val) => setEntryDefaultValue(index, val)));
       rangeRow.appendChild(buildDefaultInput('Min', 'minScale', (val) => setEntryRangeValue(index, 'minScale', val)));
       rangeRow.appendChild(buildDefaultInput('Max', 'maxScale', (val) => setEntryRangeValue(index, 'maxScale', val)));
+      defaultsField.appendChild(currentRow);
       defaultsField.appendChild(defaultRow);
       defaultsField.appendChild(rangeRow);
     }
@@ -1489,28 +2361,39 @@ import { buildLabelMarkup, normalizeLabelStyle, labelStyleEquals } from './src/l
       detailDrawerBody.appendChild(styleField);
     }
     const onChangeHasValue = !!(entry.onChange && String(entry.onChange).trim());
-    const onChangeSection = buildCollapsibleField('On-Change Script', onChangeHasValue);
+    const onChangeSection = buildCollapsibleField('On-Change Script', onChangeHasValue, 'onChangeOpen');
     const onChangeBody = onChangeSection.body;
-    const onChangeArea = document.createElement('textarea');
-    onChangeArea.value = entry.onChange || '';
-    onChangeArea.placeholder = 'Lua script to execute when this control changes.';
-    onChangeBody.appendChild(onChangeArea);
-    onChangeArea.addEventListener('blur', () => {
-      updateEntryOnChange(index, onChangeArea.value);
+    const onChangeWarnings = document.createElement('div');
+    onChangeWarnings.className = 'lua-warnings';
+    onChangeWarnings.hidden = true;
+    const onChangeEditor = createLuaEditor({
+      value: entry.onChange || '',
+      placeholder: 'Lua script to execute when this control changes.',
+      onBlur: (value) => {
+        updateEntryOnChange(index, value, { silent: true });
+        renderLuaWarnings(onChangeWarnings, validateLuaBasic(value));
+      },
+      getToolNames: () => state.parseResult?.luaToolNames,
+      getControlNames: () => state.parseResult?.luaControlNames,
+      getToolTypes: () => state.parseResult?.luaToolTypes,
     });
+    onChangeBody.appendChild(onChangeEditor.wrapper);
+    onChangeBody.appendChild(onChangeWarnings);
+    renderLuaWarnings(onChangeWarnings, validateLuaBasic(onChangeEditor.getValue()));
+    onChangeBody.appendChild(buildPickRow(onChangeEditor));
     const actions = document.createElement('div');
     actions.className = 'detail-actions';
     const saveBtn = document.createElement('button');
     saveBtn.type = 'button';
     saveBtn.textContent = 'Save';
     saveBtn.addEventListener('click', () => {
-      updateEntryOnChange(index, onChangeArea.value);
+      updateEntryOnChange(index, onChangeEditor.getValue());
     });
     const clearBtn = document.createElement('button');
     clearBtn.type = 'button';
     clearBtn.textContent = 'Clear';
     clearBtn.addEventListener('click', () => {
-      onChangeArea.value = '';
+      onChangeEditor.setValue('');
       updateEntryOnChange(index, '');
     });
     actions.appendChild(saveBtn);
@@ -1519,14 +2402,25 @@ import { buildLabelMarkup, normalizeLabelStyle, labelStyleEquals } from './src/l
     detailDrawerBody.appendChild(onChangeSection.field);
     if (entry.isButton) {
       const hasExecuteScript = !!(entry.buttonExecute && String(entry.buttonExecute).trim());
-      const executeSection = buildCollapsibleField('Button Execute Script', hasExecuteScript);
+      const executeSection = buildCollapsibleField('Button Execute Script', hasExecuteScript, 'executeOpen');
       const execBody = executeSection.body;
-      const execArea = document.createElement('textarea');
-      execArea.value = entry.buttonExecute || '';
-      execArea.placeholder = 'Lua script executed when this button fires.';
+      const execWarnings = document.createElement('div');
+      execWarnings.className = 'lua-warnings';
+      execWarnings.hidden = true;
+      const execEditor = createLuaEditor({
+        value: entry.buttonExecute || '',
+        placeholder: 'Lua script executed when this button fires.',
+        onBlur: (value) => {
+          updateEntryButtonExecute(index, value, { silent: true });
+          renderLuaWarnings(execWarnings, validateLuaBasic(value));
+        },
+        getToolNames: () => state.parseResult?.luaToolNames,
+        getControlNames: () => state.parseResult?.luaControlNames,
+        getToolTypes: () => state.parseResult?.luaToolTypes,
+      });
       const applyLauncherScript = (script) => {
         const val = script || '';
-        execArea.value = val;
+        execEditor.setValue(val);
         updateEntryButtonExecute(index, val, { silent: true, skipHistory: true });
       };
       if (typeof appendLauncherUiApi === 'function') {
@@ -1544,24 +2438,56 @@ import { buildLabelMarkup, normalizeLabelStyle, labelStyleEquals } from './src/l
           launcherWrap.appendChild(placeholder);
         }
       }
-      execBody.appendChild(execArea);
-      execArea.addEventListener('blur', () => {
-        updateEntryButtonExecute(index, execArea.value);
-      });
+      execBody.appendChild(execEditor.wrapper);
+      execBody.appendChild(execWarnings);
+      renderLuaWarnings(execWarnings, validateLuaBasic(execEditor.getValue()));
+      execBody.appendChild(buildPickRow(execEditor));
       const execActions = document.createElement('div');
       execActions.className = 'detail-actions';
       const execSave = document.createElement('button');
       execSave.type = 'button';
       execSave.textContent = 'Save';
       execSave.addEventListener('click', () => {
-        updateEntryButtonExecute(index, execArea.value);
+        updateEntryButtonExecute(index, execEditor.getValue());
       });
       const execClear = document.createElement('button');
       execClear.type = 'button';
       execClear.textContent = 'Clear';
+      let clearPointerHandled = false;
+      const markClearPointer = () => {
+        clearPointerHandled = true;
+        setTimeout(() => { clearPointerHandled = false; }, 300);
+      };
+      const runExecClear = () => {
+        const hadValue = !!(entry.buttonExecute && String(entry.buttonExecute).trim());
+        execEditor.setValue('');
+        if (hadValue) {
+          pushHistory('edit button execute');
+        }
+        updateEntryButtonExecute(index, '', { silent: true, skipHistory: true });
+        if (state.parseResult && entry.sourceOp && entry.source) {
+          const key = `${entry.sourceOp}.${entry.source}`;
+          if (state.parseResult.insertClickedKeys instanceof Set) {
+            state.parseResult.insertClickedKeys.delete(key);
+          }
+          if (state.parseResult.buttonExactInsert instanceof Set) {
+            state.parseResult.buttonExactInsert.delete(key);
+          }
+        }
+        entry._ui = entry._ui || {};
+        entry._ui.executeOpen = true;
+        renderDetailDrawer(index);
+      };
+      execClear.addEventListener('pointerdown', () => {
+        markClearPointer();
+        runExecClear();
+      });
       execClear.addEventListener('click', () => {
-        execArea.value = '';
-        updateEntryButtonExecute(index, '');
+        if (clearPointerHandled) {
+          clearPointerHandled = false;
+          return;
+        }
+        runExecClear();
       });
       execActions.appendChild(execSave);
       execActions.appendChild(execClear);
@@ -1576,16 +2502,20 @@ import { buildLabelMarkup, normalizeLabelStyle, labelStyleEquals } from './src/l
     }
   }
 
-  function updateEntryOnChange(index, script) {
+  function updateEntryOnChange(index, script, opts = {}) {
     if (!state.parseResult || !Array.isArray(state.parseResult.entries)) return;
     const entry = state.parseResult.entries[index];
     if (!entry) return;
     const newVal = script != null ? String(script) : '';
     if (entry.onChange === newVal) return;
-    pushHistory('edit on-change');
+    const silent = !!opts.silent;
+    const skipHistory = !!opts.skipHistory;
+    if (!skipHistory) pushHistory('edit on-change');
     entry.onChange = newVal;
-    try { renderList(state.parseResult.entries, state.parseResult.order); } catch (_) {}
-    renderDetailDrawer(index);
+    if (!silent) {
+      try { renderList(state.parseResult.entries, state.parseResult.order); } catch (_) {}
+      renderDetailDrawer(index);
+    }
     markContentDirty();
   }
 
@@ -1597,7 +2527,7 @@ import { buildLabelMarkup, normalizeLabelStyle, labelStyleEquals } from './src/l
     if (entry.buttonExecute === newVal) return;
     const silent = !!opts.silent;
     const skipHistory = !!opts.skipHistory;
-    if (!silent && !skipHistory) pushHistory('edit button execute');
+    if (!skipHistory) pushHistory('edit button execute');
     entry.buttonExecute = newVal;
     if (!silent) {
       try { renderList(state.parseResult.entries, state.parseResult.order); } catch (_) {}
@@ -1639,6 +2569,37 @@ import { buildLabelMarkup, normalizeLabelStyle, labelStyleEquals } from './src/l
       }
     }
     renderDetailDrawer(index);
+    markContentDirty();
+  }
+
+  function setEntryCurrentValue(index, value) {
+    if (!state.parseResult || !Array.isArray(state.parseResult.entries)) return;
+    const entry = state.parseResult.entries[index];
+    if (!entry || !entry.sourceOp || !entry.source || !state.originalText) return;
+    const bounds = locateMacroGroupBounds(state.originalText, state.parseResult);
+    if (!bounds) return;
+    const toolBlock = findToolBlockInGroup(state.originalText, bounds.groupOpenIndex, bounds.groupCloseIndex, entry.sourceOp);
+    if (!toolBlock) return;
+    const inputsBlock = findInputsInTool(state.originalText, toolBlock.open, toolBlock.close);
+    if (!inputsBlock) return;
+    const inputBlock = findInputBlockInInputs(state.originalText, inputsBlock.open, inputsBlock.close, entry.source);
+    if (!inputBlock) return;
+    const trimmed = String(value || '').trim();
+    let body = state.originalText.slice(inputBlock.open + 1, inputBlock.close);
+    const indent = (getLineIndent(state.originalText, inputBlock.open) || '') + '\t';
+    const eol = state.newline || '\n';
+    if (trimmed) {
+      body = removeControlProp(body, 'Expression');
+      body = removeControlProp(body, 'SourceOp');
+      body = removeControlProp(body, 'Source');
+      body = upsertControlProp(body, 'Value', trimmed, indent, eol);
+    } else {
+      body = removeControlProp(body, 'Value');
+    }
+    const updated = state.originalText.slice(0, inputBlock.open + 1) + body + state.originalText.slice(inputBlock.close);
+    if (updated === state.originalText) return;
+    pushHistory('edit current value');
+    state.originalText = updated;
     markContentDirty();
   }
 
@@ -2034,6 +2995,8 @@ import { buildLabelMarkup, normalizeLabelStyle, labelStyleEquals } from './src/l
     getOrAssignControlGroup,
     buildInstanceInputRaw,
     pageTabsEl,
+    getCurrentValueInfo: (entry) => getCurrentInputInfo(entry),
+    shouldShowCurrentValues: () => showCurrentValues,
     onDetailTargetChange: (index) => {
       try { handleDetailTargetChange(typeof index === 'number' ? index : null); } catch (_) {}
     },
@@ -2275,6 +3238,10 @@ import { buildLabelMarkup, normalizeLabelStyle, labelStyleEquals } from './src/l
 
   publishedSearch?.addEventListener('input', (e) => {
     setPublishedFilter(e.target.value || '');
+    if (state.parseResult) renderList(state.parseResult.entries, state.parseResult.order);
+  });
+  showCurrentValuesToggle?.addEventListener('change', () => {
+    showCurrentValues = !!showCurrentValuesToggle.checked;
     if (state.parseResult) renderList(state.parseResult.entries, state.parseResult.order);
   });
 
@@ -2727,6 +3694,18 @@ import { buildLabelMarkup, normalizeLabelStyle, labelStyleEquals } from './src/l
         logDiag(`Diagnostics error while scanning Inputs: ${e.message || e}`);
       }
       state.parseResult = parseSetting(text);
+      const toolNames = extractToolNamesFromSetting(text, state.parseResult);
+      const toolTypes = extractToolTypesFromSetting(text, state.parseResult);
+      const controlNames = new Set();
+      for (const entry of (state.parseResult.entries || [])) {
+        const toolName = entry?.sourceOp;
+        const controlName = entry?.source;
+        if (isLuaIdentifier(toolName)) toolNames.add(toolName);
+        if (isLuaIdentifier(controlName)) controlNames.add(controlName);
+      }
+      state.parseResult.luaToolNames = toolNames;
+      state.parseResult.luaToolTypes = toolTypes;
+      state.parseResult.luaControlNames = controlNames;
       state.parseResult.pageOrder = derivePageOrderFromEntries(state.parseResult.entries);
       state.parseResult.activePage = null;
       hydrateEntryPagesFromUserControls(state.originalText, state.parseResult);
@@ -5103,6 +6082,66 @@ async function handleFile(file) {
     } catch(_) { return null; }
   }
 
+  function findInputsInTool(text, toolOpen, toolClose) {
+    try {
+      if (toolOpen == null || toolClose == null || toolClose <= toolOpen) return null;
+      const segment = text.slice(toolOpen, toolClose);
+      const match = /Inputs\s*=\s*(?:ordered\(\))?\s*\{/m.exec(segment);
+      if (!match) return null;
+      const inputOpen = toolOpen + match.index + match[0].lastIndexOf('{');
+      if (inputOpen < toolOpen || inputOpen > toolClose) return null;
+      const inputClose = findMatchingBrace(text, inputOpen);
+      if (inputClose < 0 || inputClose > toolClose) return null;
+      return { open: inputOpen, close: inputClose };
+    } catch (_) { return null; }
+  }
+
+  function findInputBlockInInputs(text, inputsOpen, inputsClose, inputId) {
+    try {
+      let i = inputsOpen + 1, depth = 0, inStr = false;
+      while (i < inputsClose) {
+        const ch = text[i];
+        if (inStr) { if (ch === '"' && text[i - 1] !== '\\') inStr = false; i++; continue; }
+        if (ch === '"') { inStr = true; i++; continue; }
+        if (ch === '{') { depth++; i++; continue; }
+        if (ch === '}') { depth--; i++; continue; }
+        if (depth === 0 && (isIdentStart(ch) || ch === '[')) {
+          let idStart = i;
+          let idStr = '';
+          if (ch === '[') {
+            let j = i + 1;
+            while (j < inputsClose && text[j] !== ']') j++;
+            idStr = text.slice(i, Math.min(j + 1, inputsClose));
+            i = Math.min(j + 1, inputsClose);
+          } else {
+            i++;
+            while (i < inputsClose && isIdentPart(text[i])) i++;
+            idStr = text.slice(idStart, i);
+          }
+          const norm = normalizeId(idStr);
+          while (i < inputsClose && isSpace(text[i])) i++;
+          if (text[i] !== '=') { i++; continue; }
+          i++;
+          while (i < inputsClose && isSpace(text[i])) i++;
+          const isInput = text.slice(i, i + 5) === 'Input';
+          const isInstanceInput = text.slice(i, i + 13) === 'InstanceInput';
+          if (!isInput && !isInstanceInput) { continue; }
+          while (i < inputsClose && text[i] !== '{') i++;
+          if (text[i] !== '{') { continue; }
+          const cOpen = i;
+          const cClose = findMatchingBrace(text, cOpen);
+          if (cClose < 0) break;
+          if (String(norm) === String(inputId)) {
+            return { open: cOpen, close: cClose };
+          }
+          i = cClose + 1; continue;
+        }
+        i++;
+      }
+      return null;
+    } catch (_) { return null; }
+  }
+
   function findControlBlockInUc(text, ucOpen, ucClose, controlId) {
     try {
       let i = ucOpen + 1, depth = 0, inStr = false;
@@ -5820,6 +6859,38 @@ async function handleFile(file) {
       if (!match) return null;
       return match[1].trim().replace(/,$/, '');
     } catch (_) { return null; }
+  }
+
+  function getCurrentInputInfo(entry) {
+    const empty = { value: '', note: '' };
+    try {
+      if (!entry || !entry.sourceOp || !entry.source || !state.originalText || !state.parseResult) return empty;
+      const bounds = locateMacroGroupBounds(state.originalText, state.parseResult);
+      if (!bounds) return empty;
+      const toolBlock = findToolBlockInGroup(state.originalText, bounds.groupOpenIndex, bounds.groupCloseIndex, entry.sourceOp);
+      if (!toolBlock) return { value: '', note: 'Inputs block not found.' };
+      const inputsBlock = findInputsInTool(state.originalText, toolBlock.open, toolBlock.close);
+      if (!inputsBlock) return { value: '', note: 'Inputs block not found.' };
+      const inputBlock = findInputBlockInInputs(state.originalText, inputsBlock.open, inputsBlock.close, entry.source);
+      if (!inputBlock) return { value: '', note: 'Input not found on the tool.' };
+      const body = state.originalText.slice(inputBlock.open + 1, inputBlock.close);
+      const value = extractControlPropValue(body, 'Value') || '';
+      const sourceOp = extractControlPropValue(body, 'SourceOp');
+      const source = extractControlPropValue(body, 'Source');
+      const expression = extractControlPropValue(body, 'Expression');
+      const strip = (v) => String(v || '').replace(/^\"|\"$/g, '');
+      let note = '';
+      if (expression) {
+        note = 'Driven by Expression. Setting a value overrides the link.';
+      } else if (sourceOp || source) {
+        const op = strip(sourceOp);
+        const src = strip(source);
+        note = `Driven by ${op || 'SourceOp'}${src ? '.' + src : ''}. Setting a value overrides the link.`;
+      }
+      return { value, note };
+    } catch (_) {
+      return empty;
+    }
   }
 
   function hydrateControlMetadata(text, result) {

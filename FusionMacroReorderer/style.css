@@ -449,6 +449,17 @@ textarea {
 .nodes-toolbar .toolbar-right { display: flex; flex-wrap: wrap; gap: var(--space-sm); align-items: center; justify-content: flex-end; flex: 0 0 auto; }
 .nodes-toolbar input[type="text"] { width: 100%; background: #222739; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: var(--font-label); }
 .nodes-toolbar label { font-size: var(--font-label); }
+.published-toolbar .toolbar-left { flex: 0 0 auto; }
+.published-toolbar .published-search { width: 240px; }
+@media (max-width: 900px) {
+  .published-toolbar .toolbar-left,
+  .published-toolbar .toolbar-right {
+    flex: 1 1 100%;
+  }
+  .published-toolbar .published-search {
+    width: 100%;
+  }
+}
 .nodes-utility-row {
   display: flex;
   gap: var(--space-sm);
@@ -892,6 +903,20 @@ button:active:not([disabled]) { transform: translateY(1px); }
   line-height: 1.4;
 }
 .row-buttons { display: flex; gap: 6px; }
+.row-buttons { align-items: center; }
+.current-value {
+  min-width: 90px;
+  text-align: right;
+  font-size: 12px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.current-value.empty {
+  color: #667089;
+}
 .row-buttons button { padding: 4px 8px; }
 .row-buttons .remove-btn { color: #ff9a9a; border-color: #3b1f1f; background: #2a2024; }
 .row-buttons .remove-btn:hover { background: #3a2730; }
@@ -1390,6 +1415,12 @@ footer { color: var(--muted); border-top: 1px solid var(--border); margin-top: 2
 .detail-drawer.collapsed {
   transform: translateX(calc(100% - 48px));
 }
+.detail-drawer.collapsed * {
+  pointer-events: none;
+}
+.detail-drawer.collapsed .detail-drawer-toggle {
+  pointer-events: auto;
+}
 
 .detail-drawer-header {
   padding: 0.75rem 1rem;
@@ -1625,11 +1656,195 @@ footer { color: var(--muted); border-top: 1px solid var(--border); margin-top: 2
   resize: vertical;
 }
 
+.lua-editor {
+  min-height: 130px;
+  position: relative;
+}
+
+.lua-editor .CodeMirror {
+  height: 130px;
+  background: #191c2a;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  color: var(--text);
+}
+
+.lua-editor .CodeMirror-lines {
+  padding: 0.4rem 0.6rem;
+}
+
+.lua-editor .CodeMirror-scroll {
+  min-height: 130px;
+}
+
+.lua-editor .CodeMirror-cursor {
+  border-left: 1px solid var(--text);
+}
+
+.lua-editor .CodeMirror-selected {
+  background: rgba(79, 163, 255, 0.25);
+}
+
+.lua-editor .cm-comment { color: #6b7280; }
+.lua-editor .cm-keyword { color: #7aa2ff; }
+.lua-editor .cm-atom { color: #ff9f7a; }
+.lua-editor .cm-builtin { color: #ff9f7a; }
+.lua-editor .cm-string { color: #9ae07c; }
+.lua-editor .cm-number { color: #f0c674; }
+.lua-editor .cm-lua-tool { color: #5ad4ff; }
+.lua-editor .cm-lua-control { color: #f4bf75; }
+
+.lua-autocomplete {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 6px);
+  background: #121625;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px;
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.35);
+  z-index: 40;
+}
+.lua-autocomplete-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 180px;
+  overflow: auto;
+}
+.lua-autocomplete-item {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  font-size: 12px;
+  gap: 10px;
+}
+.lua-autocomplete-item:hover,
+.lua-autocomplete-item.active {
+  background: #1d2536;
+  border-color: var(--accent);
+}
+.lua-autocomplete-name {
+  font-weight: 600;
+}
+.lua-autocomplete-type {
+  font-size: 11px;
+  color: var(--muted);
+}
+.lua-autocomplete-item[data-type="tool"] .lua-autocomplete-type {
+  color: #5ad4ff;
+}
+.lua-autocomplete-item[data-type="control"] .lua-autocomplete-type {
+  color: #f4bf75;
+}
+.lua-autocomplete-item[data-type="both"] .lua-autocomplete-type {
+  color: #b18cff;
+}
+
+.lua-warnings {
+  margin-top: 8px;
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: #ffb4b4;
+}
+.lua-warning {
+  background: rgba(255, 154, 154, 0.12);
+  border: 1px solid rgba(255, 154, 154, 0.35);
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+
+.lua-editor:not(.lua-editor-cm) {
+  position: relative;
+  overflow: visible;
+  background: #191c2a;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.lua-editor:not(.lua-editor-cm) .lua-highlight,
+.lua-editor:not(.lua-editor-cm) .lua-input {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 0.4rem 0.6rem;
+  font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+  tab-size: 2;
+  font-weight: 400;
+  font-style: normal;
+  letter-spacing: 0;
+  font-kerning: none;
+  font-feature-settings: "liga" 0, "calt" 0;
+  text-rendering: optimizeSpeed;
+}
+
+.lua-editor:not(.lua-editor-cm) .lua-highlight {
+  color: var(--text);
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.lua-editor:not(.lua-editor-cm) .lua-input {
+  position: absolute;
+  inset: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  caret-color: var(--text);
+  resize: none;
+  overflow: auto;
+  font-variant-ligatures: none;
+}
+
+.lua-editor:not(.lua-editor-cm) .lua-placeholder {
+  position: absolute;
+  top: 0.4rem;
+  left: 0.6rem;
+  color: #657089;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.lua-editor:not(.lua-editor-cm).is-empty .lua-placeholder {
+  opacity: 1;
+}
+
+.lua-token.lua-keyword { color: #7aa2ff; }
+.lua-token.lua-builtin { color: #ff9f7a; }
+.lua-token.lua-string { color: #9ae07c; }
+.lua-token.lua-comment { color: #6b7280; }
+.lua-token.lua-number { color: #f0c674; }
+.lua-token.lua-tool { color: #5ad4ff; }
+.lua-token.lua-control { color: #f4bf75; }
+
 .detail-field.detail-collapsible {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: #131622;
   overflow: hidden;
+}
+.detail-field.detail-collapsible.open {
+  overflow: visible;
 }
 
 .detail-collapsible-header {
@@ -1673,6 +1888,23 @@ footer { color: var(--muted); border-top: 1px solid var(--border); margin-top: 2
 .detail-actions button:hover {
   background: #2a3044;
 }
+.detail-actions.detail-actions-pick {
+  justify-content: flex-start;
+  margin-top: 0.75rem;
+}
+body.pick-mode {
+  cursor: crosshair;
+}
+body.pick-mode .nodes-list,
+body.pick-mode #controlsList {
+  cursor: crosshair;
+}
+body.pick-mode .pick-target {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+  background: rgba(79, 163, 255, 0.12);
+}
 
 .detail-default-row {
   display: flex;
@@ -1690,6 +1922,12 @@ footer { color: var(--muted); border-top: 1px solid var(--border); margin-top: 2
   font-size: 0.75rem;
   color: var(--muted);
   margin-bottom: 0.25rem;
+}
+.detail-default-note {
+  font-size: 0.7rem;
+  color: var(--muted);
+  margin-top: 0.25rem;
+  line-height: 1.3;
 }
 .detail-style-row {
   display: flex;

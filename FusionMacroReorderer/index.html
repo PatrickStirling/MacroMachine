@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Stirling Supply Co Macro Machine</title>
+    <link rel="stylesheet" href="vendor/codemirror/codemirror.css" />
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
@@ -95,7 +96,18 @@
                 <button id="openCatalogEditorBtn" type="button" hidden>Catalog Editor (temp)</button>
               </div>
               <h2>Published Controls</h2>
-              <div class="nodes-toolbar"><div class="toolbar-left"><input type="text" id="publishedSearch" placeholder="Search published controls" /></div></div>
+              <div class="nodes-toolbar published-toolbar">
+                <div class="toolbar-left">
+                  <input type="text" id="publishedSearch" class="published-search" placeholder="Search published controls" />
+                </div>
+                <div class="toolbar-right">
+                  <label class="pane-switch">
+                    <input type="checkbox" id="showCurrentValues" />
+                    <span class="slider" aria-hidden="true"></span>
+                    <span class="label">Show current values</span>
+                  </label>
+                </div>
+              </div>
               <div class="page-tabs" id="pageTabs" hidden></div>
               <ul id="controlsList" class="list" aria-label="Published Controls"></ul></div></div>
 
@@ -269,6 +281,10 @@
       </small>
     </footer>
 
+    <script src="vendor/codemirror/codemirror.js"></script>
+    <script src="vendor/codemirror/addon/mode/overlay.js"></script>
+    <script src="vendor/codemirror/addon/display/placeholder.js"></script>
+    <script src="vendor/codemirror/mode/lua/lua.js"></script>
     <script type="module" src="main.js"></script>
   </body>
   </html>

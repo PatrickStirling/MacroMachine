@@ -25,6 +25,8 @@ export function createPublishedControls({
   getOrAssignControlGroup,
   buildInstanceInputRaw,
   pageTabsEl,
+  getCurrentValueInfo,
+  shouldShowCurrentValues,
   onDetailTargetChange,
   applyNodeControlMeta = () => {},
   onRenderList = null,
@@ -117,6 +119,8 @@ export function createPublishedControls({
   const detailTargetChangeCb = (typeof onDetailTargetChange === 'function') ? onDetailTargetChange : null;
   const entryMutatedCb = (typeof onEntryMutated === 'function') ? onEntryMutated : null;
   let detailTargetIndex = null;
+  const getCurrentValueInfoCb = (typeof getCurrentValueInfo === 'function') ? getCurrentValueInfo : null;
+  const shouldShowCurrentValuesCb = (typeof shouldShowCurrentValues === 'function') ? shouldShowCurrentValues : () => false;
 
   function notifyDetailTarget() {
     if (detailTargetChangeCb) detailTargetChangeCb(detailTargetIndex != null ? detailTargetIndex : null);
@@ -530,6 +534,7 @@ export function createPublishedControls({
     const filter = publishedFilter.trim().toLowerCase();
     const collapsedCG = state.parseResult?.collapsedCG || new Set();
     const collapsed = state.parseResult?.collapsed || new Set();
+    const showCurrentValues = !!(shouldShowCurrentValuesCb && shouldShowCurrentValuesCb());
     const indentMap = computeIndentMap(entries, order);
     const labelGroupCounts = new Map();
     try {
@@ -803,8 +808,30 @@ export function createPublishedControls({
         blendCell.appendChild(blendBtn);
       }
 
+      let currentCell = null;
+      if (showCurrentValues) {
+        currentCell = document.createElement('div');
+        currentCell.className = 'current-value';
+        let value = '';
+        let note = '';
+        if (getCurrentValueInfoCb) {
+          const info = getCurrentValueInfoCb(e) || {};
+          value = info.value != null ? String(info.value).trim() : '';
+          note = info.note || '';
+        }
+        if (!value) {
+          currentCell.textContent = '--';
+          currentCell.classList.add('empty');
+          if (note) currentCell.title = note;
+        } else {
+          currentCell.textContent = value;
+          currentCell.title = note || value;
+        }
+      }
+
       pageCell.appendChild(pageSelect);
       if (blendCell.childElementCount) buttons.appendChild(blendCell);
+      if (currentCell) buttons.appendChild(currentCell);
       buttons.appendChild(pageCell);
       buttons.appendChild(goBtn);
 
