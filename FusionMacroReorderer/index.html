@@ -37,7 +37,8 @@
         </div>
       </section>
       <div id="introToggleBar" class="intro-toggle-bar">
-        <button id="introToggleBtn" class="intro-toggle-btn" type="button" aria-label="Toggle import and explorer panel">
+        <button id="showNodesBtn" class="intro-toggle-btn show-nodes-btn" type="button" hidden>Show Nodes</button>
+        <button id="introToggleBtn" class="intro-toggle-btn" type="button" aria-label="Toggle import and explorer panel" hidden>
           <span class="hamburger-line"></span>
           <span class="hamburger-line"></span>
           <span class="hamburger-line"></span>
@@ -62,7 +63,7 @@
         <div class="split">
           <div class="pane pane-left">
             <div class="meta">
-              <div><span id="macroName" class="macro-name"></span></div>
+              <div><input id="macroName" class="macro-name" type="text" aria-label="Macro name" /></div>
               <div><strong>Controls found:</strong> <span id="ctrlCount">0</span></div>
               <div class="operator-select">
                 <strong>Operator:</strong>
@@ -112,7 +113,10 @@
               <ul id="controlsList" class="list" aria-label="Published Controls"></ul></div></div>
 
           <div class="pane pane-right" id="nodesPane">
-            <h2>Nodes</h2>
+            <div class="pane-header">
+              <h2>Nodes</h2>
+              <button id="hideNodesBtn" type="button" class="pane-header-btn">Hide</button>
+            </div>
             <div class="nodes-toolbar">
               <div class="toolbar-left">
                 <input type="text" id="nodesSearch" placeholder="Search nodes and controls" />

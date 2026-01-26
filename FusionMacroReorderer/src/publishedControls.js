@@ -1698,14 +1698,10 @@ export function createPublishedControls({
     updateRemoveSelectedState,
     cleanupDropIndicator,
     updateDropIndicatorPosition,
-    getDragSelection,
     getInsertionPosUnderSelection,
     addOrMovePublishedItemsAt,
     createIcon,
-    getInsertionAnchorPos,
-    setAnchor,
     getCurrentDropIndex,
-    setCurrentDropIndex: (pos) => { currentDropIndex = pos; },
     setHighlightHandler: (fn) => {
       if (typeof fn === 'function') highlightHandler = fn;
     },

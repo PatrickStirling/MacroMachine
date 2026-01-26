@@ -17,6 +17,14 @@ import { createNodesPane } from './src/nodesPane.js';
 import { createCatalogEditor } from './src/catalogEditor.js';
 import { buildLabelMarkup, normalizeLabelStyle, labelStyleEquals } from './src/labelMarkup.js';
 import { highlightLua } from './src/luaHighlighter.js';
+import { createIntroPanelController } from './src/ui/introPanel.js';
+import { createExportMenuController } from './src/ui/exportMenu.js';
+import { createDocTabContextMenu } from './src/ui/docTabContextMenu.js';
+import { createDocTabsController } from './src/ui/docTabs.js';
+import { createGlobalShortcuts } from './src/ui/shortcuts.js';
+import { createFileDropController } from './src/ui/fileDrop.js';
+import { createAddControlModal } from './src/ui/addControlModal.js';
+import { createTextPrompt } from './src/ui/textPrompt.js';
 
 (() => {
   try {
@@ -25,6 +33,7 @@ import { highlightLua } from './src/luaHighlighter.js';
   } catch (_) {}
 
   const state = appState;
+  const getNativeApi = () => (typeof window !== 'undefined' ? window.FusionMacroReordererNative : null);
 
   const fileInput = document.getElementById('fileInput');
   const docTabsWrap = document.getElementById('docTabsWrap');
@@ -66,18 +75,36 @@ import { highlightLua } from './src/luaHighlighter.js';
   // Detect Electron (renderer with Node integration) and expose a thin native bridge.
   // This replaces the previous preload-based bridge, which was failing to load on some setups.
   const IS_ELECTRON = detectElectron();
-  if (!IS_ELECTRON && macroExplorerMini) {
-    macroExplorerMini.hidden = true;
-  }
+  const {
+    setIntroCollapsed,
+    setIntroToggleVisible,
+    updateDropHint,
+  } = createIntroPanelController({
+    introPanel,
+    introToggleBtn,
+    openExplorerBtn,
+    closeExplorerPanelBtn,
+    macroExplorerPanel,
+    macroExplorerMini,
+    dropHint,
+    isElectron: IS_ELECTRON,
+    onClearSelections: () => {
+      if (typeof clearSelections === 'function') clearSelections();
+    },
+    onHideDetailDrawer: () => hideDetailDrawer(),
+    onSyncDrawerAnchor: () => syncDetailDrawerAnchor(),
+    onInfo: (msg) => info(msg),
+  });
 
   const documents = [];
   let activeDocId = null;
   let docCounter = 1;
   let suppressDocDirty = false;
   let draggingDocId = null;
-  let docContextMenu = null;
-  let docContextMenuCleanup = null;
-  let exportMenuCleanup = null;
+  let exportMenuController = null;
+  let docTabContextMenu = null;
+  let docTabsController = null;
+  const textPrompt = createTextPrompt();
 
   function createDocumentMeta({ name, fileName } = {}) {
     return {
@@ -204,6 +231,7 @@ import { highlightLua } from './src/luaHighlighter.js';
         resetStateToEmpty();
         clearUI();
         updateExportButtonLabelFromPath('');
+        setIntroCollapsed(false);
       }
     }
     renderDocTabs();
@@ -236,9 +264,41 @@ import { highlightLua } from './src/luaHighlighter.js';
       resetStateToEmpty();
       clearUI();
       updateExportButtonLabelFromPath('');
+      setIntroCollapsed(false);
     }
     renderDocTabs();
   }
+
+  docTabContextMenu = createDocTabContextMenu({
+    getDocument: (docId) => documents.find((doc) => doc.id === docId) || null,
+    onCreateDoc: () => createBlankDocument(),
+    onRenameDoc: (docId) => promptRenameDocument(docId),
+    onToggleDocSelection: (docId) => toggleDocSelection(docId),
+    onClearSelection: () => clearDocSelections(),
+    onCloseDoc: (docId) => closeDocument(docId),
+    onCloseOthers: (docId) => closeDocumentsByFilter(d => d.id !== docId, 'Close other tabs without exporting?'),
+    onCloseAll: () => closeDocumentsByFilter(() => true, 'Close all tabs without exporting?'),
+  });
+
+  docTabsController = createDocTabsController({
+    docTabsEl,
+    docTabsWrap,
+    docTabsPrev,
+    docTabsNext,
+    getDocuments: () => documents,
+    getActiveDocId: () => activeDocId,
+    getDraggingDocId: () => draggingDocId,
+    setDraggingDocId: (value) => { draggingDocId = value; },
+    onReorderDocuments: (fromId, targetId, appendToEnd) => reorderDocuments(fromId, targetId, appendToEnd),
+    onToggleDocSelection: (docId) => toggleDocSelection(docId),
+    onClearDocSelections: () => clearDocSelections(),
+    onSwitchDocument: (docId) => switchToDocument(docId),
+    onPromptRename: (docId) => promptRenameDocument(docId),
+    onOpenContextMenu: (docId, x, y) => docTabContextMenu?.open?.(docId, x, y),
+    onCloseDocument: (docId) => closeDocument(docId),
+    onCreateBlankDocument: () => handleNativeOpen(),
+    onUpdateExportPathDisplay: () => updateDocExportPathDisplay(),
+  });
 
   function buildDocumentSnapshot() {
     if (!state.parseResult) return null;
@@ -293,7 +353,7 @@ import { highlightLua } from './src/luaHighlighter.js';
       if (fileInfo) {
         fileInfo.textContent = `${state.originalFileName} (${(state.originalText || '').length.toLocaleString()} chars)`;
       }
-      macroNameEl.textContent = state.parseResult.macroName || 'Unknown';
+      setMacroNameDisplay(state.parseResult.macroName || 'Unknown');
       ctrlCountEl.textContent = String(state.parseResult.entries ? state.parseResult.entries.length : 0);
       controlsSection.hidden = false;
       resetBtn.disabled = false;
@@ -307,7 +367,7 @@ import { highlightLua } from './src/luaHighlighter.js';
       pendingControlMeta.clear();
       pendingOpenNodes.clear();
       publishedControls?.resetPageOptions?.();
-      renderList(state.parseResult.entries, state.parseResult.order);
+      renderActiveList();
       refreshPageTabs?.();
       updateRemoveSelectedState();
       hideDetailDrawer();
@@ -317,6 +377,7 @@ import { highlightLua } from './src/luaHighlighter.js';
       updateUndoRedoState();
       updateUtilityActionsState();
       updateExportButtonLabelFromPath(state.originalFilePath);
+      updateIntroToggleVisibility();
     } finally {
       suppressDocDirty = prevSuppress;
     }
@@ -360,123 +421,10 @@ import { highlightLua } from './src/luaHighlighter.js';
   }
 
   function renderDocTabs() {
-    if (!docTabsEl) return;
-    if (documents.length === 0) {
-      if (docTabsWrap) docTabsWrap.hidden = true;
-      docTabsEl.innerHTML = '';
-      updateDocExportPathDisplay();
-      return;
-    }
-    if (docTabsWrap) docTabsWrap.hidden = false;
-    docTabsEl.innerHTML = '';
-    if (!docTabsEl.dataset.docDnD) {
-      docTabsEl.dataset.docDnD = '1';
-      docTabsEl.addEventListener('dragover', (ev) => {
-        if (!draggingDocId) return;
-        const target = ev.target;
-        if (target && target.closest && target.closest('.doc-tab')) return;
-        ev.preventDefault();
-      });
-      docTabsEl.addEventListener('drop', (ev) => {
-        if (!draggingDocId) return;
-        const target = ev.target;
-        if (target && target.closest && target.closest('.doc-tab')) return;
-        ev.preventDefault();
-        reorderDocuments(draggingDocId, null, true);
-        draggingDocId = null;
-      });
-    }
-    if (!docTabsEl.dataset.docScroll) {
-      docTabsEl.dataset.docScroll = '1';
-      docTabsEl.addEventListener('scroll', () => updateDocTabsOverflow());
-      window.addEventListener('resize', () => updateDocTabsOverflow());
-      docTabsPrev?.addEventListener('click', () => scrollDocTabs(-1));
-      docTabsNext?.addEventListener('click', () => scrollDocTabs(1));
-    }
-    documents.forEach((doc) => {
-      const wrap = document.createElement('div');
-      wrap.className = `doc-tab${doc.id === activeDocId ? ' active' : ''}${doc.selected ? ' selected' : ''}`;
-      wrap.dataset.docId = doc.id;
-      wrap.draggable = true;
-      wrap.addEventListener('dragstart', (ev) => {
-        draggingDocId = doc.id;
-        wrap.classList.add('dragging');
-        ev.dataTransfer?.setData('text/plain', doc.id);
-      });
-      wrap.addEventListener('dragend', () => {
-        draggingDocId = null;
-        wrap.classList.remove('dragging');
-        docTabsEl.querySelectorAll('.doc-tab.drag-over').forEach(el => el.classList.remove('drag-over'));
-      });
-      wrap.addEventListener('dragover', (ev) => {
-        if (!draggingDocId || draggingDocId === doc.id) return;
-        ev.preventDefault();
-        wrap.classList.add('drag-over');
-      });
-      wrap.addEventListener('dragleave', () => wrap.classList.remove('drag-over'));
-      wrap.addEventListener('drop', (ev) => {
-        if (!draggingDocId || draggingDocId === doc.id) return;
-        ev.preventDefault();
-        wrap.classList.remove('drag-over');
-        reorderDocuments(draggingDocId, doc.id);
-        draggingDocId = null;
-      });
-      const labelBtn = document.createElement('button');
-      labelBtn.type = 'button';
-      labelBtn.className = 'doc-tab-label';
-      const label = doc.name || doc.fileName || 'Untitled';
-      const lastExport = doc.snapshot && doc.snapshot.lastExportPath ? doc.snapshot.lastExportPath : '';
-      const exportPath = doc.snapshot && doc.snapshot.exportFolder ? doc.snapshot.exportFolder : '';
-      const exportLabel = lastExport || exportPath || '';
-      labelBtn.textContent = doc.isDirty ? `${label} *` : label;
-      labelBtn.title = `${doc.fileName || doc.name || 'Untitled'} — Export: ${exportLabel || 'Default (Fusion Templates)'}`;
-      labelBtn.addEventListener('click', (ev) => {
-        if (ev.ctrlKey || ev.metaKey) {
-          ev.preventDefault();
-          ev.stopPropagation();
-          toggleDocSelection(doc.id);
-          return;
-        }
-        clearDocSelections();
-        switchToDocument(doc.id);
-      });
-      labelBtn.addEventListener('dblclick', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        promptRenameDocument(doc.id);
-      });
-      labelBtn.addEventListener('contextmenu', (ev) => {
-        ev.preventDefault();
-        openDocContextMenu(doc.id, ev.clientX, ev.clientY);
-      });
-      labelBtn.draggable = false;
-      const closeBtn = document.createElement('button');
-      closeBtn.type = 'button';
-      closeBtn.className = 'doc-tab-close';
-      closeBtn.textContent = 'x';
-      closeBtn.title = 'Close';
-      closeBtn.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        closeDocument(doc.id);
-      });
-      closeBtn.draggable = false;
-      wrap.appendChild(labelBtn);
-      wrap.appendChild(closeBtn);
-      docTabsEl.appendChild(wrap);
-    });
-    const addBtn = document.createElement('button');
-    addBtn.type = 'button';
-    addBtn.className = 'doc-tab doc-tab-add';
-    addBtn.textContent = '+';
-    addBtn.title = 'New macro tab';
-    addBtn.addEventListener('click', () => createBlankDocument());
-    addBtn.draggable = false;
-    docTabsEl.appendChild(addBtn);
-    updateDocExportPathDisplay();
-    requestAnimationFrame(() => updateDocTabsOverflow());
+    docTabsController?.render?.();
   }
 
-  function isInteractiveTarget(node) {
+function isInteractiveTarget(node) {
     if (!node) return false;
     const tag = node.tagName ? node.tagName.toUpperCase() : '';
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
@@ -514,25 +462,7 @@ import { highlightLua } from './src/luaHighlighter.js';
     renderDocTabs();
   }
 
-  function updateDocTabsOverflow() {
-    if (!docTabsEl || !docTabsPrev || !docTabsNext) return;
-    const overflow = docTabsEl.scrollWidth > docTabsEl.clientWidth + 4;
-    docTabsPrev.hidden = !overflow;
-    docTabsNext.hidden = !overflow;
-    if (!overflow) return;
-    const left = docTabsEl.scrollLeft;
-    const maxLeft = docTabsEl.scrollWidth - docTabsEl.clientWidth - 2;
-    docTabsPrev.disabled = left <= 2;
-    docTabsNext.disabled = left >= maxLeft;
-  }
-
-  function scrollDocTabs(direction) {
-    if (!docTabsEl) return;
-    const amount = Math.max(120, Math.floor(docTabsEl.clientWidth * 0.6));
-    docTabsEl.scrollBy({ left: direction * amount, behavior: 'smooth' });
-  }
-
-  function updateDocExportPathDisplay() {
+function updateDocExportPathDisplay() {
     if (!docExportPathEl) return;
     if (!documents.length || !activeDocId) {
       docExportPathEl.hidden = true;
@@ -552,118 +482,318 @@ import { highlightLua } from './src/luaHighlighter.js';
     const doc = documents.find(d => d.id === docId);
     if (!doc) return;
     const current = doc.name || doc.fileName || 'Untitled';
-    const nextRaw = window.prompt('Rename macro tab:', current);
-    if (nextRaw == null) return;
-    const next = String(nextRaw).trim();
-    if (!next || next === current) return;
-    if (docId === activeDocId && state.parseResult) {
-      state.parseResult.macroName = next;
-      macroNameEl.textContent = next;
-      updateActiveDocumentMeta({ name: next });
-      markActiveDocumentDirty();
-    } else {
-      doc.name = next;
-      if (doc.snapshot && doc.snapshot.parseResult) {
-        doc.snapshot.parseResult.macroName = next;
+    textPrompt.open({
+      title: 'Rename macro tab',
+      label: 'Tab name',
+      initialValue: current,
+      confirmText: 'Rename',
+    }).then((nextRaw) => {
+      if (nextRaw == null) return;
+      const next = String(nextRaw).trim();
+      if (!next || next === current) return;
+      if (docId === activeDocId && state.parseResult) {
+        state.parseResult.macroName = next;
+        setMacroNameDisplay(next);
+        updateActiveDocumentMeta({ name: next });
+        markActiveDocumentDirty();
+      } else {
+        doc.name = next;
+        if (doc.snapshot && doc.snapshot.parseResult) {
+          doc.snapshot.parseResult.macroName = next;
+        }
+        doc.isDirty = true;
       }
-      doc.isDirty = true;
-    }
-    renderDocTabs();
+      renderDocTabs();
+    });
   }
 
-  function closeDocContextMenu() {
-    if (docContextMenuCleanup) {
-      docContextMenuCleanup();
-      docContextMenuCleanup = null;
+  function promptRenameNode(oldName) {
+    if (!state.parseResult || !state.originalText) {
+      info('Load a macro before renaming a node.');
+      return;
     }
-    if (docContextMenu) {
-      try { docContextMenu.remove(); } catch (_) {}
-      docContextMenu = null;
+    const current = String(oldName || '').trim();
+    if (!current) return;
+    textPrompt.open({
+      title: `Rename node`,
+      label: `Node name`,
+      initialValue: current,
+      confirmText: 'Rename',
+    }).then((raw) => {
+      if (raw == null) return;
+      let next = String(raw).trim();
+      if (!next || next === current) return;
+      next = sanitizeIdent(next);
+      if (!next) return;
+      if (!isIdentStart(next[0])) next = `_${next}`;
+      if (next === current) return;
+      const bounds = locateMacroGroupBounds(state.originalText, state.parseResult);
+      if (!bounds) {
+        error('Unable to locate the macro group for renaming.');
+        return;
+      }
+      const existing = collectToolNamesInGroup(state.originalText, bounds.groupOpenIndex, bounds.groupCloseIndex);
+      if (!existing.has(current)) {
+        info(`Node "${current}" not found in this macro.`);
+        return;
+      }
+      if (existing.has(next)) {
+        error(`A node named "${next}" already exists.`);
+        return;
+      }
+      const res = renameToolInGroupText(state.originalText, bounds.groupOpenIndex, bounds.groupCloseIndex, current, next);
+      if (!res || !res.renamed || res.text === state.originalText) {
+        info('Rename skipped: no tool definition was updated.');
+        return;
+      }
+      pushHistory('rename node');
+      state.originalText = res.text;
+      updateCodeView(state.originalText || '');
+      applyNodeRenameToEntries(current, next);
+      applyNodeRenameToStateMaps(current, next);
+      markContentDirty();
+      renderActiveList();
+      nodesPane?.parseAndRenderNodes?.();
+      info(`Renamed ${current} to ${next}.`);
+    });
+  }
+
+  function collectToolNamesInGroup(text, groupOpen, groupClose) {
+    const names = new Set();
+    const blocks = ['Tools', 'Modifiers'];
+    blocks.forEach((blockName) => {
+      const block = findOrderedBlock(text, groupOpen, groupClose, blockName);
+      if (!block) return;
+      const entries = parseOrderedBlockEntries(text, block.open, block.close);
+      entries.forEach(entry => names.add(entry.name));
+    });
+    return names;
+  }
+
+  function findOrderedBlock(text, groupOpen, groupClose, blockName) {
+    try {
+      const groupText = text.slice(groupOpen, groupClose);
+      const re = new RegExp(`${escapeRegex(blockName)}\\s*=\\s*ordered\\(\\)`, 'i');
+      const match = re.exec(groupText);
+      if (!match) return null;
+      const matchIndex = groupOpen + match.index;
+      const open = text.indexOf('{', matchIndex);
+      if (open < 0 || open > groupClose) return null;
+      const close = findMatchingBrace(text, open);
+      if (close < 0 || close > groupClose) return null;
+      return { open, close };
+    } catch (_) {
+      return null;
     }
   }
 
-  function openDocContextMenu(docId, x, y) {
-    closeDocContextMenu();
-    const doc = documents.find(d => d.id === docId);
-    if (!doc) return;
-    const menu = document.createElement('div');
-    menu.className = 'doc-tab-menu';
-    menu.setAttribute('role', 'menu');
-    const addItem = (label, onClick, opts = {}) => {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'doc-tab-menu-item' + (opts.danger ? ' danger' : '');
-      btn.textContent = label;
-      btn.addEventListener('click', () => {
-        closeDocContextMenu();
-        onClick?.();
+  function parseOrderedBlockEntries(text, open, close) {
+    const inner = text.slice(open + 1, close);
+    const entries = [];
+    let i = 0;
+    let depth = 0;
+    let inStr = false;
+    while (i < inner.length) {
+      const ch = inner[i];
+      if (inStr) {
+        if (ch === '"' && !isQuoteEscaped(inner, i)) inStr = false;
+        i++;
+        continue;
+      }
+      if (ch === '"') { inStr = true; i++; continue; }
+      if (ch === '{') { depth++; i++; continue; }
+      if (ch === '}') { depth--; i++; continue; }
+      if (depth === 0 && isIdentStart(ch)) {
+        const nameStart = i;
+        i++;
+        while (i < inner.length && isIdentPart(inner[i])) i++;
+        const nameEnd = i;
+        const name = inner.slice(nameStart, nameEnd);
+        let j = i;
+        while (j < inner.length && isSpace(inner[j])) j++;
+        if (inner[j] !== '=') { i++; continue; }
+        j++;
+        while (j < inner.length && isSpace(inner[j])) j++;
+        const typeStart = j;
+        while (j < inner.length && isIdentPart(inner[j])) j++;
+        if (j <= typeStart) { i++; continue; }
+        while (j < inner.length && isSpace(inner[j])) j++;
+        if (inner[j] !== '{') { i++; continue; }
+        const absNameStart = open + 1 + nameStart;
+        const absNameEnd = open + 1 + nameEnd;
+        const absOpen = open + 1 + j;
+        const absClose = findMatchingBrace(text, absOpen);
+        entries.push({ name, nameStart: absNameStart, nameEnd: absNameEnd, blockOpen: absOpen, blockClose: absClose });
+        if (absClose > 0) {
+          i = absClose - (open + 1) + 1;
+          continue;
+        }
+      }
+      i++;
+    }
+    return entries;
+  }
+
+  function renameToolInGroupText(text, groupOpen, groupClose, oldName, newName) {
+    let updated = text;
+    let renamed = false;
+    let currentClose = groupClose;
+    const renameInBlock = (blockName) => {
+      const block = findOrderedBlock(updated, groupOpen, currentClose, blockName);
+      if (!block) return;
+      const entries = parseOrderedBlockEntries(updated, block.open, block.close);
+      const target = entries.find(entry => entry.name === oldName);
+      if (!target) return;
+      updated = updated.slice(0, target.nameStart) + newName + updated.slice(target.nameEnd);
+      renamed = true;
+      const refreshed = findMatchingBrace(updated, groupOpen);
+      if (refreshed != null && refreshed >= 0) currentClose = refreshed;
+    };
+    renameInBlock('Tools');
+    renameInBlock('Modifiers');
+    if (!renamed) return { text, renamed: false };
+    const groupEnd = (currentClose != null && currentClose >= 0) ? currentClose : groupClose;
+    updated = replaceSourceOpInRange(updated, groupOpen, groupEnd, oldName, newName);
+    updated = replaceExpressionsInRange(updated, groupOpen, groupEnd, oldName, newName);
+    return { text: updated, renamed };
+  }
+
+  function replaceSourceOpInRange(text, open, close, oldName, newName) {
+    const prefix = text.slice(0, open);
+    const body = text.slice(open, close + 1);
+    const suffix = text.slice(close + 1);
+    const re = new RegExp(`(SourceOp\\s*=\\s*\")${escapeRegex(oldName)}(\")`, 'g');
+    return prefix + body.replace(re, `$1${newName}$2`) + suffix;
+  }
+
+  function replaceExpressionsInRange(text, open, close, oldName, newName) {
+    const prefix = text.slice(0, open);
+    const body = text.slice(open, close + 1);
+    const suffix = text.slice(close + 1);
+    const exprRe = /Expression\s*=\s*"((?:[^"\\]|\\.)*)"/g;
+    const nameRe = new RegExp(`\\b${escapeRegex(oldName)}\\b`, 'g');
+    const updated = body.replace(exprRe, (match, expr) => {
+      const next = expr.replace(nameRe, newName);
+      if (next === expr) return match;
+      return `Expression = "${next}"`;
+    });
+    return prefix + updated + suffix;
+  }
+
+  function applyNodeRenameToEntries(oldName, newName) {
+    if (!state.parseResult || !Array.isArray(state.parseResult.entries)) return;
+    const nameExpr = new RegExp(`\\b${escapeRegex(oldName)}\\b`, 'g');
+    state.parseResult.entries.forEach((entry) => {
+      if (!entry || entry.sourceOp !== oldName) return;
+      entry.sourceOp = newName;
+      if (typeof entry.raw === 'string') {
+        const re = new RegExp(`(SourceOp\\s*=\\s*\")${escapeRegex(oldName)}(\")`);
+        entry.raw = entry.raw.replace(re, `$1${newName}$2`);
+      }
+      if (entry.displayName && entry.displayName === `${oldName}.${entry.source}`) {
+        entry.displayName = `${newName}.${entry.source}`;
+      }
+      if (entry.displayNameOriginal && entry.displayNameOriginal === `${oldName}.${entry.source}`) {
+        entry.displayNameOriginal = `${newName}.${entry.source}`;
+      }
+      if (entry.onChange && entry.onChange.includes(oldName)) {
+        entry.onChange = entry.onChange.replace(nameExpr, newName);
+      }
+      if (entry.buttonExecute && entry.buttonExecute.includes(oldName)) {
+        entry.buttonExecute = entry.buttonExecute.replace(nameExpr, newName);
+      }
+    });
+  }
+
+  function applyNodeRenameToStateMaps(oldName, newName) {
+    if (!state.parseResult) return;
+    const renamePrefixInSet = (set, oldPrefix, newPrefix) => {
+      if (!(set instanceof Set)) return set;
+      const next = new Set();
+      set.forEach((key) => {
+        if (typeof key === 'string' && key.startsWith(oldPrefix)) {
+          next.add(newPrefix + key.slice(oldPrefix.length));
+        } else {
+          next.add(key);
+        }
       });
-      menu.appendChild(btn);
+      return next;
     };
-    const addSeparator = () => {
-      const sep = document.createElement('div');
-      sep.className = 'doc-tab-menu-sep';
-      menu.appendChild(sep);
+    const renamePrefixInMap = (map, oldPrefix, newPrefix) => {
+      if (!(map instanceof Map)) return map;
+      const next = new Map();
+      map.forEach((value, key) => {
+        if (typeof key === 'string' && key.startsWith(oldPrefix)) {
+          next.set(newPrefix + key.slice(oldPrefix.length), value);
+        } else {
+          next.set(key, value);
+        }
+      });
+      return next;
     };
-    addItem('New tab', () => createBlankDocument());
-    addItem('Rename...', () => promptRenameDocument(docId));
-    addItem(doc.selected ? 'Unselect for Export' : 'Select for Export', () => toggleDocSelection(docId));
-    addItem('Clear Selection', () => clearDocSelections());
-    addSeparator();
-    addItem('Close tab', () => closeDocument(docId), { danger: true });
-    addItem('Close others', () => closeDocumentsByFilter(d => d.id !== docId, 'Close other tabs without exporting?'), { danger: true });
-    addItem('Close all', () => closeDocumentsByFilter(() => true, 'Close all tabs without exporting?'), { danger: true });
-
-    document.body.appendChild(menu);
-    docContextMenu = menu;
-    const pad = 8;
-    const placeMenu = () => {
-      const rect = menu.getBoundingClientRect();
-      let left = Number.isFinite(x) ? x : pad;
-      let top = Number.isFinite(y) ? y : pad;
-      if (left + rect.width > window.innerWidth - pad) left = window.innerWidth - rect.width - pad;
-      if (top + rect.height > window.innerHeight - pad) top = window.innerHeight - rect.height - pad;
-      if (left < pad) left = pad;
-      if (top < pad) top = pad;
-      menu.style.left = `${left}px`;
-      menu.style.top = `${top}px`;
+    const renameToolNameSet = (set) => {
+      if (!(set instanceof Set)) return set;
+      const next = new Set();
+      set.forEach((name) => {
+        next.add(name === oldName ? newName : name);
+      });
+      return next;
     };
-    placeMenu();
-    requestAnimationFrame(placeMenu);
-
-    const onMouseDown = (ev) => {
-      if (!menu.contains(ev.target)) closeDocContextMenu();
+    const renameNodeSelection = (set) => {
+      if (!(set instanceof Set)) return set;
+      const next = new Set();
+      set.forEach((key) => {
+        if (typeof key !== 'string') { next.add(key); return; }
+        const parts = key.split('|');
+        if (parts.length >= 3 && parts[1] === oldName) {
+          parts[1] = newName;
+          next.add(parts.join('|'));
+        } else {
+          next.add(key);
+        }
+      });
+      return next;
     };
-    const onKeyDown = (ev) => {
-      if (ev.key === 'Escape') closeDocContextMenu();
-    };
-    const onViewportChange = () => closeDocContextMenu();
-    document.addEventListener('mousedown', onMouseDown);
-    document.addEventListener('keydown', onKeyDown);
-    window.addEventListener('resize', onViewportChange);
-    window.addEventListener('scroll', onViewportChange, true);
-    docContextMenuCleanup = () => {
-      document.removeEventListener('mousedown', onMouseDown);
-      document.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('resize', onViewportChange);
-      window.removeEventListener('scroll', onViewportChange, true);
-    };
+    const renameEntryKeySet = (set) => renamePrefixInSet(set, `${oldName}::`, `${newName}::`);
+    state.parseResult.nodesCollapsed = renameToolNameSet(state.parseResult.nodesCollapsed);
+    state.parseResult.nodesPublishedOnly = renameToolNameSet(state.parseResult.nodesPublishedOnly);
+    state.parseResult.nodeSelection = renameNodeSelection(state.parseResult.nodeSelection);
+    state.parseResult.insertClickedKeys = renamePrefixInSet(state.parseResult.insertClickedKeys, `${oldName}.`, `${newName}.`);
+    state.parseResult.buttonExactInsert = renamePrefixInSet(state.parseResult.buttonExactInsert, `${oldName}.`, `${newName}.`);
+    state.parseResult.insertUrlMap = renamePrefixInMap(state.parseResult.insertUrlMap, `${oldName}.`, `${newName}.`);
+    state.parseResult.buttonOverrides = renamePrefixInMap(state.parseResult.buttonOverrides, `${oldName}.`, `${newName}.`);
+    state.parseResult.blendToggles = renameEntryKeySet(state.parseResult.blendToggles);
+    if (state.parseResult.luaToolNames instanceof Set) {
+      const toolNames = new Set();
+      state.parseResult.luaToolNames.forEach((name) => {
+        toolNames.add(name === oldName ? newName : name);
+      });
+      state.parseResult.luaToolNames = toolNames;
+    }
+    if (pendingControlMeta.size) {
+      const next = new Map();
+      pendingControlMeta.forEach((value, key) => {
+        if (typeof key === 'string' && key.startsWith(`${oldName}::`)) {
+          next.set(`${newName}::${key.slice(oldName.length + 2)}`, value);
+        } else {
+          next.set(key, value);
+        }
+      });
+      pendingControlMeta.clear();
+      next.forEach((value, key) => pendingControlMeta.set(key, value));
+    }
+    if (pendingOpenNodes.size) {
+      const next = new Set();
+      pendingOpenNodes.forEach((name) => {
+        next.add(name === oldName ? newName : name);
+      });
+      pendingOpenNodes.clear();
+      next.forEach((name) => pendingOpenNodes.add(name));
+    }
   }
 
   function updateExportMenuButtonState() {
-    if (!exportMenuBtn) return;
-    exportMenuBtn.disabled = !state.parseResult;
-    if (exportMenuBtn.disabled) closeExportMenu();
-  }
-
-  function closeExportMenu() {
-    if (exportMenuCleanup) {
-      exportMenuCleanup();
-      exportMenuCleanup = null;
-    }
-    if (!exportMenuEl) return;
-    exportMenuEl.hidden = true;
-    exportMenuEl.innerHTML = '';
+    exportMenuController?.setEnabled?.(!!state.parseResult);
   }
 
   function getLooseMacroCount() {
@@ -724,122 +854,26 @@ import { highlightLua } from './src/luaHighlighter.js';
     }
     return items;
   }
-
-  function openExportMenu() {
-    if (!exportMenuEl || !exportMenuBtn) return;
-    closeExportMenu();
-    const items = buildExportMenuItems();
-    exportMenuEl.hidden = false;
-    exportMenuEl.innerHTML = '';
-    items.forEach((item) => {
-      if (item.type === 'sep') {
-        const sep = document.createElement('div');
-        sep.className = 'menu-sep';
-        exportMenuEl.appendChild(sep);
-        return;
-      }
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.textContent = item.label;
-      btn.disabled = !item.enabled;
-      btn.addEventListener('click', () => {
-        closeExportMenu();
-        item.action?.();
-      });
-      exportMenuEl.appendChild(btn);
-    });
-    const onMouseDown = (ev) => {
-      if (exportMenuEl && exportMenuEl.contains(ev.target)) return;
-      if (exportMenuBtn && exportMenuBtn.contains(ev.target)) return;
-      closeExportMenu();
-    };
-    const onKeyDown = (ev) => {
-      if (ev.key === 'Escape') closeExportMenu();
-    };
-    const onViewportChange = () => closeExportMenu();
-    document.addEventListener('mousedown', onMouseDown);
-    document.addEventListener('keydown', onKeyDown);
-    window.addEventListener('resize', onViewportChange);
-    window.addEventListener('scroll', onViewportChange, true);
-    exportMenuCleanup = () => {
-      document.removeEventListener('mousedown', onMouseDown);
-      document.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('resize', onViewportChange);
-      window.removeEventListener('scroll', onViewportChange, true);
-    };
-  }
-
-  exportMenuBtn?.addEventListener('click', (ev) => {
-    ev.preventDefault();
-    ev.stopPropagation();
-    if (exportMenuEl && !exportMenuEl.hidden) {
-      closeExportMenu();
-      return;
-    }
-    openExportMenu();
+  exportMenuController = createExportMenuController({
+    button: exportMenuBtn,
+    menu: exportMenuEl,
+    getItems: buildExportMenuItems,
   });
 
-  function setIntroCollapsed(collapsed) {
-    if (!introPanel) return;
-    introPanel.hidden = collapsed;
-    if (introToggleBtn) {
-      introToggleBtn.setAttribute('aria-pressed', collapsed ? 'true' : 'false');
-    }
-    if (!collapsed) {
-      if (typeof clearSelections === 'function') clearSelections();
-      hideDetailDrawer();
-    }
+  function updateIntroToggleVisibility() {
+    setIntroToggleVisible(!!state.parseResult);
   }
 
-  introToggleBtn?.addEventListener('click', () => {
-    if (!introPanel) return;
-    setIntroCollapsed(!introPanel.hidden);
+  createGlobalShortcuts({
+    isElectron: IS_ELECTRON,
+    getDocuments: () => documents,
+    getActiveDocId: () => activeDocId,
+    isInteractiveTarget,
+    onSwitchByIndex: (idx) => switchDocumentByIndex(idx),
+    onSwitchByOffset: (offset) => switchDocumentByOffset(offset),
+    onCloseDoc: (docId) => closeDocument(docId),
+    onCreateDoc: () => createBlankDocument(),
   });
-
-  try {
-    window.addEventListener('beforeunload', (ev) => {
-      try {
-        if (IS_ELECTRON) return;
-        if (!documents.length) return;
-        const dirty = documents.some(doc => doc && doc.isDirty);
-        if (!dirty) return;
-        // Use the native unload confirmation dialog instead of window.confirm.
-        ev.preventDefault();
-        ev.returnValue = '';
-      } catch (_) {}
-    });
-  } catch (_) {}
-
-  try {
-    const keyHandler = (ev) => {
-      try {
-        if (!documents.length) return;
-        if (!(ev.ctrlKey || ev.metaKey)) return;
-        if (isInteractiveTarget(ev.target)) return;
-        const key = ev.key ? ev.key.toLowerCase() : '';
-        if (key >= '1' && key <= '9') {
-          ev.preventDefault();
-          switchDocumentByIndex(parseInt(key, 10));
-          return;
-        }
-        if (key === 'tab') {
-          ev.preventDefault();
-          switchDocumentByOffset(ev.shiftKey ? -1 : 1);
-          return;
-        }
-        if (key === 'w') {
-          ev.preventDefault();
-          closeDocument(activeDocId);
-          return;
-        }
-        if (key === 't') {
-          ev.preventDefault();
-          createBlankDocument();
-        }
-      } catch (_) {}
-    };
-    window.addEventListener('keydown', keyHandler);
-  } catch (_) {}
 
   const controlsSection = document.getElementById('controlsSection');
 
@@ -852,6 +886,9 @@ import { highlightLua } from './src/luaHighlighter.js';
   // Nodes pane elements
 
   const nodesList = document.getElementById('nodesList');
+  const nodesPaneEl = document.getElementById('nodesPane');
+  const hideNodesBtn = document.getElementById('hideNodesBtn');
+  const showNodesBtn = document.getElementById('showNodesBtn');
 
   const nodesSearch = document.getElementById('nodesSearch');
   const addUtilityNodeBtn = document.getElementById('addUtilityNodeBtn');
@@ -891,12 +928,20 @@ import { highlightLua } from './src/luaHighlighter.js';
   let nodesPane = null;
   let historyController = null;
   let detailDrawerCollapsed = false;
+  const DRAWER_MODE = {
+    HIDDEN: 'hidden',
+    COLLAPSED: 'collapsed',
+    MACRO: 'macro',
+    CONTROL: 'control',
+  };
+  let drawerMode = DRAWER_MODE.HIDDEN;
   let codePaneCollapsed = true;
   let codePaneRefreshTimer = null;
   let codeHighlightActive = false;
   let activeDetailEntryIndex = null;
   let renderIconHtml = () => '';
   let showCurrentValues = !!(showCurrentValuesToggle && showCurrentValuesToggle.checked);
+  const DETAIL_DRAWER_COLLAPSED_TITLE = 'Details';
   const pushHistory = (...args) => {
     historyController?.pushHistory?.(...args);
     if (!suppressDocDirty) markActiveDocumentDirty();
@@ -910,6 +955,7 @@ import { highlightLua } from './src/luaHighlighter.js';
   const UTILITY_TEMPLATE_PATH = 'templates/utility-node.setting';
   let autoUtilityEnabled = false;
   let utilityTemplateText = null;
+  let nodesHidden = false;
 
   const removeBtn = document.getElementById('removeSelected');
 
@@ -963,7 +1009,7 @@ import { highlightLua } from './src/luaHighlighter.js';
         if (extra.operatorType !== undefined) state.parseResult.operatorType = extra.operatorType;
         if (extra.operatorTypeOriginal !== undefined) state.parseResult.operatorTypeOriginal = extra.operatorTypeOriginal;
       }
-      macroNameEl.textContent = state.parseResult?.macroName || 'Unknown';
+      setMacroNameDisplay(state.parseResult?.macroName || 'Unknown');
       syncOperatorSelect();
       refreshPageTabs?.();
       runValidation(context || 'history');
@@ -983,6 +1029,10 @@ import { highlightLua } from './src/luaHighlighter.js';
       setAutoUtilityEnabled(!!autoUtilityNodeToggle.checked);
     });
   }
+
+  setNodesHidden(false);
+  hideNodesBtn?.addEventListener('click', () => setNodesHidden(true));
+  showNodesBtn?.addEventListener('click', () => setNodesHidden(false));
 
 
   // Insert a cross-platform URL launcher into a ButtonControl block if it has none
@@ -1023,6 +1073,20 @@ import { highlightLua } from './src/luaHighlighter.js';
   const hideReplacedEl = document.getElementById('hideReplaced');
 
   const macroNameEl = document.getElementById('macroName');
+  const setMacroNameDisplay = (value) => {
+    if (!macroNameEl) return;
+    const next = (value && String(value).trim()) ? String(value).trim() : 'Unknown';
+    if ('value' in macroNameEl) {
+      macroNameEl.value = next;
+    } else {
+      macroNameEl.textContent = next;
+    }
+  };
+  const getMacroNameDisplay = () => {
+    if (!macroNameEl) return '';
+    if ('value' in macroNameEl) return macroNameEl.value || '';
+    return macroNameEl.textContent || '';
+  };
 
   const ctrlCountEl = document.getElementById('ctrlCount');
   const operatorTypeSelect = document.getElementById('operatorType');
@@ -1085,153 +1149,255 @@ import { highlightLua } from './src/luaHighlighter.js';
     }
   } catch (_) {}
 
-  let pendingAddControlNode = null;
-
-  function getKnownPageNames() {
-    const set = new Set();
-    set.add('Controls');
-    try {
-      if (Array.isArray(state.parseResult?.pageOrder)) {
-        state.parseResult.pageOrder.forEach((page) => {
-          const val = (page && String(page).trim()) ? String(page).trim() : '';
-          if (val) set.add(val);
-        });
-      }
-      if (Array.isArray(state.parseResult?.entries)) {
-        state.parseResult.entries.forEach((entry) => {
-          const page = entry && entry.page ? String(entry.page).trim() : '';
-          if (page) set.add(page);
-        });
-      }
-    } catch (_) {}
-    return Array.from(set);
-  }
-
-  function updateAddControlPageOptionsList() {
-    if (!addControlPageOptions) return;
-    addControlPageOptions.innerHTML = '';
-    const pages = getKnownPageNames();
-    pages.forEach((page) => {
-      const opt = document.createElement('option');
-      opt.value = page;
-      addControlPageOptions.appendChild(opt);
-    });
-  }
-
-  function getSuggestedAddControlPage() {
-    const active = (state.parseResult && state.parseResult.activePage) ? String(state.parseResult.activePage).trim() : '';
-    if (active) return active;
-    if (Array.isArray(state.parseResult?.pageOrder) && state.parseResult.pageOrder.length) {
-      return state.parseResult.pageOrder[0];
-    }
-    return 'Controls';
-  }
-
-  function updateAddControlTypeVisibility() {
-    if (!addLabelOptions) return;
-    const typeVal = (addControlTypeSelect?.value || 'label').toLowerCase();
-    addLabelOptions.hidden = typeVal !== 'label';
-  }
-
-  function resetAddControlFormFields(nodeName) {
-    if (addControlTitle) addControlTitle.textContent = nodeName || 'Node';
-    if (addControlNameInput) addControlNameInput.value = '';
-    if (addControlTypeSelect) addControlTypeSelect.value = 'label';
-    if (addControlLabelCountInput) addControlLabelCountInput.value = '0';
-    if (addControlLabelDefaultSelect) addControlLabelDefaultSelect.value = 'closed';
-    if (addControlPageInput) {
-      const suggested = getSuggestedAddControlPage();
-      addControlPageInput.value = suggested && suggested !== 'Controls' ? suggested : '';
-    }
-    if (addControlError) addControlError.textContent = '';
-    updateAddControlTypeVisibility();
-  }
+  const addControlModalController = createAddControlModal({
+    state,
+    addControlModal,
+    addControlForm,
+    addControlTitle,
+    addControlNameInput,
+    addControlTypeSelect,
+    addLabelOptions,
+    addControlLabelCountInput,
+    addControlLabelDefaultSelect,
+    addControlPageInput,
+    addControlPageOptions,
+    addControlError,
+    addControlCancelBtn,
+    addControlCloseBtn,
+    addControlSubmitBtn,
+    onAddControl: (nodeName, config) => addControlToNode(nodeName, config),
+  });
 
   function openAddControlDialog(nodeName) {
-    if (!addControlModal) return;
-    pendingAddControlNode = nodeName;
-    updateAddControlPageOptionsList();
-    resetAddControlFormFields(nodeName);
-    addControlModal.hidden = false;
-    setTimeout(() => {
-      try { addControlNameInput?.focus(); } catch (_) {}
-    }, 0);
+    addControlModalController?.open?.(nodeName);
   }
 
-  function closeAddControlDialog() {
-    if (!addControlModal) return;
-    pendingAddControlNode = null;
-    addControlModal.hidden = true;
-  }
-
-  addControlTypeSelect?.addEventListener('change', () => updateAddControlTypeVisibility());
-  addControlCancelBtn?.addEventListener('click', (ev) => {
-    ev.preventDefault();
-    closeAddControlDialog();
-  });
-  addControlCloseBtn?.addEventListener('click', (ev) => {
-    ev.preventDefault();
-    closeAddControlDialog();
-  });
-  addControlModal?.addEventListener('click', (ev) => {
-    if (ev.target === addControlModal) closeAddControlDialog();
-  });
-  document.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Escape' && addControlModal && !addControlModal.hidden) {
-      closeAddControlDialog();
-    }
-  });
-  if (addControlForm) {
-    addControlForm.addEventListener('submit', async (ev) => {
-      ev.preventDefault();
-      try {
-        if (!pendingAddControlNode) {
-          if (addControlError) addControlError.textContent = 'Select a node before adding controls.';
-          return;
-        }
-        const typeRaw = (addControlTypeSelect?.value || 'label').toLowerCase();
-        const allowedTypes = new Set(['label', 'separator', 'button', 'slider', 'screw']);
-        const type = allowedTypes.has(typeRaw) ? typeRaw : 'label';
-        let name = (addControlNameInput?.value || '').trim();
-        if (!name) {
-          if (type === 'separator') {
-            name = 'Separator';
-          } else {
-            if (addControlError) addControlError.textContent = 'Control name is required.';
-            addControlNameInput?.focus();
-            return;
-          }
-        }
-        const pageValue = (addControlPageInput?.value || '').trim();
-        const config = {
-          name,
-          type,
-          page: pageValue,
-        };
-        if (type === 'label') {
-          const countVal = parseInt(addControlLabelCountInput?.value || '0', 10);
-          config.labelCount = Number.isFinite(countVal) ? countVal : 0;
-          config.labelDefault = (addControlLabelDefaultSelect?.value === 'open') ? 'open' : 'closed';
-        }
-        if (addControlError) addControlError.textContent = '';
-        if (addControlSubmitBtn) addControlSubmitBtn.disabled = true;
-        await addControlToNode(pendingAddControlNode, config);
-        closeAddControlDialog();
-      } catch (err) {
-        if (addControlError) addControlError.textContent = err?.message || 'Unable to add control.';
-      } finally {
-        if (addControlSubmitBtn) addControlSubmitBtn.disabled = false;
-      }
-    });
-  }
-
-  function hideDetailDrawer() {
+function hideDetailDrawer() {
     activeDetailEntryIndex = null;
     if (!detailDrawer) return;
-    detailDrawer.hidden = true;
-    detailDrawer.classList.remove('open');
-    detailDrawer.classList.remove('collapsed');
-    detailDrawerCollapsed = false;
+    if (!state.parseResult || controlsSection?.hidden) {
+      detailDrawer.hidden = true;
+      detailDrawer.classList.remove('open');
+      detailDrawer.classList.remove('collapsed');
+      detailDrawerCollapsed = false;
+      drawerMode = DRAWER_MODE.HIDDEN;
+      return;
+    }
+    collapseDetailDrawer();
+  }
+
+  function applyCollapsedDetailDrawerTitle() {
+    if (!detailDrawerTitle) return;
+    detailDrawerTitle.textContent = DETAIL_DRAWER_COLLAPSED_TITLE;
+    detailDrawerTitle.contentEditable = 'false';
+    detailDrawerTitle.spellcheck = false;
+    detailDrawerTitle.onblur = null;
+    detailDrawerTitle.onkeydown = null;
+  }
+
+  function updateDetailDrawerToggleVisibility() {
+    if (!detailDrawerToggleBtn) return;
+    const shouldHide = !!((detailDrawer && detailDrawer.hidden) || (nodesHidden && !detailDrawerCollapsed));
+    detailDrawerToggleBtn.hidden = shouldHide;
+  }
+
+  function syncDetailDrawerAnchor() {
+    if (!detailDrawer) return;
+    if (!detailDrawerCollapsed || !state.parseResult || controlsSection?.hidden) {
+      detailDrawer.style.top = '';
+      detailDrawer.style.right = '';
+      return;
+    }
+    const paneLeft = document.querySelector('.controls .pane-left');
+    if (!paneLeft || typeof paneLeft.getBoundingClientRect !== 'function') {
+      detailDrawer.style.top = '';
+      detailDrawer.style.right = '';
+      return;
+    }
+    const rect = paneLeft.getBoundingClientRect();
+    if (!Number.isFinite(rect.top) || !Number.isFinite(rect.right)) return;
+    const rightOffset = Math.max(12, Math.round(window.innerWidth - rect.right));
+    const topOffset = Math.max(80, Math.round(rect.top + 12));
+    detailDrawer.style.right = `${rightOffset}px`;
+    detailDrawer.style.top = `${topOffset}px`;
+  }
+
+  function applyDrawerState(expanded) {
+    if (!detailDrawer) return;
+    detailDrawer.hidden = false;
+    detailDrawerCollapsed = !expanded;
+    detailDrawer.classList.toggle('open', expanded);
+    detailDrawer.classList.toggle('collapsed', !expanded);
+    updateDrawerToggleLabel();
+    updateDetailDrawerToggleVisibility();
+    syncDetailDrawerAnchor();
+  }
+
+  function collapseDetailDrawer() {
+    if (!detailDrawer) return;
+    if (!state.parseResult || controlsSection?.hidden) {
+      detailDrawer.hidden = true;
+      detailDrawer.classList.remove('open');
+      detailDrawer.classList.remove('collapsed');
+      detailDrawerCollapsed = false;
+      drawerMode = DRAWER_MODE.HIDDEN;
+      return;
+    }
+    drawerMode = DRAWER_MODE.COLLAPSED;
+    applyDrawerState(false);
+    applyCollapsedDetailDrawerTitle();
+  }
+
+  function renderMacroInfoDrawer(options = {}) {
+    if (!detailDrawer || !detailDrawerTitle || !detailDrawerSubtitle || !detailDrawerBody) return;
+    const expanded = !!options.expanded;
+    drawerMode = expanded ? DRAWER_MODE.MACRO : DRAWER_MODE.COLLAPSED;
+    applyDrawerState(expanded);
+    const fileLabel = state.originalFileName || 'No file loaded';
+    detailDrawerSubtitle.textContent = fileLabel;
+    detailDrawerBody.innerHTML = '';
+    if (!expanded) {
+      applyCollapsedDetailDrawerTitle();
+    } else if (!state.parseResult) {
+      detailDrawerTitle.textContent = 'Macro Info';
+      detailDrawerTitle.contentEditable = 'false';
+      detailDrawerTitle.spellcheck = false;
+      detailDrawerTitle.onblur = null;
+      detailDrawerTitle.onkeydown = null;
+    }
+    if (!state.parseResult) {
+      const empty = document.createElement('p');
+      empty.className = 'detail-placeholder';
+      empty.textContent = 'Import a .setting to see macro details.';
+      detailDrawerBody.appendChild(empty);
+      return;
+    }
+    const doc = getActiveDocument && getActiveDocument();
+    const snap = doc && doc.snapshot ? doc.snapshot : null;
+    const macroName = state.parseResult.macroName || snap?.parseResult?.macroName || '';
+    const operatorType = state.parseResult.operatorType || snap?.parseResult?.operatorType || '';
+    if (expanded) {
+      const fallbackName = state.parseResult.macroNameOriginal || macroName || 'Macro Info';
+      detailDrawerTitle.textContent = macroName || fallbackName;
+      detailDrawerTitle.contentEditable = 'true';
+      detailDrawerTitle.spellcheck = false;
+      const commitMacroName = () => {
+        if (!state.parseResult) return;
+        const newName = (detailDrawerTitle.textContent || '').trim();
+        const prevName = state.parseResult.macroName || '';
+        if (newName) {
+          state.parseResult.macroName = newName;
+          setMacroNameDisplay(newName);
+          updateActiveDocumentMeta({ name: newName });
+          if (newName !== prevName) markActiveDocumentDirty();
+        } else {
+          const fallback = state.parseResult.macroNameOriginal || prevName || 'Unknown';
+          detailDrawerTitle.textContent = fallback;
+          setMacroNameDisplay(fallback);
+          updateActiveDocumentMeta({ name: fallback });
+          if (fallback !== prevName) markActiveDocumentDirty();
+        }
+      };
+      detailDrawerTitle.onblur = commitMacroName;
+      detailDrawerTitle.onkeydown = (ev) => {
+        if (ev.key === 'Enter') { ev.preventDefault(); commitMacroName(); detailDrawerTitle.blur(); }
+        if (ev.key === 'Escape') {
+          ev.preventDefault();
+          detailDrawerTitle.textContent = state.parseResult.macroName || state.parseResult.macroNameOriginal || 'Macro Info';
+          detailDrawerTitle.blur();
+        }
+      };
+    }
+    const addInfoField = (label, value) => {
+      const field = document.createElement('div');
+      field.className = 'detail-field';
+      const lbl = document.createElement('label');
+      lbl.textContent = label;
+      const val = document.createElement('div');
+      val.className = 'detail-info-value';
+      if (!value) {
+        val.textContent = '--';
+        val.classList.add('muted');
+      } else {
+        val.textContent = value;
+      }
+      field.appendChild(lbl);
+      field.appendChild(val);
+      detailDrawerBody.appendChild(field);
+    };
+    const addOperatorField = () => {
+      const field = document.createElement('div');
+      field.className = 'detail-field';
+      const lbl = document.createElement('label');
+      lbl.textContent = 'Operator type';
+      const select = document.createElement('select');
+      select.className = 'detail-type-select';
+      if (operatorTypeSelect && operatorTypeSelect.options.length) {
+        Array.from(operatorTypeSelect.options).forEach((opt) => {
+          const clone = document.createElement('option');
+          clone.value = opt.value;
+          clone.textContent = opt.textContent;
+          select.appendChild(clone);
+        });
+      } else {
+        ['GroupOperator', 'MacroOperator'].forEach((value) => {
+          const opt = document.createElement('option');
+          opt.value = value;
+          opt.textContent = value;
+          select.appendChild(opt);
+        });
+      }
+      select.value = operatorType === 'MacroOperator' ? 'MacroOperator' : 'GroupOperator';
+      select.addEventListener('change', () => {
+        if (!state.parseResult) return;
+        const next = select.value === 'MacroOperator' ? 'MacroOperator' : 'GroupOperator';
+        const prev = state.parseResult.operatorType || '';
+        state.parseResult.operatorType = next;
+        if (operatorTypeSelect) operatorTypeSelect.value = next;
+        if (next !== prev) markActiveDocumentDirty();
+      });
+      field.appendChild(lbl);
+      field.appendChild(select);
+      detailDrawerBody.appendChild(field);
+    };
+    const controlsCount = state.parseResult.entries ? String(state.parseResult.entries.length) : '';
+    const filePath = state.originalFilePath || snap?.originalFilePath || '';
+    const exportPath = (snap?.lastExportPath || snap?.exportFolder || state.lastExportPath || state.exportFolder || '');
+    addOperatorField();
+    addInfoField('Controls', controlsCount);
+    addInfoField('Source path', filePath);
+    addInfoField('Export path', exportPath);
+    const link = state.drfxLink || snap?.drfxLink || null;
+    if (link && link.linked) {
+      addInfoField('DRFX preset', link.presetName || 'Linked');
+      addInfoField('DRFX pack', link.drfxPath || '');
+    } else {
+      addInfoField('DRFX link', 'Not linked');
+    }
+  }
+
+  function refreshDetailDrawerState() {
+    if (!detailDrawer) return;
+    if (!state.parseResult || controlsSection?.hidden) {
+      detailDrawer.hidden = true;
+      detailDrawer.classList.remove('open');
+      detailDrawer.classList.remove('collapsed');
+      drawerMode = DRAWER_MODE.HIDDEN;
+      return;
+    }
+    if (activeDetailEntryIndex != null) {
+      renderDetailDrawer(activeDetailEntryIndex);
+      return;
+    }
+    if (nodesHidden) {
+      renderMacroInfoDrawer({ expanded: true });
+      return;
+    }
+    if (drawerMode === DRAWER_MODE.MACRO) {
+      renderMacroInfoDrawer({ expanded: true });
+      return;
+    }
+    collapseDetailDrawer();
   }
 
   function isLuaIdentifier(value) {
@@ -2069,21 +2235,15 @@ import { highlightLua } from './src/luaHighlighter.js';
       hideDetailDrawer();
       return;
     }
-    const wasHidden = detailDrawer.hidden;
     activeDetailEntryIndex = index;
+    drawerMode = DRAWER_MODE.CONTROL;
     const entry = state.parseResult.entries[index];
-    if (wasHidden) detailDrawerCollapsed = true;
-    detailDrawer.hidden = false;
-    detailDrawer.classList.add('open');
-    detailDrawer.classList.toggle('collapsed', !!detailDrawerCollapsed);
-    updateDrawerToggleLabel();
+    applyDrawerState(true);
     detailDrawerTitle.textContent = entry.displayName || entry.name || entry.source || 'Control';
     detailDrawerTitle.contentEditable = 'true';
     detailDrawerTitle.spellcheck = false;
     const commitDrawerName = () => {
-      if (typeof setEntryDisplayNameApi === 'function') {
-        setEntryDisplayNameApi(index, (detailDrawerTitle.textContent || '').trim());
-      }
+      setEntryDisplayNameApi(index, (detailDrawerTitle.textContent || '').trim());
     };
     detailDrawerTitle.onblur = commitDrawerName;
     detailDrawerTitle.onkeydown = (ev) => {
@@ -2423,20 +2583,18 @@ import { highlightLua } from './src/luaHighlighter.js';
         execEditor.setValue(val);
         updateEntryButtonExecute(index, val, { silent: true, skipHistory: true });
       };
-      if (typeof appendLauncherUiApi === 'function') {
-        const launcherWrap = document.createElement('div');
-        launcherWrap.className = 'detail-launcher-column';
-        execBody.appendChild(launcherWrap);
-        try {
-          appendLauncherUiApi(launcherWrap, entry, {
-            onScriptChange: (script) => applyLauncherScript(script || ''),
-          });
-        } catch (_) {
-          const placeholder = document.createElement('p');
-          placeholder.className = 'detail-placeholder';
-          placeholder.textContent = 'Launcher configuration unavailable.';
-          launcherWrap.appendChild(placeholder);
-        }
+      const launcherWrap = document.createElement('div');
+      launcherWrap.className = 'detail-launcher-column';
+      execBody.appendChild(launcherWrap);
+      try {
+        appendLauncherUiApi(launcherWrap, entry, {
+          onScriptChange: (script) => applyLauncherScript(script || ''),
+        });
+      } catch (_) {
+        const placeholder = document.createElement('p');
+        placeholder.className = 'detail-placeholder';
+        placeholder.textContent = 'Launcher configuration unavailable.';
+        launcherWrap.appendChild(placeholder);
       }
       execBody.appendChild(execEditor.wrapper);
       execBody.appendChild(execWarnings);
@@ -2513,7 +2671,7 @@ import { highlightLua } from './src/luaHighlighter.js';
     if (!skipHistory) pushHistory('edit on-change');
     entry.onChange = newVal;
     if (!silent) {
-      try { renderList(state.parseResult.entries, state.parseResult.order); } catch (_) {}
+      renderActiveList({ safe: true });
       renderDetailDrawer(index);
     }
     markContentDirty();
@@ -2530,7 +2688,7 @@ import { highlightLua } from './src/luaHighlighter.js';
     if (!skipHistory) pushHistory('edit button execute');
     entry.buttonExecute = newVal;
     if (!silent) {
-      try { renderList(state.parseResult.entries, state.parseResult.order); } catch (_) {}
+      renderActiveList({ safe: true });
       renderDetailDrawer(index);
     }
     markContentDirty();
@@ -2569,6 +2727,9 @@ import { highlightLua } from './src/luaHighlighter.js';
       }
     }
     renderDetailDrawer(index);
+    if (entry.isLabel) {
+      renderActiveList();
+    }
     markContentDirty();
   }
 
@@ -2600,6 +2761,7 @@ import { highlightLua } from './src/luaHighlighter.js';
     if (updated === state.originalText) return;
     pushHistory('edit current value');
     state.originalText = updated;
+    renderActiveList();
     markContentDirty();
   }
 
@@ -2615,7 +2777,7 @@ import { highlightLua } from './src/luaHighlighter.js';
     entry.labelStyle = next;
     entry.labelStyleDirty = !labelStyleEquals(original, next);
     entry.labelStyleEdited = true;
-    renderList(state.parseResult.entries, state.parseResult.order);
+    renderActiveList();
     renderDetailDrawer(index);
     markContentDirty();
   }
@@ -2917,7 +3079,7 @@ import { highlightLua } from './src/luaHighlighter.js';
       }
     }
     if (!silent) {
-      try { renderList(state.parseResult.entries, state.parseResult.order); } catch (_) {}
+      renderActiveList({ safe: true });
       renderDetailDrawer(index);
     }
     markContentDirty();
@@ -2925,7 +3087,12 @@ import { highlightLua } from './src/luaHighlighter.js';
 
   function handleDetailTargetChange(index) {
     if (index == null || index < 0) {
-      hideDetailDrawer();
+      activeDetailEntryIndex = null;
+      if (nodesHidden) {
+        renderMacroInfoDrawer({ expanded: true });
+      } else {
+        collapseDetailDrawer();
+      }
       return;
     }
     renderDetailDrawer(index);
@@ -2944,9 +3111,16 @@ import { highlightLua } from './src/luaHighlighter.js';
 
   detailDrawerToggleBtn?.addEventListener('click', () => {
     if (!detailDrawer || detailDrawer.hidden) return;
-    detailDrawerCollapsed = !detailDrawerCollapsed;
-    detailDrawer.classList.toggle('collapsed', detailDrawerCollapsed);
-    updateDrawerToggleLabel();
+    if (nodesHidden && !detailDrawerCollapsed) return;
+    if (detailDrawerCollapsed) {
+      if (activeDetailEntryIndex == null) {
+        renderMacroInfoDrawer({ expanded: true });
+        return;
+      }
+      renderDetailDrawer(activeDetailEntryIndex);
+      return;
+    }
+    collapseDetailDrawer();
   });
 
   hideDetailDrawer();
@@ -2968,6 +3142,12 @@ import { highlightLua } from './src/luaHighlighter.js';
   });
 
   updateCodePaneToggle();
+
+  try {
+    window.addEventListener('resize', () => {
+      try { syncDetailDrawerAnchor(); } catch (_) {}
+    });
+  } catch (_) {}
 
   const publishedControls = createPublishedControls({
     controlsList,
@@ -3005,25 +3185,31 @@ import { highlightLua } from './src/luaHighlighter.js';
     onEntryMutated: () => markContentDirty(),
   });
 
-  const {
-    renderList: renderListInternal,
-    setFilter: setPublishedFilter,
-    updateRemoveSelectedState,
-    cleanupDropIndicator,
-    updateDropIndicatorPosition,
-    getInsertionPosUnderSelection,
-    addOrMovePublishedItemsAt,
-    createIcon,
-    getCurrentDropIndex,
-    refreshPageTabs,
-    setEntryDisplayName: setEntryDisplayNameApi,
-    appendLauncherUi: appendLauncherUiApi,
-  } = publishedControls;
-  const renderList = (entries, order) => {
-    renderListInternal(entries, order);
-  };
+  const renderList = publishedControls.renderList;
+  const setPublishedFilter = publishedControls.setFilter;
+  const updateRemoveSelectedState = publishedControls.updateRemoveSelectedState;
+  const cleanupDropIndicator = publishedControls.cleanupDropIndicator;
+  const updateDropIndicatorPosition = publishedControls.updateDropIndicatorPosition;
+  const getInsertionPosUnderSelection = publishedControls.getInsertionPosUnderSelection;
+  const addOrMovePublishedItemsAt = publishedControls.addOrMovePublishedItemsAt;
+  const createIcon = publishedControls.createIcon;
+  const getCurrentDropIndex = publishedControls.getCurrentDropIndex;
+  const refreshPageTabs = publishedControls.refreshPageTabs;
+  const setEntryDisplayNameApi = publishedControls.setEntryDisplayName;
+  const appendLauncherUiApi = publishedControls.appendLauncherUi;
   renderIconHtml = typeof createIcon === 'function' ? createIcon : (() => '');
   updateDrawerToggleLabel();
+
+  function renderActiveList(options = {}) {
+    if (!state.parseResult) return;
+    if (options.safe) {
+      try {
+        renderList(state.parseResult.entries, state.parseResult.order);
+      } catch (_) {}
+      return;
+    }
+    renderList(state.parseResult.entries, state.parseResult.order);
+  }
 
   nodesPane = createNodesPane({
     state,
@@ -3041,7 +3227,7 @@ import { highlightLua } from './src/luaHighlighter.js';
     error,
     highlightNode,
     clearHighlights,
-    renderList: (entries, order) => renderList(entries, order),
+    renderList,
     getInsertionPosUnderSelection,
     insertIndicesAt,
     isPublished,
@@ -3052,6 +3238,7 @@ import { highlightLua } from './src/luaHighlighter.js';
     sanitizeIdent,
     normalizeId,
     enableNodeDrag: ENABLE_NODE_DRAG,
+    requestRenameNode: (nodeName) => promptRenameNode(nodeName),
     requestAddControl: (nodeName) => openAddControlDialog(nodeName),
     getPendingControlMeta: (op, id) => getPendingControlMeta(op, id),
     consumePendingControlMeta: (op, id) => consumePendingControlMeta(op, id),
@@ -3059,7 +3246,7 @@ import { highlightLua } from './src/luaHighlighter.js';
 
   historyController = createHistoryController({
     state,
-    renderList: (entries, order) => renderList(entries, order),
+    renderList,
     ctrlCountEl,
     getNodesPane: () => nodesPane,
     undoBtn,
@@ -3131,46 +3318,16 @@ import { highlightLua } from './src/luaHighlighter.js';
     });
   }
 
-  openExplorerBtn?.addEventListener('click', () => {
-    if (!IS_ELECTRON) {
-      info('Macro Explorer is available in the desktop app.');
-      return;
-    }
-    if (macroExplorerPanel) {
-      macroExplorerPanel.hidden = false;
-    }
-    if (macroExplorerMini) {
-      macroExplorerMini.hidden = true;
-    }
-  });
-  closeExplorerPanelBtn?.addEventListener('click', () => {
-    if (macroExplorerPanel) {
-      macroExplorerPanel.hidden = true;
-    }
-    if (macroExplorerMini) {
-      macroExplorerMini.hidden = false;
-    }
-  });
-
-  const dropHintDefaultText = dropHint ? dropHint.textContent : '';
-  function updateDropHint(text) {
-    try {
-      if (!dropHint) return;
-      dropHint.textContent = text || dropHintDefaultText;
-    } catch (_) {}
-  }
-
   // Make macro name editable in-place
   try {
     if (macroNameEl) {
-      macroNameEl.contentEditable = 'true';
       macroNameEl.spellcheck = false;
       macroNameEl.addEventListener('keydown', (ev) => {
         if (ev.key === 'Enter') { ev.preventDefault(); macroNameEl.blur(); }
       });
       macroNameEl.addEventListener('blur', () => {
         try {
-          const newName = (macroNameEl.textContent || '').trim();
+          const newName = (getMacroNameDisplay() || '').trim();
           if (!state.parseResult) return;
           const prevName = state.parseResult.macroName || '';
           if (newName) {
@@ -3180,7 +3337,7 @@ import { highlightLua } from './src/luaHighlighter.js';
           } else {
             // Revert to original if cleared
             const fallback = state.parseResult.macroNameOriginal || state.parseResult.macroName || 'Unknown';
-            macroNameEl.textContent = fallback;
+            setMacroNameDisplay(fallback);
             updateActiveDocumentMeta({ name: fallback });
             if (fallback !== prevName) markActiveDocumentDirty();
           }
@@ -3205,16 +3362,16 @@ import { highlightLua } from './src/luaHighlighter.js';
   });
 
   // If running under Electron and the native open API is available,
-  // inject an "Open .setting…" button into the file loader section and
+  // inject an "Open .setting" button into the file loader section and
   // hide the older browser file picker to avoid redundant controls.
   try {
-    const native = (typeof window !== 'undefined') ? window.FusionMacroReordererNative : null;
+    const native = getNativeApi();
     const canNativeOpen = !!(native && native.isElectron && typeof native.openSettingFile === 'function');
     if (canNativeOpen && !openNativeBtn && dropZone) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.id = 'openNativeBtn';
-      btn.textContent = 'Open .setting…';
+      btn.textContent = 'Open .setting';
       // Insert before the clipboard button if present, otherwise at end
       const ref = importClipboardBtn || fileInfo || null;
       if (ref && ref.parentNode === dropZone) {
@@ -3238,11 +3395,11 @@ import { highlightLua } from './src/luaHighlighter.js';
 
   publishedSearch?.addEventListener('input', (e) => {
     setPublishedFilter(e.target.value || '');
-    if (state.parseResult) renderList(state.parseResult.entries, state.parseResult.order);
+    renderActiveList();
   });
   showCurrentValuesToggle?.addEventListener('change', () => {
     showCurrentValues = !!showCurrentValuesToggle.checked;
-    if (state.parseResult) renderList(state.parseResult.entries, state.parseResult.order);
+    renderActiveList();
   });
 
 
@@ -3263,11 +3420,11 @@ import { highlightLua } from './src/luaHighlighter.js';
 
   });
 
-  // Native "Open .setting…" (Electron)
+  // Native "Open .setting" (Electron)
   if (openNativeBtn) {
     openNativeBtn.addEventListener('click', async () => {
       try {
-        const native = (typeof window !== 'undefined') ? window.FusionMacroReordererNative : null;
+        const native = getNativeApi();
         if (!native || !native.isElectron || typeof native.openSettingFile !== 'function') {
           // Fallback to browser file picker if native open is not available
           try { fileInput && fileInput.click(); } catch(_) {}
@@ -3299,7 +3456,7 @@ import { highlightLua } from './src/luaHighlighter.js';
   // Shared handler for native open (Electron)
   async function handleNativeOpen() {
     try {
-      const native = (typeof window !== 'undefined') ? window.FusionMacroReordererNative : null;
+      const native = getNativeApi();
       if (!native || !native.isElectron || typeof native.openSettingFile !== 'function') {
         try { fileInput && fileInput.click(); } catch(_) {}
         return;
@@ -3323,177 +3480,6 @@ import { highlightLua } from './src/luaHighlighter.js';
       error('Native open failed: ' + (err?.message || err));
     }
   }
-
-  // Drag & drop file loading
-
-  if (dropZone) {
-
-    ['dragenter','dragover'].forEach(type => {
-
-      dropZone.addEventListener(type, (e) => {
-
-        e.preventDefault();
-
-        e.stopPropagation();
-
-        dropZone.classList.add('dragover');
-        updateDropHint('Drop .setting file here… (over panel)');
-        try { logDiag(`[Drop] ${type} on dropZone`); } catch(_) {}
-
-      });
-
-    });
-
-    ['dragleave','drop'].forEach(type => {
-
-      dropZone.addEventListener(type, (e) => {
-
-        e.preventDefault();
-
-        e.stopPropagation();
-
-        dropZone.classList.remove('dragover');
-        updateDropHint('Drop .setting file here…');
-        try { logDiag(`[Drop] ${type} on dropZone`); } catch(_) {}
-
-      });
-
-    });
-
-    dropZone.addEventListener('drop', async (e) => {
-
-      const files = e.dataTransfer?.files;
-
-      if (files && files.length) {
-
-        try { logDiag('[Drop] dropZone drop (files)'); } catch(_) {}
-
-        await handleFiles(Array.from(files));
-
-        return;
-      }
-
-      // Electron: sometimes only a file path is provided via text/URI list
-      try {
-        const dt = e.dataTransfer;
-        if (dt && IS_ELECTRON) {
-          const uriList = dt.getData('text/uri-list') || dt.getData('text/plain');
-          const filePath = extractFilePathFromData(uriList);
-          if (filePath) {
-            try { logDiag('[Drop] dropZone drop (path) ' + filePath); } catch(_) {}
-            if (isDrfxPath(filePath)) {
-              await handleDrfxFiles([filePath]);
-            } else {
-              await handleDroppedPath(filePath);
-            }
-          }
-        }
-      } catch (_) {}
-
-    });
-
-  }
-
-
-
-  // Make drag & drop resilient across the whole page
-
-  let dragDepth = 0;
-
-  function hasFiles(e) {
-
-    const dt = e.dataTransfer; if (!dt) return false;
-
-    return Array.from(dt.types || []).includes('Files');
-
-  }
-
-  window.addEventListener('dragenter', (e) => {
-
-    if (!hasFiles(e)) return;
-
-    dragDepth++;
-
-    dropZone && dropZone.classList.add('dragover');
-    updateDropHint('Drop .setting file here… (window dragenter)');
-    try { logDiag('[Drop] window dragenter'); } catch(_) {}
-
-  });
-
-  window.addEventListener('dragover', (e) => {
-    if (hasFiles(e)) {
-      e.preventDefault();
-      updateDropHint('Drop .setting file here… (window dragover)');
-      try { logDiag('[Drop] window dragover'); } catch(_) {}
-    }
-  });
-
-  window.addEventListener('dragleave', (e) => {
-
-    if (!hasFiles(e)) return;
-
-    dragDepth = Math.max(0, dragDepth - 1);
-
-    if (dragDepth === 0 && dropZone) {
-      dropZone.classList.remove('dragover');
-      updateDropHint('Drop .setting file here…');
-      try { logDiag('[Drop] window dragleave'); } catch(_) {}
-    }
-
-  });
-
-  window.addEventListener('drop', (e) => {
-
-    if (hasFiles(e)) {
-      e.preventDefault();
-      try { logDiag('[Drop] window drop'); } catch(_) {}
-    }
-
-    dragDepth = 0;
-
-    dropZone && dropZone.classList.remove('dragover');
-    updateDropHint('Drop .setting file here…');
-
-  });
-
-  document.addEventListener('drop', async (e) => {
-
-    const dt = e.dataTransfer;
-
-    if (!dt) return;
-
-    const files = dt.files;
-    if (files && files.length > 0) {
-      e.preventDefault();
-      e.stopPropagation();
-      try { logDiag('[Drop] document drop (files)'); } catch(_) {}
-      await handleFiles(Array.from(files));
-      dropZone && dropZone.classList.remove('dragover');
-      updateDropHint('Drop .setting file here…');
-      return;
-    }
-
-    // Electron path-based drop
-    try {
-      if (IS_ELECTRON) {
-        const uriList = dt.getData('text/uri-list') || dt.getData('text/plain');
-        const filePath = extractFilePathFromData(uriList);
-        if (filePath) {
-          e.preventDefault();
-          e.stopPropagation();
-          try { logDiag('[Drop] document drop (path) ' + filePath); } catch(_) {}
-          if (isDrfxPath(filePath)) {
-            await handleDrfxFiles([filePath]);
-          } else {
-            await handleDroppedPath(filePath);
-          }
-          dropZone && dropZone.classList.remove('dragover');
-          updateDropHint('Drop .setting file here…');
-        }
-      }
-    } catch (_) {}
-
-  });
 
   async function handleDroppedPath(filePath) {
     try {
@@ -3529,6 +3515,18 @@ import { highlightLua } from './src/luaHighlighter.js';
       return null;
     } catch (_) { return null; }
   }
+
+  createFileDropController({
+    dropZone,
+    updateDropHint,
+    logDiag,
+    handleFiles,
+    handleDroppedPath,
+    handleDrfxFiles,
+    extractFilePathFromData,
+    isDrfxPath,
+    isElectron: IS_ELECTRON,
+  });
 
   function setExportFolder(folderPath, options = {}) {
     const { silent = false, selected = false } = options || {};
@@ -3674,8 +3672,7 @@ import { highlightLua } from './src/luaHighlighter.js';
       const wrapRes = maybeWrapUngroupedNodes(text, { sourceName });
       text = wrapRes.text;
       const wrapped = wrapRes.changed;
-      text = stripDanglingRootUserControls(text);
-      text = stripDanglingRootInputs(text);
+      // Avoid stripping root blocks on import; parse can safely ignore them.
       if (allowAutoUtility) {
         text = await maybeAutoAddUtility(text, { silent: silentAuto });
       }
@@ -3690,6 +3687,11 @@ import { highlightLua } from './src/luaHighlighter.js';
         const any = findInputsBlockAnywhere(text);
         const back = findInputsBlockByBacktrack ? findInputsBlockByBacktrack(text) : null;
         logDiag(`Inputs blocks - primary: ${prim.length}, any: ${any ? 1 : 0}, backtrack: ${back ? 1 : 0}`);
+        const hasInputs = /Inputs\s*=/.test(text);
+        const hasInstance = text.includes('InstanceInput');
+        const hasMacro = /=\s*(GroupOperator|MacroOperator)\s*\{/.test(text);
+        const preview = String(text || '').slice(0, 120).replace(/\s+/g, ' ').trim();
+        logDiag(`Inputs scan - len: ${text.length}, inputs: ${hasInputs}, instance: ${hasInstance}, macro: ${hasMacro}, head: "${preview}"`);
       } catch (e) {
         logDiag(`Diagnostics error while scanning Inputs: ${e.message || e}`);
       }
@@ -3734,7 +3736,7 @@ import { highlightLua } from './src/luaHighlighter.js';
       if (!state.parseResult.entries.length) {
         info('No published controls found. Use the Nodes pane to add controls.');
       }
-      macroNameEl.textContent = state.parseResult.macroName || 'Unknown';
+      setMacroNameDisplay(state.parseResult.macroName || 'Unknown');
       ctrlCountEl.textContent = String(state.parseResult.entries.length);
       registerLoadedDocument(state.originalFileName || sourceName, { createDoc });
       logDiag(`Parsed ok - macro: ${state.parseResult.macroName || 'Unknown'}, controls: ${state.parseResult.entries.length}`);
@@ -3750,7 +3752,7 @@ import { highlightLua } from './src/luaHighlighter.js';
       state.parseResult.history = [];
       state.parseResult.future = [];
       updateUndoRedoState();
-      renderList(state.parseResult.entries, state.parseResult.order);
+      renderActiveList();
       refreshPageTabs?.();
       updateRemoveSelectedState();
       if (wrapped) info('Detected loose nodes and wrapped them into a macro automatically.');
@@ -3764,6 +3766,7 @@ import { highlightLua } from './src/luaHighlighter.js';
         nodesPane.parseAndRenderNodes();
       }
       updateUtilityActionsState();
+      updateIntroToggleVisibility();
       if (IS_ELECTRON) setIntroCollapsed(true);
     } catch (err) {
       const msg = err.message || String(err);
@@ -3888,7 +3891,8 @@ async function handleFile(file) {
   // Auto-load catalogs when running under Electron via fetch from local files
   (async () => {
     try {
-      const isElectron = (typeof window !== 'undefined') && !!(window.FusionMacroReordererNative && window.FusionMacroReordererNative.isElectron);
+      const native = getNativeApi();
+      const isElectron = !!(native && native.isElectron);
       if (!isElectron) return;
 
       const pending = [];
@@ -3939,7 +3943,7 @@ async function handleFile(file) {
 
     state.parseResult.order = [...state.parseResult.originalOrder];
 
-    renderList(state.parseResult.entries, state.parseResult.order);
+    renderActiveList();
 
     info('Order reset.');
 
@@ -3996,13 +4000,13 @@ async function handleFile(file) {
 
   async function exportToSourceDrfx() {
     if (!state.parseResult) return;
-    const native = (typeof window !== 'undefined') ? window.FusionMacroReordererNative : null;
+    const native = getNativeApi();
     if (!native || typeof native.saveDrfxPreset !== 'function' || !state.originalFilePath) {
       error('Active macro is not linked to a DRFX preset.');
       return;
     }
     try {
-      const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline);
+      const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, { safeEditExport: true });
       const drfxRes = await native.saveDrfxPreset({
         sourcePath: state.originalFilePath,
         content: newContent,
@@ -4028,7 +4032,7 @@ async function handleFile(file) {
 
   async function exportToSourceDrfxMulti() {
     if (!state.parseResult) return;
-    const native = (typeof window !== 'undefined') ? window.FusionMacroReordererNative : null;
+    const native = getNativeApi();
     if (!native || typeof native.saveDrfxPreset !== 'function') {
       error('Export to Source DRFX is available in the desktop app.');
       return;
@@ -4105,7 +4109,7 @@ async function handleFile(file) {
       const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline);
       const outName = suggestOutputName(state.originalFileName);
       const defaultPath = buildExportDefaultPath(outName);
-      const native = (typeof window !== 'undefined') ? window.FusionMacroReordererNative : null;
+      const native = getNativeApi();
       if (native && typeof native.saveSettingFile === 'function') {
         try {
           const res = await native.saveSettingFile({ defaultPath, content: newContent });
@@ -4140,7 +4144,7 @@ async function handleFile(file) {
         return;
       }
       const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline);
-      const outName = suggestOutputName(state.originalFileName);
+      const outName = buildMacroExportName();
       if (!IS_ELECTRON) {
         triggerDownload(outName, newContent);
         info('Exported reordered .setting');
@@ -4164,7 +4168,7 @@ async function handleFile(file) {
     if (!state.parseResult) return;
     try {
       const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline);
-      const native = (typeof window !== 'undefined') ? window.FusionMacroReordererNative : null;
+      const native = getNativeApi();
       if (native && typeof native.writeClipboard === 'function') {
         try {
           native.writeClipboard(newContent);
@@ -4211,6 +4215,198 @@ async function handleFile(file) {
     });
   }
 
+  const DRFX_ROOT_OPTIONS = ['Edit', 'Fusion'];
+  const DRFX_EDIT_OPTIONS = ['Effects', 'Titles', 'Generators', 'Transitions'];
+
+  function parseDrfxCategoryDefaults(raw) {
+    const cleaned = String(raw || '').replace(/\\/g, '/').trim();
+    const parts = cleaned.split('/').map(p => p.trim()).filter(Boolean);
+    let root = 'Edit';
+    let sub = 'Effects';
+    let tail = '';
+    if (!parts.length) return { root, sub, tail };
+    const first = parts[0];
+    if (/^fusion$/i.test(first)) {
+      root = 'Fusion';
+      tail = parts.slice(1).join('/');
+      return { root, sub, tail };
+    }
+    if (/^edit$/i.test(first)) {
+      root = 'Edit';
+      const second = parts[1];
+      if (second && DRFX_EDIT_OPTIONS.some(opt => opt.toLowerCase() === second.toLowerCase())) {
+        sub = DRFX_EDIT_OPTIONS.find(opt => opt.toLowerCase() === second.toLowerCase()) || sub;
+        tail = parts.slice(2).join('/');
+      } else {
+        tail = parts.slice(1).join('/');
+      }
+      return { root, sub, tail };
+    }
+    // Unknown prefix: keep defaults and treat the full path as the tail.
+    tail = parts.join('/');
+    return { root, sub, tail };
+  }
+
+  function buildDrfxCategoryPath(root, sub, tail) {
+    const segments = [];
+    const base = String(root || '').trim();
+    if (base) segments.push(base);
+    if (base === 'Edit') {
+      const editSegment = String(sub || '').trim();
+      if (editSegment) segments.push(editSegment);
+    }
+    let rest = String(tail || '').trim();
+    if (rest) {
+      rest = rest.replace(/^[\\/]+/, '').replace(/\\/g, '/');
+    }
+    const prefix = segments.join('/');
+    if (!rest) return prefix;
+    return prefix ? `${prefix}/${rest}` : rest;
+  }
+
+  function openDrfxCategoryPrompt({ defaultCategory } = {}) {
+    return new Promise((resolve) => {
+      const defaults = parseDrfxCategoryDefaults(defaultCategory);
+      const overlay = document.createElement('div');
+      overlay.className = 'add-control-modal';
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      const form = document.createElement('form');
+      form.className = 'add-control-form';
+      const header = document.createElement('header');
+      const headerWrap = document.createElement('div');
+      const title = document.createElement('h3');
+      title.textContent = 'Export DRFX pack';
+      headerWrap.appendChild(title);
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.textContent = 'x';
+      closeBtn.setAttribute('aria-label', 'Close');
+      header.appendChild(headerWrap);
+      header.appendChild(closeBtn);
+      const body = document.createElement('div');
+      body.className = 'form-body';
+
+      const row = document.createElement('div');
+      row.className = 'field-row path-row';
+      const rootLabel = document.createElement('label');
+      rootLabel.textContent = 'Page';
+      const rootSelect = document.createElement('select');
+      DRFX_ROOT_OPTIONS.forEach((opt) => {
+        const option = document.createElement('option');
+        option.value = opt;
+        option.textContent = opt;
+        rootSelect.appendChild(option);
+      });
+      rootSelect.value = defaults.root;
+      rootLabel.appendChild(rootSelect);
+
+      const rootSeparator = document.createElement('span');
+      rootSeparator.className = 'path-separator';
+      rootSeparator.textContent = '/';
+
+      const subLabel = document.createElement('label');
+      subLabel.textContent = 'Category';
+      const subSelect = document.createElement('select');
+      DRFX_EDIT_OPTIONS.forEach((opt) => {
+        const option = document.createElement('option');
+        option.value = opt;
+        option.textContent = opt;
+        subSelect.appendChild(option);
+      });
+      subSelect.value = defaults.sub;
+      subLabel.appendChild(subSelect);
+
+      const subSeparator = document.createElement('span');
+      subSeparator.className = 'path-separator';
+      subSeparator.textContent = '/';
+
+      const tailLabel = document.createElement('label');
+      tailLabel.textContent = 'Additional folders';
+      const tailInput = document.createElement('input');
+      tailInput.type = 'text';
+      tailInput.placeholder = 'Stirling Supply Co';
+      tailInput.value = defaults.tail || '';
+      tailLabel.appendChild(tailInput);
+
+      row.appendChild(rootLabel);
+      row.appendChild(rootSeparator);
+      row.appendChild(subLabel);
+      row.appendChild(subSeparator);
+      row.appendChild(tailLabel);
+      body.appendChild(row);
+
+      const errorEl = document.createElement('div');
+      errorEl.className = 'form-error';
+
+      const actions = document.createElement('div');
+      actions.className = 'modal-actions';
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.textContent = 'Cancel';
+      const okBtn = document.createElement('button');
+      okBtn.type = 'submit';
+      okBtn.textContent = 'Export';
+      actions.appendChild(cancelBtn);
+      actions.appendChild(okBtn);
+
+      form.appendChild(header);
+      form.appendChild(body);
+      form.appendChild(errorEl);
+      form.appendChild(actions);
+      overlay.appendChild(form);
+      document.body.appendChild(overlay);
+
+      const syncSubState = () => {
+        const isEdit = rootSelect.value === 'Edit';
+        subSelect.disabled = !isEdit;
+      };
+      syncSubState();
+
+      const cleanup = () => {
+        rootSelect.removeEventListener('change', syncSubState);
+        cancelBtn.removeEventListener('click', onCancel);
+        closeBtn.removeEventListener('click', onCancel);
+        form.removeEventListener('submit', onSubmit);
+        overlay.removeEventListener('click', onOverlayClick);
+        document.removeEventListener('keydown', onKeyDown);
+        try { overlay.remove(); } catch (_) {}
+      };
+      const finish = (value) => {
+        cleanup();
+        resolve(value);
+      };
+      const onCancel = () => finish(null);
+      const onSubmit = (ev) => {
+        ev.preventDefault();
+        const categoryPath = buildDrfxCategoryPath(rootSelect.value, subSelect.value, tailInput.value);
+        if (!categoryPath) {
+          errorEl.textContent = 'Category path is required.';
+          return;
+        }
+        finish(categoryPath);
+      };
+      const onOverlayClick = (ev) => {
+        if (ev.target === overlay) onCancel();
+      };
+      const onKeyDown = (ev) => {
+        if (ev.key === 'Escape') {
+          ev.preventDefault();
+          onCancel();
+        }
+      };
+
+      rootSelect.addEventListener('change', syncSubState);
+      cancelBtn.addEventListener('click', onCancel);
+      closeBtn.addEventListener('click', onCancel);
+      form.addEventListener('submit', onSubmit);
+      overlay.addEventListener('click', onOverlayClick);
+      document.addEventListener('keydown', onKeyDown);
+
+      rootSelect.focus();
+    });
+  }
+
   async function exportToDrfxMulti() {
     if (!IS_ELECTRON || !nativeBridge || !nativeBridge.ipcRenderer) {
       error('Export to DRFX is available in the desktop app.');
@@ -4233,11 +4429,17 @@ async function handleFile(file) {
       if (storedName) defaultName = storedName;
       if (storedCategory) defaultCategory = storedCategory;
     } catch (_) {}
-    const drfxName = (window.prompt('DRFX name:', defaultName) || '').trim();
+    const drfxNameRaw = await textPrompt.open({
+      title: 'Export DRFX pack',
+      label: 'DRFX name',
+      initialValue: defaultName,
+      confirmText: 'Continue',
+    });
+    if (drfxNameRaw == null) return;
+    const drfxName = String(drfxNameRaw || '').trim();
     if (!drfxName) return;
-    const categoryRaw = window.prompt('Category path inside DRFX (e.g., Edit/Effects/Your Brand):', defaultCategory);
-    if (categoryRaw == null) return;
-    const categoryPath = String(categoryRaw || '').trim();
+    const categoryPath = await openDrfxCategoryPrompt({ defaultCategory });
+    if (categoryPath == null) return;
     if (!categoryPath) {
       error('Category path is required.');
       return;
@@ -4291,9 +4493,7 @@ async function handleFile(file) {
     }
   });
 
-  exportTemplatesBtn?.addEventListener('click', async () => {
-    exportToEditPage();
-  });
+  exportTemplatesBtn?.addEventListener('click', exportToEditPage);
 
 
 
@@ -4301,7 +4501,7 @@ async function handleFile(file) {
   importClipboardBtn?.addEventListener('click', async () => {
     try {
       let text = '';
-      const native = (typeof window !== 'undefined') ? window.FusionMacroReordererNative : null;
+      const native = getNativeApi();
 
       // 1) Try native clipboard (Electron)
       if (native && typeof native.readClipboard === 'function') {
@@ -4313,20 +4513,21 @@ async function handleFile(file) {
         try { text = await navigator.clipboard.readText(); } catch (_) { /* ignore */ }
       }
 
-      // 3) If still empty: browser can prompt, Electron just errors
+      // 3) If still empty: prompt for manual paste
       if (!text || !text.trim()) {
-        const isElectron = !!(native && native.isElectron);
-        if (!isElectron) {
-          const pasted = window.prompt('Paste .setting content here:', '');
-          if (!pasted || !pasted.trim()) {
-            error('Clipboard empty or read denied.');
-            return;
-          }
-          text = pasted;
-        } else {
+        const pasted = await textPrompt.open({
+          title: 'Import from clipboard',
+          label: 'Paste .setting content',
+          initialValue: '',
+          confirmText: 'Import',
+          multiline: true,
+          placeholder: 'Paste .setting content here',
+        });
+        if (!pasted || !pasted.trim()) {
           error('Clipboard empty or read denied.');
           return;
         }
+        text = pasted;
       }
 
       await loadSettingText('Clipboard.setting', text);
@@ -4360,232 +4561,103 @@ async function handleFile(file) {
 
 
 
-  exportClipboardBtn?.addEventListener('click', async () => {
-    exportToClipboard();
-  });
-
-
-
-    // Deep-link and cross-pane highlight
-
-  function linkKey(sourceOp, source) {
-
-    if (!sourceOp) return null; const s = source ? ('.' + source) : ''; return `${sourceOp}${s}`;
-
-  }
-
-  function setDeepLink(op, src) {
-
-    const key = linkKey(op, src); if (!key) return; location.hash = encodeURIComponent(key);
-
-  }
-
-  function parseDeepLink() {
-
-    const h = decodeURIComponent((location.hash || '').replace(/^#/, ''));
-
-    if (!h) return null; const dot = h.indexOf('.');
-
-    if (dot < 0) return { op: h, src: null }; return { op: h.slice(0, dot), src: h.slice(dot+1) };
-
-  }
-
+  exportClipboardBtn?.addEventListener('click', exportToClipboard);
+  // Cross-pane highlight
   function clearHighlights() {
-
     try {
-
-      document.querySelectorAll('.hl-pub').forEach(e => e.classList.remove('hl-pub'));
-
-      document.querySelectorAll('.hl-node').forEach(e => e.classList.remove('hl-node'));
-
+      document.querySelectorAll('.hl-pub').forEach((el) => el.classList.remove('hl-pub'));
+      document.querySelectorAll('.hl-node').forEach((el) => el.classList.remove('hl-node'));
     } catch (_) {}
-
   }
 
-  // Safe CSS attribute value escape for selectors
-
-  function cssEsc(v) {
-
+  function deriveGroupBase(source) {
+    if (!source) return null;
+    let base = null;
     try {
-
-      return (window.CSS && CSS.escape) ? CSS.escape(String(v)) : String(v).replace(/["\\\]]/g, '\\$&');
-
+      base = (typeof deriveColorBaseFromId === 'function') ? deriveColorBaseFromId(source) : null;
     } catch (_) {
-
-      return String(v);
-
+      base = null;
     }
-
-  }
-
-  function highlightPublished(op, src, pulse=true) {
-
-  try {
-
-    if (!state.parseResult) return false;
-
-    const idx = (state.parseResult.entries||[]).findIndex(e => e && e.sourceOp===op && e.source===src);
-
-    if (idx < 0) return false;
-
-    const row = controlsList.querySelector('li[data-index="'+idx+'"]');
-
-    if (!row) return false;
-
-    row.classList.add('hl-pub');
-
-    if (pulse) row.classList.add('pulse');
-
-    scrollRowIntoView(row, controlsList);
-
-    setTimeout(()=>row.classList.remove('pulse'), 800);
-
-    return true;
-
-  } catch (_) { return false; }
-
+    if (!base) {
+      const suffix = ['Red', 'Green', 'Blue', 'Alpha'].find((s) => String(source || '').endsWith(s));
+      if (suffix) base = String(source).slice(0, String(source).length - suffix.length);
+    }
+    return base;
   }
 
   function highlightNode(op, src, pulse = true) {
-
     try {
-
       if (nodesPane) {
         nodesPane.expandNode?.(op, 'open');
         nodesPane.parseAndRenderNodes?.();
       }
 
       const findEl = () => {
-
         if (!nodesList) return null;
 
         if (src) {
-
-          let el = nodesList.querySelector('input.node-ctrl[data-source-op="' + op + '"][data-source="' + src + '"]');
-
+          let el = nodesList.querySelector(`input.node-ctrl[data-source-op="${op}"][data-source="${src}"]`);
           if (el) return el;
 
-          let base = null;
-
-          try { base = (typeof deriveColorBaseFromId === 'function') ? deriveColorBaseFromId(src) : null; } catch(_) { base = null; }
-
-          if (!base) {
-
-            const suf = ['Red','Green','Blue','Alpha'].find(s => String(src||'').endsWith(s));
-
-            if (suf) base = String(src).slice(0, String(src).length - suf.length);
-
-          }
-
+          const base = deriveGroupBase(src);
           if (base) {
-
-            el = nodesList.querySelector('input.node-ctrl.group[data-source-op="' + op + '"][data-group-base="' + base + '"]');
-
+            el = nodesList.querySelector(`input.node-ctrl.group[data-source-op="${op}"][data-group-base="${base}"]`);
             if (el) return el;
-
           }
 
           const inputs = nodesList.querySelectorAll('input.node-ctrl');
-
           for (const input of inputs) {
-
             if (!input.classList.contains('group')) {
-
               if ((input.dataset.sourceOp || '') === op && (input.dataset.source || '') === src) return input;
-
             } else {
-
               const dsBase = input.dataset.groupBase || '';
-
               if (dsBase && (input.dataset.sourceOp || '') === op) {
-
-                if (!base) {
-
-                  const suf = ['Red','Green','Blue','Alpha'].find(s => String(src||'').endsWith(s));
-
-                  if (suf) base = String(src).slice(0, String(src).length - suf.length);
-
-                }
-
                 if (base && dsBase === base) return input;
-
               }
-
             }
-
           }
-
           return null;
-
-        } else {
-
-          const el = nodesList.querySelector('input.node-ctrl.group[data-source-op="' + op + '"]');
-
-          if (el) return el;
-
-          const inputs = nodesList.querySelectorAll('input.node-ctrl.group');
-
-          for (const input of inputs) {
-
-            if ((input.dataset.sourceOp || '') === op) return input;
-
-          }
-
-          return null;
-
         }
 
+        const el = nodesList.querySelector(`input.node-ctrl.group[data-source-op="${op}"]`);
+        if (el) return el;
+        const inputs = nodesList.querySelectorAll('input.node-ctrl.group');
+        for (const input of inputs) {
+          if ((input.dataset.sourceOp || '') === op) return input;
+        }
+        return null;
       };
 
       let target = findEl();
-
       if (!target && nodesPane?.getNodeFilter?.()) {
         nodesPane?.clearFilter?.();
         target = findEl();
       }
 
       if (!target) {
-
         // Fallback: highlight the node header by data attribute
-
         try {
-
-          const wrap = nodesList && nodesList.querySelector('.node[data-op="' + op + '"] .node-header');
-
+          const wrap = nodesList && nodesList.querySelector(`.node[data-op="${op}"] .node-header`);
           if (wrap) {
-
             wrap.classList.add('hl-node');
-
             if (pulse) wrap.classList.add('pulse');
-
             scrollRowIntoView(wrap, nodesList);
-
             setTimeout(() => wrap.classList.remove('pulse'), 800);
-
             return true;
-
           }
-
-        } catch(_) {}
-
+        } catch (_) {}
         return false;
-
       }
 
       const row = target.closest('.node-row') || target;
-
       row.classList.add('hl-node');
-
       if (pulse) row.classList.add('pulse');
-
       scrollRowIntoView(row, nodesList);
-
       setTimeout(() => row.classList.remove('pulse'), 800);
-
       return true;
-
-    } catch(_) { return false; }
-
+    } catch (_) {
+      return false;
+    }
   }
 
   function scrollRowIntoView(row, container) {
@@ -4613,12 +4685,6 @@ async function handleFile(file) {
     publishedControls?.setHighlightHandler?.(highlightNode);
   } catch (_) {}
 
-  function applyDeepLinkFromHash() {
-
-    try { const p = parseDeepLink(); if (!p || !state.parseResult) return; if (!highlightPublished(p.op, p.src)) { highlightNode(p.op, p.src); } } catch (_) {}
-
-}
-
   function clearUI() {
 
     messages.textContent = '';
@@ -4642,6 +4708,7 @@ async function handleFile(file) {
     hideDetailDrawer();
     updateUtilityActionsState();
     updateExportMenuButtonState();
+    updateIntroToggleVisibility();
     cancelPendingCodeRefresh();
     updateCodeView('');
     state.lastDiffRange = null;
@@ -4902,6 +4969,30 @@ async function handleFile(file) {
 
     return !!autoUtilityEnabled;
 
+  }
+
+  function setNodesHidden(hidden) {
+    nodesHidden = !!hidden;
+    const wasHidden = document?.body?.classList?.contains('nodes-hidden');
+    if (typeof document !== 'undefined') {
+      document.body.classList.toggle('nodes-hidden', nodesHidden);
+    }
+    if (controlsSection) {
+      controlsSection.classList.toggle('nodes-hidden', nodesHidden);
+    }
+    if (nodesPaneEl) {
+      nodesPaneEl.hidden = nodesHidden;
+    }
+    if (hideNodesBtn) {
+      hideNodesBtn.hidden = nodesHidden;
+    }
+    if (showNodesBtn) {
+      showNodesBtn.hidden = !nodesHidden;
+    }
+    if (wasHidden && !nodesHidden && activeDetailEntryIndex == null) {
+      collapseDetailDrawer();
+    }
+    refreshDetailDrawerState();
   }
 
 
@@ -5252,13 +5343,25 @@ async function handleFile(file) {
 
 
   function suggestOutputName(name) {
-
     const dot = name.lastIndexOf('.');
+    if (dot > 0) return sanitizeFileBaseName(name.slice(0, dot) + '.reordered' + name.slice(dot));
+    return sanitizeFileBaseName(name + '.reordered.setting');
+  }
 
-    if (dot > 0) return name.slice(0, dot) + '.reordered' + name.slice(dot);
+  function sanitizeFileBaseName(value) {
+    return String(value || '')
+      .replace(/[\\/:*?"<>|]/g, '_')
+      .replace(/\s+/g, '_')
+      .trim();
+  }
 
-    return name + '.reordered.setting';
-
+  function buildMacroExportName() {
+    const macroName = (state.parseResult?.macroName || state.parseResult?.macroNameOriginal || '').trim();
+    if (macroName) {
+      const safe = sanitizeFileBaseName(macroName);
+      return (safe || 'Macro') + '.setting';
+    }
+    return suggestOutputName(state.originalFileName || 'Macro.setting');
   }
 
 
@@ -5303,15 +5406,18 @@ async function handleFile(file) {
     // Prefer rebuilding into the GroupOperator-level Inputs block (or inserting one)
     let bounds = locateMacroGroupBounds(original, result);
     let updated = original;
-    updated = applyLabelCountEdits(updated, result, eol);
-    updated = applyLabelVisibilityEdits(updated, result, eol);
-    updated = applyLabelDefaultStateEdits(updated, result, eol);
-    updated = applyUserControlPages(updated, result, eol, options);
-    // Safety: strip BTNCS_Execute from managed buttons unless explicitly clicked
-    updated = stripUnclickedBtncs(updated, result, eol);
-    // Insert exact launcher only for explicitly clicked controls
-    updated = ensureExactLauncherInserted(updated, result, eol);
-    updated = stripLegacyLauncherArtifacts(updated);
+    const safeEditExport = options.safeEditExport === true;
+    if (!safeEditExport) {
+      updated = applyLabelCountEdits(updated, result, eol);
+      updated = applyLabelVisibilityEdits(updated, result, eol);
+      updated = applyLabelDefaultStateEdits(updated, result, eol);
+      updated = applyUserControlPages(updated, result, eol, options);
+      // Safety: strip BTNCS_Execute from managed buttons unless explicitly clicked
+      updated = stripUnclickedBtncs(updated, result, eol);
+      // Insert exact launcher only for explicitly clicked controls
+      updated = ensureExactLauncherInserted(updated, result, eol);
+      updated = stripLegacyLauncherArtifacts(updated);
+    }
     updated = applyMacroNameRename(updated, result);
     updated = ensureGroupInputsBlock(updated, result, eol);
     updated = rewritePrimaryInputsBlock(updated, result, eol);
@@ -5972,12 +6078,15 @@ async function handleFile(file) {
       const newName = (result.macroName || '').trim();
       const targetName = newName || originalName;
       if (!originalName || !targetName) return text;
+      let safeName = sanitizeIdent(targetName);
+      if (!safeName) safeName = sanitizeIdent(originalName) || 'Macro';
+      if (!isIdentStart(safeName[0])) safeName = `_${safeName}`;
       const desiredType = (result.operatorType || result.operatorTypeOriginal || 'GroupOperator').trim() || 'GroupOperator';
       const nameEsc = originalName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const re = new RegExp('(^|\\n)(\\s*)' + nameEsc + '(\\s*=\\s*)(GroupOperator|MacroOperator)(\\s*\\{)', 'm');
       return text.replace(re, (match, prefix, spaces, equalsPart, existingType, bracePart) => {
         const typeOut = desiredType || existingType;
-        return `${prefix}${spaces}${targetName}${equalsPart}${typeOut}${bracePart}`;
+        return `${prefix}${spaces}${safeName}${equalsPart}${typeOut}${bracePart}`;
       });
     } catch(_) { return text; }
   }
@@ -6864,6 +6973,16 @@ async function handleFile(file) {
   function getCurrentInputInfo(entry) {
     const empty = { value: '', note: '' };
     try {
+      if (entry && entry.isLabel) {
+        const rawDefault = normalizeMetaValue(
+          entry?.controlMeta?.defaultValue ??
+          entry?.controlMetaOriginal?.defaultValue ??
+          extractInstancePropValue(entry?.raw || '', 'Default') ??
+          entry?.labelValueOriginal
+        );
+        const isOpen = rawDefault === '0' ? false : true;
+        return { value: isOpen ? 'Open' : 'Closed', note: 'Label default state.' };
+      }
       if (!entry || !entry.sourceOp || !entry.source || !state.originalText || !state.parseResult) return empty;
       const bounds = locateMacroGroupBounds(state.originalText, state.parseResult);
       if (!bounds) return empty;
@@ -7192,7 +7311,10 @@ async function handleFile(file) {
         const pr = priorityMap.has(name) ? priorityMap.get(name) : fallbackPriority++;
         cfg.priority = pr;
       });
-      out = ensureControlPagesDeclared(out, bounds, pageDefinitions, eol, result);
+      const onlyControlsPage = pageDefinitions.size === 1 && pageDefinitions.has('Controls');
+      if (!onlyControlsPage) {
+        out = ensureControlPagesDeclared(out, bounds, pageDefinitions, eol, result);
+      }
       bounds = locateMacroGroupBounds(out, result);
       const nameRes = applyDisplayNameOverrides(out, result, bounds, eol, result, { commitChanges });
       out = nameRes.text;
@@ -7539,10 +7661,13 @@ async function handleFile(file) {
   function stripDanglingRootUserControls(text) {
     try {
       if (!text) return text;
+      if (/=\s*(GroupOperator|MacroOperator)\s*\{/.test(text)) return text;
       const toolsPos = text.indexOf('Tools = ordered()');
       if (toolsPos < 0) return text;
       const ucPos = text.indexOf('UserControls = ordered()');
       if (ucPos < 0 || ucPos > toolsPos) return text;
+      const ucGroup = findEnclosingGroupForIndex(text, ucPos);
+      if (ucGroup) return text;
       const open = text.indexOf('{', ucPos);
       if (open < 0 || open > toolsPos) return text;
       const close = findMatchingBrace(text, open);
@@ -7563,6 +7688,7 @@ async function handleFile(file) {
   function stripDanglingRootInputs(text) {
     try {
       if (!text) return text;
+      if (/=\s*(GroupOperator|MacroOperator)\s*\{/.test(text)) return text;
       const toolsPos = text.indexOf('Tools = ordered()');
       if (toolsPos < 0) return text;
       const idx = text.indexOf('Inputs = ordered()');
@@ -8831,167 +8957,6 @@ function applyBlendCheckboxesToTool(text, bounds, toolName, controls, eol, resul
 
 
 
-  function ensurePublished(sourceOp, source, displayName, meta, options = {}) {
-
-    if (!state.parseResult) return null;
-
-    let idx = (state.parseResult.entries || []).findIndex(e => e && e.sourceOp === sourceOp && e.source === source);
-
-    if (idx < 0) {
-
-      if (!options.skipHistory) pushHistory('publish control');
-
-      const key = makeUniqueKey(`${sourceOp}_${source}`);
-
-      const base = (typeof deriveColorBaseFromId === "function" ? deriveColorBaseFromId(source) : (function(){ const suf=["Red","Green","Blue","Alpha"].find(s => String(source||"").endsWith(s)); return suf ? String(source).slice(0, String(source).length - suf.length) : null; })());
-
-      const controlGroup = base ? getOrAssignControlGroup(sourceOp, base) : null;
-
-      const metaPage = (meta && meta.page && String(meta.page).trim()) ? String(meta.page).trim() : '';
-      const activePage = (state.parseResult && state.parseResult.activePage) ? String(state.parseResult.activePage).trim() : '';
-      const targetPage = metaPage || activePage || 'Controls';
-
-      const raw = buildInstanceInputRaw(key, sourceOp, source, displayName, targetPage, controlGroup);
-
-      const entry = { key, name: displayName || null, page: targetPage, sourceOp, source, displayName: displayName || `${sourceOp}.${source}`, raw, controlGroup: (Number.isFinite(controlGroup) ? controlGroup : null), onChange: '', buttonExecute: '' };
-
-      state.parseResult.entries.push(entry);
-      idx = state.parseResult.entries.length - 1;
-      state.parseResult.order.push(idx);
-
-    }
-    applyNodeControlMeta(state.parseResult.entries[idx], meta);
-
-    if (!options.skipInsert) {
-      try {
-
-        const pos = getInsertionPosUnderSelection();
-
-        state.parseResult.order = insertIndicesAt(state.parseResult.order, [idx], pos);
-
-        try { logDiag(`ensurePublished: idx=${idx} moved to pos ${pos}`); } catch(_) {}
-
-      } catch(_) {}
-    }
-
-    return { index: idx };
-
-  }
-
-
-
-  // Ensure entry exists without moving, return index
-
-  function ensureEntryExists(sourceOp, source, displayName, meta) {
-
-    if (!state.parseResult) return null;
-
-    let idx = (state.parseResult.entries || []).findIndex(e => e && e.sourceOp === sourceOp && e.source === source);
-
-    if (idx >= 0) return idx;
-
-    const key = makeUniqueKey(`${sourceOp}_${source}`);
-
-    const base = (typeof deriveColorBaseFromId === "function" ? deriveColorBaseFromId(source) : (function(){ const suf=["Red","Green","Blue","Alpha"].find(s => String(source||"").endsWith(s)); return suf ? String(source).slice(0, String(source).length - suf.length) : null; })());
-
-    const controlGroup = base ? getOrAssignControlGroup(sourceOp, base) : null;
-
-    const metaPage = (meta && meta.page && String(meta.page).trim()) ? String(meta.page).trim() : '';
-    const activePage = (state.parseResult && state.parseResult.activePage) ? String(state.parseResult.activePage).trim() : '';
-    const targetPage = metaPage || activePage || 'Controls';
-
-    const raw = buildInstanceInputRaw(key, sourceOp, source, displayName, targetPage, controlGroup);
-
-    const entry = { key, name: displayName || null, page: targetPage, sourceOp, source, displayName: displayName || `${sourceOp}.${source}`, raw, controlGroup: (Number.isFinite(controlGroup) ? controlGroup : null), onChange: '', buttonExecute: '' };
-
-    state.parseResult.entries.push(entry);
-    idx = state.parseResult.entries.length - 1;
-    state.parseResult.order.push(idx);
-    applyNodeControlMeta(state.parseResult.entries[idx], meta);
-
-    return idx;
-
-  }
-
-
-
-  function removePublished(sourceOp, source) {
-
-    if (!state.parseResult) return;
-
-    pushHistory('unpublish control');
-
-    const removedIdx = [];
-
-    for (let i = 0; i < state.parseResult.entries.length; i++) {
-
-      const e = state.parseResult.entries[i];
-
-      if (e && e.sourceOp === sourceOp && e.source === source) removedIdx.push(i);
-
-    }
-
-    if (removedIdx.length) removePublishedByIndices(removedIdx);
-
-  }
-
-
-
-  function buildInstanceInputRaw(key, sourceOp, source, displayName, page, controlGroup) {
-
-    const n = '\n';
-
-    const b = [];
-
-    b.push(`${key} = InstanceInput {`);
-
-    if (sourceOp) b.push(`SourceOp = "${escapeQuotes(sourceOp)}",`);
-
-    if (source) b.push(`Source = "${escapeQuotes(source)}",`);
-
-    if (displayName) b.push(`Name = "${escapeQuotes(displayName)}",`);
-
-    if (Number.isFinite(controlGroup)) b.push(`ControlGroup = ${controlGroup},`);
-    const normalizedPage = page && String(page).trim();
-    if (normalizedPage && normalizedPage !== 'Controls') {
-      b.push(`Page = "${escapeQuotes(normalizedPage)}",`);
-    }
-
-    b.push(`}`);
-
-    return b.join(n);
-
-  }
-
-
-
-  function makeUniqueKey(base) {
-
-    const existing = new Set((state.parseResult?.entries || []).map(e => e.key));
-
-    let k = sanitizeIdent(base);
-
-    if (!existing.has(k)) return k;
-
-    let i = 2;
-
-    while (existing.has(`${k}_${i}`)) i++;
-
-    return `${k}_${i}`;
-
-  }
-
-
-
-  function sanitizeIdent(s) {
-
-    return String(s).replace(/[^A-Za-z0-9_\[\]\.]/g, '_');
-
-  }
-
-
-
-
   function removePublishedByIndices(indices) {
 
     if (!state.parseResult) return;
@@ -9018,7 +8983,7 @@ function applyBlendCheckboxesToTool(text, bounds, toolName, controls, eol, resul
 
     state.parseResult.selected = new Set();
 
-    renderList(state.parseResult.entries, state.parseResult.order);
+    renderActiveList();
 
     updateRemoveSelectedState();
 
@@ -9283,13 +9248,16 @@ function applyBlendCheckboxesToTool(text, bounds, toolName, controls, eol, resul
 
     } catch (err) {
       // Last-resort prompt fallback so user can copy manually
-      try {
-        const msg = 'Copy the .setting content below (Ctrl/Cmd+A, then Ctrl/Cmd+C)';
-        const joined = String(text || '');
-        const promptShown = window.prompt(msg, joined);
-        if (promptShown !== null) return; // user saw the content
-      } catch (_) {}
-      throw err;
+      const msg = 'Copy the .setting content below (Ctrl/Cmd+A, then Ctrl/Cmd+C)';
+      const joined = String(text || '');
+      await textPrompt.open({
+        title: 'Copy .setting content',
+        label: msg,
+        initialValue: joined,
+        confirmText: 'Close',
+        multiline: true,
+      });
+      return;
 
     }
 

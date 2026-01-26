@@ -90,6 +90,26 @@
         </div>
       </div>
     </div>
+    <div id="textPromptModal" class="modal" hidden>
+      <div class="modal-content modal-small">
+        <header class="modal-header">
+          <div>
+            <h2 id="textPromptTitle">Enter value</h2>
+          </div>
+          <button id="textPromptCloseBtn" type="button">Close</button>
+        </header>
+        <div class="modal-body">
+          <label class="prompt-field">
+            <span id="textPromptLabel" class="prompt-label">Value</span>
+            <input id="textPromptInput" type="text" />
+          </label>
+          <div class="prompt-actions">
+            <button id="textPromptCancelBtn" type="button">Cancel</button>
+            <button id="textPromptOkBtn" type="button">OK</button>
+          </div>
+        </div>
+      </div>
+    </div>
     <input id="thumbFileInput" type="file" accept=".png" hidden />
     <script src="explorer.js"></script>
   </body>

@@ -41,6 +41,13 @@ const drfxBulkDeleteBtn = document.getElementById('drfxBulkDeleteBtn');
 const drfxBulkClearBtn = document.getElementById('drfxBulkClearBtn');
 const drfxImportAllBtn = document.getElementById('drfxImportAllBtn');
 const drfxListEl = document.getElementById('drfxList');
+const textPromptModal = document.getElementById('textPromptModal');
+const textPromptTitle = document.getElementById('textPromptTitle');
+const textPromptLabel = document.getElementById('textPromptLabel');
+const textPromptInput = document.getElementById('textPromptInput');
+const textPromptCancelBtn = document.getElementById('textPromptCancelBtn');
+const textPromptOkBtn = document.getElementById('textPromptOkBtn');
+const textPromptCloseBtn = document.getElementById('textPromptCloseBtn');
 const thumbFileInput = document.getElementById('thumbFileInput');
 const viewParams = new URLSearchParams(window.location.search);
 const isFoldersOnly = viewParams.get('mode') === 'folders';
@@ -63,6 +70,7 @@ const drfxSelected = new Set();
 const selectedEntries = new Map();
 const drfxThumbCache = new Map();
 let pendingThumbContext = null;
+let textPromptResolver = null;
 
 function buildDefaultRoots() {
   const base = getFusionBasePath();
@@ -114,16 +122,18 @@ function initRootSelect() {
   rootSelect.value = currentRootKey || 'Templates';
 }
 
+function setStatusText(el, message, isError = false) {
+  if (!el) return;
+  el.textContent = message || '';
+  el.style.color = isError ? '#ff6b6b' : '';
+}
+
 function setStatus(message, isError = false) {
-  if (!statusEl) return;
-  statusEl.textContent = message || '';
-  statusEl.style.color = isError ? '#ff6b6b' : '';
+  setStatusText(statusEl, message, isError);
 }
 
 function setDrfxStatus(message, isError = false) {
-  if (!drfxStatusEl) return;
-  drfxStatusEl.textContent = message || '';
-  drfxStatusEl.style.color = isError ? '#ff6b6b' : '';
+  setStatusText(drfxStatusEl, message, isError);
 }
 
 function updateDrfxBulkActions() {
@@ -856,6 +866,48 @@ function listEntries(dirPath) {
   return entries;
 }
 
+function buildEntryNameCell(entry) {
+  const cell = document.createElement('td');
+  if (entry.kind === 'drfx') {
+    const nameWrap = document.createElement('div');
+    nameWrap.className = 'name-wrap';
+    const thumb = document.createElement('img');
+    thumb.className = 'drfx-thumb';
+    thumb.alt = '';
+    nameWrap.appendChild(thumb);
+    const label = document.createElement('span');
+    label.textContent = entry.displayName;
+    nameWrap.appendChild(label);
+    cell.appendChild(nameWrap);
+    loadDrfxThumbnail(entry.path, thumb);
+    return cell;
+  }
+  if (entry.kind === 'setting') {
+    const nameWrap = document.createElement('div');
+    nameWrap.className = 'name-wrap';
+    const thumbPath = getSettingThumbnailPath(entry.path);
+    if (thumbPath && fs.existsSync(thumbPath)) {
+      const thumb = document.createElement('img');
+      thumb.className = 'preset-thumb';
+      thumb.alt = '';
+      thumb.src = `${fileUrlForPath(thumbPath)}?v=${Date.now()}`;
+      nameWrap.appendChild(thumb);
+    } else {
+      const placeholder = document.createElement('div');
+      placeholder.className = 'thumb-placeholder';
+      placeholder.title = 'No thumbnail';
+      nameWrap.appendChild(placeholder);
+    }
+    const label = document.createElement('span');
+    label.textContent = entry.displayName;
+    nameWrap.appendChild(label);
+    cell.appendChild(nameWrap);
+    return cell;
+  }
+  cell.textContent = entry.displayName;
+  return cell;
+}
+
 function renderEntries(entries) {
   entriesBody.innerHTML = '';
   if (!entries.length) {
@@ -877,50 +929,16 @@ function renderEntries(entries) {
 
     const selectCell = document.createElement('td');
     selectCell.className = 'select-col';
-    const checkbox = document.createElement('input');
-    checkbox.type = 'checkbox';
-    checkbox.dataset.action = 'select';
-    checkbox.disabled = entry.kind === 'folder';
-    checkbox.checked = selectedEntries.has(entry.path);
-    selectCell.appendChild(checkbox);
+    if (entry.kind !== 'folder') {
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.dataset.action = 'select';
+      checkbox.checked = selectedEntries.has(entry.path);
+      selectCell.appendChild(checkbox);
+    }
     row.appendChild(selectCell);
 
-    const nameCell = document.createElement('td');
-    if (entry.kind === 'drfx') {
-      const nameWrap = document.createElement('div');
-      nameWrap.className = 'name-wrap';
-      const thumb = document.createElement('img');
-      thumb.className = 'drfx-thumb';
-      thumb.alt = '';
-      nameWrap.appendChild(thumb);
-      const label = document.createElement('span');
-      label.textContent = entry.displayName;
-      nameWrap.appendChild(label);
-      nameCell.appendChild(nameWrap);
-      loadDrfxThumbnail(entry.path, thumb);
-    } else if (entry.kind === 'setting') {
-      const nameWrap = document.createElement('div');
-      nameWrap.className = 'name-wrap';
-      const thumbPath = getSettingThumbnailPath(entry.path);
-      if (thumbPath && fs.existsSync(thumbPath)) {
-        const thumb = document.createElement('img');
-        thumb.className = 'preset-thumb';
-        thumb.alt = '';
-        thumb.src = `${fileUrlForPath(thumbPath)}?v=${Date.now()}`;
-        nameWrap.appendChild(thumb);
-      } else {
-        const placeholder = document.createElement('div');
-        placeholder.className = 'thumb-placeholder';
-        placeholder.title = 'No thumbnail';
-        nameWrap.appendChild(placeholder);
-      }
-      const label = document.createElement('span');
-      label.textContent = entry.displayName;
-      nameWrap.appendChild(label);
-      nameCell.appendChild(nameWrap);
-    } else {
-      nameCell.textContent = entry.displayName;
-    }
+    const nameCell = buildEntryNameCell(entry);
     row.appendChild(nameCell);
 
     const typeCell = document.createElement('td');
@@ -1081,9 +1099,50 @@ function revealInExplorer(entryPath) {
   } catch (_) {}
 }
 
-function createFolder() {
+function closeTextPrompt(value) {
+  if (!textPromptModal) return;
+  textPromptModal.hidden = true;
+  if (textPromptResolver) {
+    const resolve = textPromptResolver;
+    textPromptResolver = null;
+    resolve(value);
+  }
+}
+
+function openTextPrompt({ title, label, confirmText, initialValue } = {}) {
+  return new Promise((resolve) => {
+    if (!textPromptModal || !textPromptInput || !textPromptOkBtn) {
+      resolve(null);
+      return;
+    }
+    if (textPromptResolver) {
+      const prev = textPromptResolver;
+      textPromptResolver = null;
+      prev(null);
+    }
+    textPromptResolver = resolve;
+    if (textPromptTitle) textPromptTitle.textContent = title || 'Enter value';
+    if (textPromptLabel) textPromptLabel.textContent = label || 'Value';
+    textPromptInput.value = initialValue || '';
+    textPromptOkBtn.textContent = confirmText || 'OK';
+    textPromptModal.hidden = false;
+    setTimeout(() => {
+      try {
+        textPromptInput.focus();
+        textPromptInput.select();
+      } catch (_) {}
+    }, 0);
+  });
+}
+
+async function createFolder() {
   if (!currentPath) return;
-  const name = window.prompt('Folder name:', '');
+  const name = await openTextPrompt({
+    title: 'Create folder',
+    label: 'Folder name',
+    confirmText: 'Create',
+    initialValue: '',
+  });
   if (!name) return;
   const cleaned = String(name).trim();
   if (!cleaned) return;
@@ -1297,6 +1356,18 @@ closeDrfxBtn?.addEventListener('click', () => closeDrfxModal());
 drfxModal?.addEventListener('click', (event) => {
   if (event.target === drfxModal) closeDrfxModal();
 });
+textPromptCancelBtn?.addEventListener('click', () => closeTextPrompt(null));
+textPromptCloseBtn?.addEventListener('click', () => closeTextPrompt(null));
+textPromptOkBtn?.addEventListener('click', () => closeTextPrompt(textPromptInput ? textPromptInput.value : ''));
+textPromptModal?.addEventListener('click', (event) => {
+  if (event.target === textPromptModal) closeTextPrompt(null);
+});
+textPromptInput?.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    closeTextPrompt(textPromptInput.value);
+  }
+});
 drfxListEl?.addEventListener('click', async (event) => {
   const btn = event.target.closest('button');
   if (!btn) return;
@@ -1326,6 +1397,10 @@ drfxListEl?.addEventListener('change', (event) => {
   updateDrfxBulkActions();
 });
 document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && textPromptModal && !textPromptModal.hidden) {
+    closeTextPrompt(null);
+    return;
+  }
   if (event.key === 'Escape' && drfxModal && !drfxModal.hidden) {
     closeDrfxModal();
     return;

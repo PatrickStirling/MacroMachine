@@ -29,6 +29,7 @@ export function createNodesPane(options = {}) {
     sanitizeIdent = (s) => String(s),
     normalizeId = (s) => String(s),
     enableNodeDrag = true,
+    requestRenameNode = null,
     requestAddControl = null,
     getPendingControlMeta = () => null,
     consumePendingControlMeta = () => {},
@@ -40,6 +41,8 @@ export function createNodesPane(options = {}) {
   let nodeFilter = '';
   let hideReplaced = false;
   let highlightCallback = initialHighlightNode || (() => {});
+  let nodeContextMenu = null;
+  let nodeContextMenuCleanup = null;
 
   function buildControlMetaFromDefinition(control) {
     if (!control) return null;
@@ -75,6 +78,70 @@ export function createNodesPane(options = {}) {
       if (publishSelectedBtn) publishSelectedBtn.disabled = size === 0;
       if (clearNodeSelectionBtn) clearNodeSelectionBtn.disabled = size === 0;
     } catch (_) {}
+  }
+
+  function closeNodeContextMenu() {
+    if (nodeContextMenuCleanup) {
+      nodeContextMenuCleanup();
+      nodeContextMenuCleanup = null;
+    }
+    if (nodeContextMenu) {
+      try { nodeContextMenu.remove(); } catch (_) {}
+      nodeContextMenu = null;
+    }
+  }
+
+  function openNodeContextMenu(node, x, y) {
+    closeNodeContextMenu();
+    if (!node || typeof requestRenameNode !== 'function') return;
+    const menu = document.createElement('div');
+    menu.className = 'doc-tab-menu';
+    menu.setAttribute('role', 'menu');
+    const addItem = (label, onClick) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'doc-tab-menu-item';
+      btn.textContent = label;
+      btn.addEventListener('click', () => {
+        closeNodeContextMenu();
+        onClick?.();
+      });
+      menu.appendChild(btn);
+    };
+    addItem('Rename node...', () => requestRenameNode(node.name));
+    document.body.appendChild(menu);
+    nodeContextMenu = menu;
+    const pad = 8;
+    const placeMenu = () => {
+      const rect = menu.getBoundingClientRect();
+      let left = Number.isFinite(x) ? x : pad;
+      let top = Number.isFinite(y) ? y : pad;
+      if (left + rect.width > window.innerWidth - pad) left = window.innerWidth - rect.width - pad;
+      if (top + rect.height > window.innerHeight - pad) top = window.innerHeight - rect.height - pad;
+      if (left < pad) left = pad;
+      if (top < pad) top = pad;
+      menu.style.left = `${left}px`;
+      menu.style.top = `${top}px`;
+    };
+    placeMenu();
+    requestAnimationFrame(placeMenu);
+    const onMouseDown = (ev) => {
+      if (!menu.contains(ev.target)) closeNodeContextMenu();
+    };
+    const onKeyDown = (ev) => {
+      if (ev.key === 'Escape') closeNodeContextMenu();
+    };
+    const onViewportChange = () => closeNodeContextMenu();
+    document.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('keydown', onKeyDown);
+    window.addEventListener('resize', onViewportChange);
+    window.addEventListener('scroll', onViewportChange, true);
+    nodeContextMenuCleanup = () => {
+      document.removeEventListener('mousedown', onMouseDown);
+      document.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('resize', onViewportChange);
+      window.removeEventListener('scroll', onViewportChange, true);
+    };
   }
 
   nodesSearch?.addEventListener('input', (e) => {
@@ -462,6 +529,14 @@ export function createNodesPane(options = {}) {
       wrapper.dataset.op = n.name;
       const header = document.createElement('div');
       header.className = 'node-header';
+      const canRenameNode = !!requestRenameNode && !n.isMacroRoot && !n.external;
+      if (canRenameNode) {
+        header.addEventListener('contextmenu', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          openNodeContextMenu(n, ev.clientX, ev.clientY);
+        });
+      }
       const nodeTwisty = document.createElement('span');
       const title = document.createElement('div');
       title.className = 'node-title';
