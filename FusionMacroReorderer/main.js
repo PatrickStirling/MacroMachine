@@ -5072,20 +5072,17 @@ async function handleFile(file) {
       macroParts.push(reindentedTools);
       macroParts.push(`${operatorIndent}\t},`);
       macroParts.push(`${operatorIndent}},`);
-      const wrappedGroup = macroParts.join(newline);
-      const before = text.slice(0, toolsOpen + 1);
-      const originalInner = text.slice(toolsOpen + 1, toolsClose);
-      const after = text.slice(toolsClose);
-      const firstChar = originalInner ? originalInner[0] : '';
-      const needsSeparator = firstChar !== '\n' && firstChar !== '\r';
-      const newInner = `${wrappedGroup}${needsSeparator ? (newline || '\n') : ''}${originalInner}`;
-      let updated = `${before}${newInner}${after}`;
-      updated = ensureActiveToolName(updated, macroName, newline);
-      return { text: updated, changed: true };
-    } catch (_) {
-      return { text, changed: false };
+        const wrappedGroup = macroParts.join(newline);
+        const before = text.slice(0, toolsOpen + 1);
+        const after = text.slice(toolsClose);
+        const newInner = wrappedGroup;
+        let updated = `${before}${newInner}${after}`;
+        updated = ensureActiveToolName(updated, macroName, newline);
+        return { text: updated, changed: true };
+      } catch (_) {
+        return { text, changed: false };
+      }
     }
-  }
 
   function deriveAutoMacroName(sourceName) {
     try {
@@ -5418,11 +5415,12 @@ async function handleFile(file) {
       updated = ensureExactLauncherInserted(updated, result, eol);
       updated = stripLegacyLauncherArtifacts(updated);
     }
-    updated = applyMacroNameRename(updated, result);
-    updated = ensureGroupInputsBlock(updated, result, eol);
-    updated = rewritePrimaryInputsBlock(updated, result, eol);
-    return updated;
-  }
+      updated = applyMacroNameRename(updated, result);
+      updated = ensureGroupInputsBlock(updated, result, eol);
+      updated = rewritePrimaryInputsBlock(updated, result, eol);
+      updated = ensureActiveToolName(updated, (result?.macroName || result?.macroNameOriginal || '').trim(), eol);
+      return updated;
+    }
 
   function ensureGroupInputsBlock(text, result, eol) {
     try {
