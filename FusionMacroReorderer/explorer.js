@@ -24,6 +24,7 @@ const createFolderBtn = document.getElementById('createFolderBtn');
 const setThumbBtn = document.getElementById('setThumbBtn');
 const bulkEnableBtn = document.getElementById('bulkEnableBtn');
 const bulkDisableBtn = document.getElementById('bulkDisableBtn');
+const bulkImportBtn = document.getElementById('bulkImportBtn');
 const bulkDeleteBtn = document.getElementById('bulkDeleteBtn');
 const bulkClearBtn = document.getElementById('bulkClearBtn');
 const drfxModal = document.getElementById('drfxModal');
@@ -249,11 +250,13 @@ function updateBulkActions() {
   const count = selectedEntries.size;
   if (bulkCountEl) bulkCountEl.textContent = `${count} selected`;
   const disabled = count === 0;
+  const selectedSettings = Array.from(selectedEntries.values()).filter(entry => entry && entry.kind === 'setting');
   const singleEntry = count === 1 ? Array.from(selectedEntries.values())[0] : null;
   const canSetThumb = !!singleEntry && singleEntry.kind === 'setting';
   if (setThumbBtn) setThumbBtn.disabled = !canSetThumb;
   if (bulkEnableBtn) bulkEnableBtn.disabled = disabled;
   if (bulkDisableBtn) bulkDisableBtn.disabled = disabled;
+  if (bulkImportBtn) bulkImportBtn.disabled = selectedSettings.length === 0;
   if (bulkDeleteBtn) bulkDeleteBtn.disabled = disabled;
   if (bulkClearBtn) bulkClearBtn.disabled = disabled;
   if (createFolderBtn) createFolderBtn.disabled = !currentPath;
@@ -1084,6 +1087,31 @@ function clearSelection() {
   updateBulkActions();
 }
 
+function getSelectedSettings() {
+  return Array.from(selectedEntries.values()).filter(entry => entry && entry.kind === 'setting');
+}
+
+async function importSelectedToMacroMachine() {
+  const targets = getSelectedSettings();
+  if (!targets.length) return;
+  let imported = 0;
+  let failed = 0;
+  for (const entry of targets) {
+    try {
+      await openInMacroMachine(entry.path);
+      imported += 1;
+      setStatus(`Importing... (${imported}/${targets.length})`);
+    } catch (_) {
+      failed += 1;
+    }
+  }
+  clearSelection();
+  if (failed) {
+    setStatus(`Imported ${imported} preset(s), ${failed} failed.`, true);
+  } else {
+    setStatus(`Imported ${imported} preset(s).`);
+  }
+}
 async function openInMacroMachine(entryPath) {
   try {
     await ipcRenderer.invoke('open-in-macro-machine', { path: entryPath });
@@ -1540,6 +1568,9 @@ exportFolderBtn?.addEventListener('click', () => setExportFolder(currentPath));
 createFolderBtn?.addEventListener('click', () => createFolder());
 bulkEnableBtn?.addEventListener('click', () => applyBulkToggle(false));
 bulkDisableBtn?.addEventListener('click', () => applyBulkToggle(true));
+bulkImportBtn?.addEventListener('click', () => {
+  importSelectedToMacroMachine();
+});
 bulkDeleteBtn?.addEventListener('click', () => {
   const entries = Array.from(selectedEntries.values());
   deleteEntries(entries);

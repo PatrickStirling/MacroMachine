@@ -1401,7 +1401,8 @@ export function createNodesPane(options = {}) {
         }
       } catch (_) {}
       for (const id of payload.channels) {
-        items.push({ sourceOp: payload.sourceOp, source: id, displayName: nameById.get(String(id)) || id, base });
+        const fallbackName = humanizeName(id) || id;
+        items.push({ sourceOp: payload.sourceOp, source: id, displayName: nameById.get(String(id)) || fallbackName, base });
       }
       return items;
     }
@@ -1411,7 +1412,7 @@ export function createNodesPane(options = {}) {
       return [{
         sourceOp: payload.sourceOp,
         source: payload.source,
-        displayName: payload.name || payload.source,
+        displayName: payload.name || humanizeName(payload.source) || payload.source,
         kind: normalizedKind,
         labelCount,
         inputControl: payload.inputControl || '',

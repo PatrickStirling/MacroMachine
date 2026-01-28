@@ -2171,12 +2171,30 @@ function hideDetailDrawer() {
         return entry.source || entry.sourceOp || null;
       }
     } catch (_) {}
-    return null;
+      return null;
+    }
+
+  function normalizePickValue(value) {
+    const raw = value == null ? '' : String(value).trim();
+    if (!raw) return raw;
+    if (!state.parseResult || !Array.isArray(state.parseResult.entries)) return raw;
+    const dot = raw.indexOf('.');
+    if (dot > 0) {
+      const left = raw.slice(0, dot);
+      const right = raw.slice(dot + 1);
+      const entry = state.parseResult.entries.find(e => e && e.sourceOp === left && (e.source === right || e.displayName === right || e.name === right || e.displayNameOriginal === right));
+      if (entry && entry.source) return `${entry.sourceOp}.${entry.source}`;
+      return raw;
+    }
+    const entry = state.parseResult.entries.find(e => e && (e.displayName === raw || e.name === raw || e.displayNameOriginal === raw));
+    if (entry && entry.sourceOp && entry.source) return `${entry.sourceOp}.${entry.source}`;
+    if (entry && entry.source) return entry.source;
+    return raw;
   }
 
   function handlePickPointer(ev) {
     if (!activePickSession) return;
-    const value = activePickSession.pendingValue || resolvePickValue(ev.target);
+    const value = normalizePickValue(activePickSession.pendingValue || resolvePickValue(ev.target));
     if (!value) return;
     ev.preventDefault();
     ev.stopPropagation();
