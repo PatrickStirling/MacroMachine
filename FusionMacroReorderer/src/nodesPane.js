@@ -68,13 +68,15 @@ export function createNodesPane(options = {}) {
   function clearNodeSelection() {
     if (!state.parseResult) return;
     state.parseResult.nodeSelection = new Set();
+    state.parseResult.nodeSelectionMuted = false;
     updateNodeSelectionButtons();
     parseAndRenderNodes();
   }
 
   function updateNodeSelectionButtons() {
     try {
-      const size = (state.parseResult && state.parseResult.nodeSelection instanceof Set) ? state.parseResult.nodeSelection.size : 0;
+      const muted = !!(state.parseResult && state.parseResult.nodeSelectionMuted);
+      const size = muted ? 0 : ((state.parseResult && state.parseResult.nodeSelection instanceof Set) ? state.parseResult.nodeSelection.size : 0);
       if (publishSelectedBtn) publishSelectedBtn.disabled = size === 0;
       if (clearNodeSelectionBtn) clearNodeSelectionBtn.disabled = size === 0;
     } catch (_) {}
@@ -247,7 +249,11 @@ export function createNodesPane(options = {}) {
         state.parseResult.order = insertIndicesAt(state.parseResult.order, idxs, pos);
         try { logDiag(`Batch publish count=${idxs.length} at pos ${pos}`); } catch (_) {}
         renderPublishedList(state.parseResult.entries, state.parseResult.order);
-        clearNodeSelection();
+        state.parseResult.nodeSelectionMuted = true;
+        rows.forEach((row) => {
+          row.classList.remove('selected');
+        });
+        updateNodeSelectionButtons();
       }
     } catch (e) {
       try { logDiag('Batch publish error: ' + (e.message || e)); } catch (_) {}
@@ -523,6 +529,7 @@ export function createNodesPane(options = {}) {
       state.parseResult.nodesCollapsed = collapsedNodes;
       state.parseResult.nodesPublishedOnly = publishedOnlyNodes;
     };
+    let selectIndex = 0;
     for (const n of nodes) {
       const wrapper = document.createElement('div');
       wrapper.className = 'node';
@@ -662,13 +669,20 @@ export function createNodesPane(options = {}) {
             if (!allPublished) continue;
           }
           const row = document.createElement('div'); row.className = 'node-row';
+          row.dataset.selectIndex = String(selectIndex++);
           row.dataset.kind = 'group';
           row.dataset.sourceOp = n.name;
           row.dataset.groupBase = c.base || '';
           row.dataset.channels = (c.channels || []).map(ch => ch.id).join('|');
+          row._mmMeta = {
+            kind: 'group',
+            sourceOp: n.name,
+            groupBase: c.base || '',
+            channels: (c.channels || []).map(ch => ({ id: ch.id, name: ch.name || ch.id })),
+          };
           try {
             const key0 = `group|${n.name}|${c.base || ''}`;
-            if (getNodeSelection().has(key0)) row.classList.add('selected');
+            if (!state.parseResult.nodeSelectionMuted && getNodeSelection().has(key0)) row.classList.add('selected');
           } catch (_) {}
           if (enableNodeDrag) {
             row.draggable = true;
@@ -681,11 +695,72 @@ export function createNodesPane(options = {}) {
               } catch (_) {}
             });
           }
-          const cb = document.createElement('input'); cb.type = 'checkbox'; cb.className = 'node-ctrl group'; cb.title = 'Toggle publish color group';
+          const cb = document.createElement('input'); cb.type = 'checkbox'; cb.className = 'node-ctrl group'; cb.title = 'Select color group';
           cb.dataset.sourceOp = n.name; cb.dataset.groupBase = c.base; cb.dataset.channels = (c.channels || []).map(ch => ch.id).join('|');
-          cb.checked = c.channels.every(ch => isPublished(n.name, ch.id));
-          cb.addEventListener('change', () => {
-            if (cb.checked) {
+          cb.checked = getNodeSelection().has(`group|${n.name}|${c.base || ''}`);
+          cb.addEventListener('click', (ev) => {
+            if (!ev.shiftKey) return;
+            cb.dataset.shiftSelect = '1';
+          });
+          cb.addEventListener('change', (ev) => {
+            if (cb.dataset.shiftSelect) {
+              delete cb.dataset.shiftSelect;
+              if (state.parseResult) state.parseResult.nodeSelectionMuted = false;
+              applyRangeSelection(row, cb.checked);
+              const sel = getNodeSelection();
+              setRowSelected(row, cb.checked, sel);
+              state.parseResult.nodeSelection = sel;
+              updateNodeSelectionButtons();
+              return;
+            }
+            if (cb.dataset.skipChange) {
+              delete cb.dataset.skipChange;
+              return;
+            }
+            if (state.parseResult) state.parseResult.nodeSelectionMuted = false;
+            const key = `group|${n.name}|${c.base || ''}`;
+            const sel = getNodeSelection();
+            const shouldSelect = cb.checked;
+            if (ev && ev.shiftKey) {
+              applyRangeSelection(row, shouldSelect);
+            } else {
+              if (shouldSelect) sel.add(key);
+              else sel.delete(key);
+              state.parseResult.nodeSelection = sel;
+              row.classList.toggle('selected', shouldSelect);
+              updateNodeSelectionButtons();
+              lastSelectIndex = parseInt(row.dataset.selectIndex || '-1', 10);
+            }
+          });
+          const label = document.createElement('span'); label.textContent = c.groupLabel || (c.base + ' (color)');
+          row.addEventListener('click', (ev) => {
+            const t = ev.target;
+            if (t && t.tagName === 'INPUT') return;
+            if (ev.shiftKey) {
+              applyRangeSelection(row, true);
+              return;
+            }
+            state.parseResult.nodeSelectionMuted = false;
+            const key = `group|${n.name}|${c.base || ''}`;
+            const sel = getNodeSelection();
+            if (sel.has(key)) sel.delete(key); else sel.add(key);
+            state.parseResult.nodeSelection = sel;
+            row.classList.toggle('selected');
+            cb.checked = sel.has(key);
+            updateNodeSelectionButtons();
+            lastSelectIndex = parseInt(row.dataset.selectIndex || '-1', 10);
+          });
+          label.addEventListener('click', (ev) => {
+            ev.preventDefault(); ev.stopPropagation();
+            if (ev.shiftKey) {
+              const anchor = lastSelectIndex;
+              applyRangeSelection(row, true);
+              publishRangeFromRow(row, anchor, 'publish');
+              return;
+            }
+            setSingleSelection(row);
+            const allPublished = (c.channels || []).length > 0 && (c.channels || []).every(ch => isPublished(n.name, ch.id));
+            if (!allPublished) {
               const allIdxs = [];
               for (const ch of c.channels) {
                 const r = ensurePublished(n.name, ch.id, ch.name, null);
@@ -701,18 +776,6 @@ export function createNodesPane(options = {}) {
             }
             renderPublishedList(state.parseResult.entries, state.parseResult.order);
           });
-          const label = document.createElement('span'); label.textContent = c.groupLabel || (c.base + ' (color)');
-          row.addEventListener('click', (ev) => {
-            const t = ev.target;
-            if (t && t.tagName === 'INPUT') return;
-            const key = `group|${n.name}|${c.base || ''}`;
-            const sel = getNodeSelection();
-            if (sel.has(key)) sel.delete(key); else sel.add(key);
-            state.parseResult.nodeSelection = sel;
-            row.classList.toggle('selected');
-            updateNodeSelectionButtons();
-          });
-          label.addEventListener('click', (ev) => { ev.preventDefault(); ev.stopPropagation(); row.click(); });
           row.appendChild(cb); row.appendChild(label);
           list.appendChild(row);
           continue;
@@ -721,6 +784,7 @@ export function createNodesPane(options = {}) {
         const srcKey = resolveControlSource(c);
         if (showPublishedOnly && !(srcKey && isPublished(n.name, srcKey))) continue;
         const row = document.createElement('div'); row.className = 'node-row';
+        row.dataset.selectIndex = String(selectIndex++);
         row.dataset.kind = 'control';
         row.dataset.sourceOp = n.name;
         row.dataset.source = srcKey;
@@ -738,11 +802,18 @@ export function createNodesPane(options = {}) {
         }
         if (c.inputControl) row.dataset.inputControl = c.inputControl;
         if (c.defaultValue != null) row.dataset.defaultValue = String(c.defaultValue);
+        const controlMeta = buildControlMetaFromDefinition(c);
+        row._mmMeta = {
+          kind: 'control',
+          sourceOp: n.name,
+          source: srcKey,
+          displayName: c.name || c.id,
+          controlMeta,
+        };
         try {
           const key0 = `control|${n.name}|${srcKey}`;
-          if (getNodeSelection().has(key0)) row.classList.add('selected');
+          if (!state.parseResult.nodeSelectionMuted && getNodeSelection().has(key0)) row.classList.add('selected');
         } catch (_) {}
-        const controlMeta = buildControlMetaFromDefinition(c);
         if (enableNodeDrag) {
           row.draggable = true;
           row.addEventListener('dragstart', (ev) => {
@@ -763,11 +834,71 @@ export function createNodesPane(options = {}) {
             } catch (_) {}
           });
         }
-        const cb = document.createElement('input'); cb.type = 'checkbox'; cb.className = 'node-ctrl'; cb.title = 'Toggle publish control';
+        const cb = document.createElement('input'); cb.type = 'checkbox'; cb.className = 'node-ctrl'; cb.title = 'Select control';
         cb.dataset.sourceOp = n.name; cb.dataset.source = srcKey;
-        cb.checked = isPublished(n.name, srcKey);
-        cb.addEventListener('change', () => {
-          if (cb.checked) {
+        cb.checked = getNodeSelection().has(`control|${n.name}|${srcKey}`);
+        cb.addEventListener('click', (ev) => {
+          if (!ev.shiftKey) return;
+          cb.dataset.shiftSelect = '1';
+        });
+        cb.addEventListener('change', (ev) => {
+          if (cb.dataset.shiftSelect) {
+            delete cb.dataset.shiftSelect;
+            if (state.parseResult) state.parseResult.nodeSelectionMuted = false;
+            applyRangeSelection(row, cb.checked);
+            const sel = getNodeSelection();
+            setRowSelected(row, cb.checked, sel);
+            state.parseResult.nodeSelection = sel;
+            updateNodeSelectionButtons();
+            return;
+          }
+          if (cb.dataset.skipChange) {
+            delete cb.dataset.skipChange;
+            return;
+          }
+          if (state.parseResult) state.parseResult.nodeSelectionMuted = false;
+          const key = `control|${n.name}|${srcKey}`;
+          const sel = getNodeSelection();
+          const shouldSelect = cb.checked;
+          if (ev && ev.shiftKey) {
+            applyRangeSelection(row, shouldSelect);
+          } else {
+            if (shouldSelect) sel.add(key);
+            else sel.delete(key);
+            state.parseResult.nodeSelection = sel;
+            row.classList.toggle('selected', shouldSelect);
+            updateNodeSelectionButtons();
+            lastSelectIndex = parseInt(row.dataset.selectIndex || '-1', 10);
+          }
+        });
+        const label = document.createElement('span'); label.className = 'ctrl-name'; label.textContent = c.name || c.id;
+        row.addEventListener('click', (ev) => {
+          const t = ev.target; if (t && t.tagName === 'INPUT') return;
+          if (ev.shiftKey) {
+            applyRangeSelection(row, true);
+            return;
+          }
+          state.parseResult.nodeSelectionMuted = false;
+          const key = `control|${n.name}|${srcKey}`;
+          const sel = getNodeSelection();
+          if (sel.has(key)) sel.delete(key); else sel.add(key);
+          state.parseResult.nodeSelection = sel;
+          row.classList.toggle('selected');
+          cb.checked = sel.has(key);
+          updateNodeSelectionButtons();
+          lastSelectIndex = parseInt(row.dataset.selectIndex || '-1', 10);
+        });
+        label.addEventListener('click', (ev) => {
+          ev.preventDefault(); ev.stopPropagation();
+          if (ev.shiftKey) {
+            const anchor = lastSelectIndex;
+            applyRangeSelection(row, true);
+            publishRangeFromRow(row, anchor, 'publish');
+            return;
+          }
+          setSingleSelection(row);
+          const already = isPublished(n.name, srcKey);
+          if (!already) {
             const r = ensurePublished(n.name, srcKey, c.name, controlMeta);
             if (r) {
               const pos = getInsertionPosUnderSelection();
@@ -782,17 +913,6 @@ export function createNodesPane(options = {}) {
           }
           renderPublishedList(state.parseResult.entries, state.parseResult.order);
         });
-        const label = document.createElement('span'); label.className = 'ctrl-name'; label.textContent = c.name || c.id;
-        row.addEventListener('click', (ev) => {
-          const t = ev.target; if (t && t.tagName === 'INPUT') return;
-          const key = `control|${n.name}|${srcKey}`;
-          const sel = getNodeSelection();
-          if (sel.has(key)) sel.delete(key); else sel.add(key);
-          state.parseResult.nodeSelection = sel;
-          row.classList.toggle('selected');
-          updateNodeSelectionButtons();
-        });
-        label.addEventListener('click', (ev) => { ev.preventDefault(); ev.stopPropagation(); row.click(); });
         let byEl = null;
         try {
           const mods = (n && n.controlledBy) ? (typeof n.controlledBy.get === 'function' ? (n.controlledBy.get(c.id) || []) : (n.controlledBy[c.id] || [])) : [];
@@ -815,11 +935,149 @@ export function createNodesPane(options = {}) {
     }
   }
 
+  let lastSelectIndex = -1;
+
+  function getRowSelectionKey(row) {
+    if (!row) return null;
+    if (row.dataset.kind === 'group') {
+      return `group|${row.dataset.sourceOp || ''}|${row.dataset.groupBase || ''}`;
+    }
+    if (row.dataset.kind === 'control') {
+      return `control|${row.dataset.sourceOp || ''}|${row.dataset.source || ''}`;
+    }
+    return null;
+  }
+
+  function setRowSelected(row, shouldSelect, sel) {
+    const key = getRowSelectionKey(row);
+    if (!key) return;
+    if (shouldSelect) sel.add(key);
+    else sel.delete(key);
+    row.classList.toggle('selected', shouldSelect);
+    const cb = row.querySelector('input.node-ctrl');
+    if (cb) cb.checked = shouldSelect;
+  }
+
+  function setSingleSelection(row) {
+    try {
+      if (!row || !nodesList || !state.parseResult) return;
+      const sel = getNodeSelection();
+      sel.clear();
+      state.parseResult.nodeSelectionMuted = false;
+      const rows = Array.from(nodesList.querySelectorAll('.node-row[data-select-index]'));
+      rows.forEach((r) => setRowSelected(r, r === row, sel));
+      state.parseResult.nodeSelection = sel;
+      updateNodeSelectionButtons();
+      lastSelectIndex = parseInt(row.dataset.selectIndex || '-1', 10);
+    } catch (_) {}
+  }
+
+  function applyRangeSelection(row, shouldSelect) {
+    try {
+      if (!row || !nodesList) return;
+      const currentIndex = parseInt(row.dataset.selectIndex || '-1', 10);
+      if (currentIndex < 0) return;
+      if (state.parseResult) state.parseResult.nodeSelectionMuted = false;
+      const anchor = lastSelectIndex >= 0 ? lastSelectIndex : currentIndex;
+      const start = Math.min(anchor, currentIndex);
+      const end = Math.max(anchor, currentIndex);
+      const rows = Array.from(nodesList.querySelectorAll('.node-row[data-select-index]'));
+      const sel = getNodeSelection();
+      rows.forEach((r) => {
+        const idx = parseInt(r.dataset.selectIndex || '-1', 10);
+        if (idx >= start && idx <= end) setRowSelected(r, shouldSelect, sel);
+      });
+      state.parseResult.nodeSelection = sel;
+      updateNodeSelectionButtons();
+      lastSelectIndex = currentIndex;
+    } catch (_) {}
+  }
+
+  function publishRangeFromRow(row, anchorOverride = null, mode = 'toggle') {
+    try {
+      if (!row || !nodesList) return;
+      const currentIndex = parseInt(row.dataset.selectIndex || '-1', 10);
+      if (currentIndex < 0) return;
+      const anchor = (typeof anchorOverride === 'number' && anchorOverride >= 0) ? anchorOverride
+        : (lastSelectIndex >= 0 ? lastSelectIndex : currentIndex);
+      const start = Math.min(anchor, currentIndex);
+      const end = Math.max(anchor, currentIndex);
+      const rows = Array.from(nodesList.querySelectorAll('.node-row[data-select-index]'))
+        .filter(r => {
+          const idx = parseInt(r.dataset.selectIndex || '-1', 10);
+          return idx >= start && idx <= end;
+        })
+        .sort((a, b) => parseInt(a.dataset.selectIndex || '0', 10) - parseInt(b.dataset.selectIndex || '0', 10));
+      if (!rows.length) return;
+      const firstMeta = rows.find(r => r && r._mmMeta) ? rows.find(r => r && r._mmMeta)._mmMeta : null;
+      const shouldPublish = mode === 'publish'
+        ? true
+        : (firstMeta && firstMeta.kind === 'group'
+          ? !((firstMeta.channels || []).length > 0 && (firstMeta.channels || []).every(ch => isPublished(firstMeta.sourceOp, ch.id)))
+          : !(firstMeta && firstMeta.source && isPublished(firstMeta.sourceOp, firstMeta.source)));
+      const indices = [];
+      let insertAfterPos = -1;
+      const entries = (state.parseResult && Array.isArray(state.parseResult.entries)) ? state.parseResult.entries : [];
+      const order = (state.parseResult && Array.isArray(state.parseResult.order)) ? state.parseResult.order : [];
+      const findEntryIndex = (op, src) => entries.findIndex(e => e && e.sourceOp === op && e.source === src);
+      for (const r of rows) {
+        const meta = r._mmMeta;
+        if (!meta) continue;
+        if (meta.kind === 'group') {
+          for (const ch of (meta.channels || [])) {
+            if (shouldPublish) {
+              if (!isPublished(meta.sourceOp, ch.id)) {
+                const res = ensurePublished(meta.sourceOp, ch.id, ch.name, null);
+                if (res) indices.push(res.index);
+              } else {
+                const idx = findEntryIndex(meta.sourceOp, ch.id);
+                if (idx >= 0) {
+                  const pos = order.indexOf(idx);
+                  if (pos > insertAfterPos) insertAfterPos = pos;
+                }
+              }
+            } else if (mode !== 'publish' && isPublished(meta.sourceOp, ch.id)) {
+              removePublished(meta.sourceOp, ch.id);
+            }
+          }
+        } else if (meta.kind === 'control') {
+          if (shouldPublish) {
+            if (!isPublished(meta.sourceOp, meta.source)) {
+              const res = ensurePublished(meta.sourceOp, meta.source, meta.displayName, meta.controlMeta || null);
+              if (res) indices.push(res.index);
+              if (typeof consumePendingControlMeta === 'function') {
+                consumePendingControlMeta(meta.sourceOp, meta.source);
+              }
+            } else {
+              const idx = findEntryIndex(meta.sourceOp, meta.source);
+              if (idx >= 0) {
+                const pos = order.indexOf(idx);
+                if (pos > insertAfterPos) insertAfterPos = pos;
+              }
+            }
+          } else if (mode !== 'publish' && isPublished(meta.sourceOp, meta.source)) {
+            removePublished(meta.sourceOp, meta.source);
+          }
+        }
+      }
+      if (shouldPublish && indices.length) {
+        const fallbackPos = getInsertionPosUnderSelection();
+        const pos = insertAfterPos >= 0 ? insertAfterPos + 1 : fallbackPos;
+        try { logDiag(`Insert range count=${indices.length} at pos ${pos}`); } catch (_) {}
+        state.parseResult.order = insertIndicesAt(state.parseResult.order, indices, pos);
+      }
+      renderPublishedList(state.parseResult.entries, state.parseResult.order);
+    } catch (_) {}
+  }
+
   function parseToolsInGroup(text, groupOpen, groupClose) {
     const out = [];
-    const toolsPos = text.indexOf('Tools = ordered()', groupOpen);
-    if (toolsPos < 0 || toolsPos > groupClose) return out;
-    const open = text.indexOf('{', toolsPos);
+    if (groupOpen == null || groupClose == null) return out;
+    const segment = text.slice(groupOpen, groupClose);
+    const match = /Tools\s*=\s*ordered\(\)\s*\{/.exec(segment);
+    if (!match) return out;
+    const toolsPos = groupOpen + match.index;
+    const open = toolsPos + match[0].lastIndexOf('{');
     if (open < 0) return out;
     const close = findMatchingBrace(text, open);
     if (close < 0 || close > groupClose) return out;
@@ -857,9 +1115,12 @@ export function createNodesPane(options = {}) {
 
   function parseModifiersInGroup(text, groupOpen, groupClose) {
     const out = [];
-    const modsPos = text.indexOf('Modifiers = ordered()', groupOpen);
-    if (modsPos < 0 || modsPos > groupClose) return out;
-    const open = text.indexOf('{', modsPos);
+    if (groupOpen == null || groupClose == null) return out;
+    const segment = text.slice(groupOpen, groupClose);
+    const match = /Modifiers\s*=\s*ordered\(\)\s*\{/.exec(segment);
+    if (!match) return out;
+    const modsPos = groupOpen + match.index;
+    const open = modsPos + match[0].lastIndexOf('{');
     if (open < 0) return out;
     const close = findMatchingBrace(text, open);
     if (close < 0 || close > groupClose) return out;

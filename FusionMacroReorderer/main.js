@@ -2130,9 +2130,9 @@ function hideDetailDrawer() {
     }
   }
 
-  function startPickSession(insertFn) {
+  function startPickSession(insertFn, options = {}) {
     stopPickSession();
-    activePickSession = { insertFn, pendingValue: null };
+    activePickSession = { insertFn, pendingValue: null, sticky: !!options.sticky, owner: options.owner || null };
     try {
       document.querySelectorAll('.lua-autocomplete').forEach((el) => {
         el.hidden = true;
@@ -2207,7 +2207,11 @@ function hideDetailDrawer() {
         activePickSession.insertFn(String(value));
       }
     } catch (_) {}
-    stopPickSession();
+    if (activePickSession && activePickSession.sticky) {
+      activePickSession.pendingValue = null;
+    } else {
+      stopPickSession();
+    }
   }
 
   function handlePickMove(ev) {
@@ -2235,13 +2239,63 @@ function hideDetailDrawer() {
     row.className = 'detail-actions detail-actions-pick';
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.textContent = 'Pick from list';
-    btn.addEventListener('click', () => {
-      startPickSession((value) => {
-        if (editor && typeof editor.insertAtCursor === 'function') {
-          editor.insertAtCursor(value);
+    btn.className = 'toggle';
+    btn.textContent = 'Live Linking';
+    btn.setAttribute('aria-pressed', 'false');
+    let liveActive = false;
+    let hasFocus = false;
+    const wrapper = editor && editor.wrapper;
+    const insertFn = (value) => {
+      if (editor && typeof editor.insertAtCursor === 'function') {
+        editor.insertAtCursor(value);
+      }
+    };
+    const focusEditor = () => {
+      if (editor && editor.textarea) {
+        editor.textarea.focus();
+        return;
+      }
+      if (wrapper) {
+        const cmEl = wrapper.querySelector('.CodeMirror');
+        if (cmEl && cmEl.CodeMirror && typeof cmEl.CodeMirror.focus === 'function') {
+          cmEl.CodeMirror.focus();
+          return;
         }
+      }
+    };
+    const setLiveActive = (next) => {
+      liveActive = !!next;
+      btn.setAttribute('aria-pressed', liveActive ? 'true' : 'false');
+      btn.classList.toggle('is-active', liveActive);
+      if (liveActive && hasFocus) {
+        startPickSession(insertFn, { sticky: true, owner: wrapper || null });
+      } else if (!liveActive && activePickSession && activePickSession.sticky) {
+        stopPickSession();
+      }
+    };
+    if (wrapper) {
+      wrapper.addEventListener('focusin', () => {
+        hasFocus = true;
+        if (liveActive) startPickSession(insertFn, { sticky: true, owner: wrapper || null });
       });
+      wrapper.addEventListener('focusout', () => {
+        setTimeout(() => {
+          const active = document.activeElement;
+          const stillInside = wrapper.contains(active);
+          if (!stillInside) {
+            hasFocus = false;
+            if (liveActive) setLiveActive(false);
+          }
+        }, 0);
+      });
+    }
+    btn.addEventListener('click', () => {
+      if (liveActive) {
+        setLiveActive(false);
+        return;
+      }
+      focusEditor();
+      setLiveActive(true);
     });
     row.appendChild(btn);
     return row;

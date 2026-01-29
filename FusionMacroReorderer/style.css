@@ -2011,6 +2011,34 @@ body.nodes-hidden .detail-drawer.open .detail-drawer-toggle {
   justify-content: flex-start;
   margin-top: 0.75rem;
 }
+.detail-actions.detail-actions-pick button.toggle {
+  border-radius: 999px;
+  padding: 0.4rem 0.95rem;
+  border-color: #2f3a52;
+  background: #1a2030;
+  position: relative;
+}
+.detail-actions.detail-actions-pick button.toggle::after {
+  content: '';
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-left: 0.5rem;
+  border-radius: 50%;
+  background: #5b647a;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.35) inset;
+  vertical-align: middle;
+}
+.detail-actions.detail-actions-pick button.toggle.is-active {
+  background: rgba(79, 163, 255, 0.2);
+  border-color: rgba(79, 163, 255, 0.5);
+  color: #d7e6ff;
+  box-shadow: 0 0 0 1px rgba(79, 163, 255, 0.25) inset;
+}
+.detail-actions.detail-actions-pick button.toggle.is-active::after {
+  background: #4fa3ff;
+  box-shadow: 0 0 8px rgba(79, 163, 255, 0.65);
+}
 body.pick-mode {
   cursor: crosshair;
 }
