@@ -507,15 +507,16 @@ function updateDocExportPathDisplay() {
     });
   }
 
-  function promptRenameNode(oldName) {
+  function promptRenameNode(nodeInfo) {
     if (!state.parseResult || !state.originalText) {
       info('Load a macro before renaming a node.');
       return;
     }
-    const current = String(oldName || '').trim();
+    const current = String(nodeInfo && nodeInfo.name ? nodeInfo.name : nodeInfo || '').trim();
     if (!current) return;
+    const typeLabel = nodeInfo && nodeInfo.type ? ` (${nodeInfo.type})` : '';
     textPrompt.open({
-      title: `Rename node`,
+      title: `Rename node${typeLabel}`,
       label: `Node name`,
       initialValue: current,
       confirmText: 'Rename',
@@ -533,10 +534,6 @@ function updateDocExportPathDisplay() {
         return;
       }
       const existing = collectToolNamesInGroup(state.originalText, bounds.groupOpenIndex, bounds.groupCloseIndex);
-      if (!existing.has(current)) {
-        info(`Node "${current}" not found in this macro.`);
-        return;
-      }
       if (existing.has(next)) {
         error(`A node named "${next}" already exists.`);
         return;
@@ -546,6 +543,7 @@ function updateDocExportPathDisplay() {
         info('Rename skipped: no tool definition was updated.');
         return;
       }
+      trackToolRename(current, next);
       pushHistory('rename node');
       state.originalText = res.text;
       updateCodeView(state.originalText || '');
@@ -651,11 +649,245 @@ function updateDocExportPathDisplay() {
     };
     renameInBlock('Tools');
     renameInBlock('Modifiers');
-    if (!renamed) return { text, renamed: false };
+    if (!renamed) {
+      const tryRegexRename = (blockName) => {
+        const block = findOrderedBlock(updated, groupOpen, currentClose, blockName);
+        if (!block) return false;
+        const res = renameToolInBlockByRegex(updated, block.open, block.close, oldName, newName);
+        if (!res.renamed) return false;
+        updated = res.text;
+        renamed = true;
+        const refreshed = findMatchingBrace(updated, groupOpen);
+        if (refreshed != null && refreshed >= 0) currentClose = refreshed;
+        return true;
+      };
+      tryRegexRename('Tools');
+      if (!renamed) tryRegexRename('Modifiers');
+    }
     const groupEnd = (currentClose != null && currentClose >= 0) ? currentClose : groupClose;
+    const beforeRefs = updated;
     updated = replaceSourceOpInRange(updated, groupOpen, groupEnd, oldName, newName);
     updated = replaceExpressionsInRange(updated, groupOpen, groupEnd, oldName, newName);
+    if (!renamed && updated !== beforeRefs) {
+      renamed = true;
+    }
+    if (!renamed) return { text, renamed: false };
     return { text: updated, renamed };
+  }
+
+  function renameToolInBlockByRegex(text, blockOpen, blockClose, oldName, newName) {
+    try {
+      const prefix = text.slice(0, blockOpen + 1);
+      const body = text.slice(blockOpen + 1, blockClose);
+      const suffix = text.slice(blockClose);
+      const re = new RegExp(`(^|\\n)(\\s*)${escapeRegex(oldName)}(\\s*=\\s*[A-Za-z_][A-Za-z0-9_]*\\s*\\{)`, 'g');
+      let changed = false;
+      const updatedBody = body.replace(re, (match, lead, indent, rest) => {
+        changed = true;
+        return `${lead}${indent}${newName}${rest}`;
+      });
+      if (!changed) return { text, renamed: false };
+      return { text: prefix + updatedBody + suffix, renamed: true };
+    } catch (_) {
+      return { text, renamed: false };
+    }
+  }
+
+  function trackToolRename(oldName, newName) {
+    try {
+      if (!state.parseResult || !oldName || !newName || oldName === newName) return;
+      if (!(state.parseResult.toolRenameMap instanceof Map)) {
+        state.parseResult.toolRenameMap = new Map();
+      }
+      const map = state.parseResult.toolRenameMap;
+      map.forEach((value, key) => {
+        if (value === oldName) map.set(key, newName);
+      });
+      map.set(oldName, newName);
+    } catch (_) {}
+  }
+
+  function applyToolRenameMap(text, result) {
+    try {
+      const map = result?.toolRenameMap;
+      if (!(map instanceof Map) || !map.size) return text;
+      let updated = text;
+      const bounds = locateMacroGroupBounds(updated, result);
+      if (!bounds) return updated;
+      map.forEach((newName, oldName) => {
+        if (!oldName || !newName || oldName === newName) return;
+        const res = renameToolInGroupText(updated, bounds.groupOpenIndex, bounds.groupCloseIndex, oldName, newName);
+        updated = res.text;
+        // Always update lingering references even if the tool name already changed.
+        updated = replaceSourceOpInRange(updated, bounds.groupOpenIndex, bounds.groupCloseIndex, oldName, newName);
+        updated = replaceExpressionsInRange(updated, bounds.groupOpenIndex, bounds.groupCloseIndex, oldName, newName);
+      });
+      return updated;
+    } catch (_) {
+      return text;
+    }
+  }
+
+  function stripLegacySuffix(name) {
+    if (!name) return '';
+    const match = String(name).match(/^(.+?)(?:_\d+)+$/);
+    return match ? match[1] : String(name);
+  }
+
+  function normalizeLegacyToolRefs(text, result) {
+    try {
+      if (!text || !result) return text;
+      const bounds = locateMacroGroupBounds(text, result);
+      if (!bounds) return text;
+      let updated = text;
+      // First, normalize legacy tool names when safe (unique base + no collision).
+      updated = normalizeLegacyToolDefinitions(updated, bounds);
+      const toolNames = collectToolNamesInGroup(updated, bounds.groupOpenIndex, bounds.groupCloseIndex);
+      if (!toolNames || toolNames.size === 0) return updated;
+      updated = replaceLegacyRefsInSourceOps(updated, bounds, toolNames);
+      updated = replaceLegacyRefsInExpressions(updated, bounds, toolNames);
+      return updated;
+    } catch (_) {
+      return text;
+    }
+  }
+
+  async function normalizeLegacyNamesMenu() {
+    try {
+      if (!state.parseResult || !state.originalText) {
+        info('Load a macro before normalizing legacy names.');
+        return;
+      }
+      const ok = window.confirm(
+        'Normalize legacy tool names now?\n\nThis replaces names like "XFANIM_1_1_1" with "XFANIM" only when the base name is unique.'
+      );
+      if (!ok) return;
+      const updated = normalizeLegacyToolRefs(state.originalText, state.parseResult);
+      if (updated === state.originalText) {
+        info('No legacy names found to normalize.');
+        return;
+      }
+      await loadMacroFromText(state.originalFileName || 'Imported.setting', updated, {
+        preserveFileInfo: true,
+        preserveFilePath: true,
+        skipClear: false,
+        createDoc: false,
+        allowAutoUtility: false,
+        silentAuto: true,
+      });
+      markContentDirty();
+      info('Legacy tool names normalized.');
+    } catch (err) {
+      error(err?.message || err || 'Failed to normalize legacy names.');
+    }
+  }
+
+  function normalizeLegacyToolDefinitions(text, bounds) {
+    try {
+      const { groupOpenIndex: open, groupCloseIndex: close } = bounds;
+      const toolNames = collectToolNamesInGroup(text, open, close);
+      if (!toolNames || toolNames.size === 0) return text;
+      const legacyGroups = new Map();
+      toolNames.forEach((name) => {
+        const base = stripLegacySuffix(name);
+        if (!base || base === name) return;
+        if (!legacyGroups.has(base)) legacyGroups.set(base, []);
+        legacyGroups.get(base).push(name);
+      });
+      let updated = text;
+      let currentClose = close;
+      legacyGroups.forEach((names, base) => {
+        if (toolNames.has(base)) return;
+        if (names.length !== 1) return;
+        const oldName = names[0];
+        const res = renameToolInGroupText(updated, open, currentClose, oldName, base);
+        updated = res.text;
+        const refreshed = findMatchingBrace(updated, open);
+        if (refreshed != null && refreshed >= 0) currentClose = refreshed;
+      });
+      return updated;
+    } catch (_) {
+      return text;
+    }
+  }
+
+  function replaceLegacyRefsInSourceOps(text, bounds, toolNames) {
+    const { groupOpenIndex: open, groupCloseIndex: close } = bounds;
+    const prefix = text.slice(0, open);
+    const body = text.slice(open, close + 1);
+    const suffix = text.slice(close + 1);
+    const re = /SourceOp\s*=\s*"([^"]+)"/g;
+    const updated = body.replace(re, (match, name) => {
+      if (!name || toolNames.has(name)) return match;
+      const base = stripLegacySuffix(name);
+      if (base && base !== name && toolNames.has(base)) {
+        return match.replace(name, base);
+      }
+      return match;
+    });
+    return prefix + updated + suffix;
+  }
+
+  function replaceLegacyRefsInExpressions(text, bounds, toolNames) {
+    const { groupOpenIndex: open, groupCloseIndex: close } = bounds;
+    const prefix = text.slice(0, open);
+    const body = text.slice(open, close + 1);
+    const suffix = text.slice(close + 1);
+    let out = '';
+    let i = 0;
+    const token = 'Expression';
+    const tokenRe = /\b([A-Za-z][A-Za-z0-9_]*?)(?:_\d+)+\b/g;
+    while (i < body.length) {
+      const idx = body.indexOf(token, i);
+      if (idx < 0) {
+        out += body.slice(i);
+        break;
+      }
+      const before = idx > 0 ? body[idx - 1] : '';
+      const validBoundary = !before || !isIdentPart(before);
+      if (!validBoundary) {
+        out += body.slice(i, idx + 1);
+        i = idx + 1;
+        continue;
+      }
+      out += body.slice(i, idx);
+      let j = idx + token.length;
+      while (j < body.length && isSpace(body[j])) j++;
+      if (body[j] !== '=') {
+        out += body.slice(idx, j + 1);
+        i = j + 1;
+        continue;
+      }
+      j++;
+      while (j < body.length && isSpace(body[j])) j++;
+      if (body[j] !== '"') {
+        out += body.slice(idx, j + 1);
+        i = j + 1;
+        continue;
+      }
+      out += body.slice(idx, j + 1);
+      j++;
+      const exprStart = j;
+      while (j < body.length) {
+        const ch = body[j];
+        if (ch === '"' && !isQuoteEscaped(body, j)) break;
+        j++;
+      }
+      const expr = body.slice(exprStart, j);
+      const next = expr.replace(tokenRe, (name) => {
+        if (!name || toolNames.has(name)) return name;
+        const base = stripLegacySuffix(name);
+        if (base && base !== name && toolNames.has(base)) return base;
+        return name;
+      });
+      out += next;
+      if (j < body.length && body[j] === '"') {
+        out += '"';
+        j++;
+      }
+      i = j;
+    }
+    return prefix + out + suffix;
   }
 
   function replaceSourceOpInRange(text, open, close, oldName, newName) {
@@ -670,15 +902,67 @@ function updateDocExportPathDisplay() {
     const prefix = text.slice(0, open);
     const body = text.slice(open, close + 1);
     const suffix = text.slice(close + 1);
-    const exprRe = /Expression\s*=\s*"((?:[^"\\]|\\.)*)"/g;
-    const nameRe = new RegExp(`\\b${escapeRegex(oldName)}\\b`, 'g');
-    const updated = body.replace(exprRe, (match, expr) => {
-      const next = expr.replace(nameRe, newName);
-      if (next === expr) return match;
-      return `Expression = "${next}"`;
-    });
-    return prefix + updated + suffix;
+    let out = '';
+    let i = 0;
+    const token = 'Expression';
+    while (i < body.length) {
+      const idx = body.indexOf(token, i);
+      if (idx < 0) {
+        out += body.slice(i);
+        break;
+      }
+      const before = idx > 0 ? body[idx - 1] : '';
+      const validBoundary = !before || !isIdentPart(before);
+      if (!validBoundary) {
+        out += body.slice(i, idx + 1);
+        i = idx + 1;
+        continue;
+      }
+      out += body.slice(i, idx);
+      let j = idx + token.length;
+      while (j < body.length && isSpace(body[j])) j++;
+      if (body[j] !== '=') {
+        out += body.slice(idx, j + 1);
+        i = j + 1;
+        continue;
+      }
+      j++;
+      while (j < body.length && isSpace(body[j])) j++;
+      if (body[j] !== '"') {
+        out += body.slice(idx, j + 1);
+        i = j + 1;
+        continue;
+      }
+      out += body.slice(idx, j + 1);
+      j++;
+      const exprStart = j;
+      while (j < body.length) {
+        const ch = body[j];
+        if (ch === '"' && !isQuoteEscaped(body, j)) break;
+        j++;
+      }
+      const expr = body.slice(exprStart, j);
+      const next = replaceNameInExpression(expr, oldName, newName);
+      out += next;
+      if (j < body.length && body[j] === '"') {
+        out += '"';
+        j++;
+      }
+      i = j;
+    }
+    return prefix + out + suffix;
   }
+
+  function replaceNameInExpression(expr, oldName, newName) {
+    try {
+      if (!expr || !oldName) return expr;
+      if (!expr.includes(oldName)) return expr;
+      return expr.split(oldName).join(newName);
+    } catch (_) {
+      return expr;
+    }
+  }
+
 
   function applyNodeRenameToEntries(oldName, newName) {
     if (!state.parseResult || !Array.isArray(state.parseResult.entries)) return;
@@ -842,6 +1126,8 @@ function updateDocExportPathDisplay() {
       { id: 'file', label: 'To File', enabled: hasMacro, action: exportToFile },
       { id: 'edit', label: 'To Edit Page', enabled: hasMacro, action: exportToEditPage },
     ];
+    items.push({ type: 'sep' });
+    items.push({ id: 'normalize-legacy', label: 'Normalize legacy names…', enabled: hasMacro, action: normalizeLegacyNamesMenu });
     if (activeDrfxLinked || showDrfxMulti || showSourceBulk) items.push({ type: 'sep' });
     if (activeDrfxLinked) {
       items.push({ id: 'source', label: 'To Source DRFX', enabled: hasMacro, action: exportToSourceDrfx });
@@ -2643,7 +2929,7 @@ function hideDetailDrawer() {
         value: entry.buttonExecute || '',
         placeholder: 'Lua script executed when this button fires.',
         onBlur: (value) => {
-          updateEntryButtonExecute(index, value, { silent: true });
+          updateEntryButtonExecute(index, value, { silent: true, skipHistory: true });
           renderLuaWarnings(execWarnings, validateLuaBasic(value));
         },
         getToolNames: () => state.parseResult?.luaToolNames,
@@ -2759,6 +3045,15 @@ function hideDetailDrawer() {
     const skipHistory = !!opts.skipHistory;
     if (!skipHistory) pushHistory('edit button execute');
     entry.buttonExecute = newVal;
+    if (state.parseResult && entry.sourceOp && entry.source) {
+      const key = `${entry.sourceOp}.${entry.source}`;
+      if (newVal.trim()) {
+        if (!(state.parseResult.buttonExactInsert instanceof Set)) state.parseResult.buttonExactInsert = new Set();
+        state.parseResult.buttonExactInsert.add(key);
+      } else {
+        if (state.parseResult.buttonExactInsert instanceof Set) state.parseResult.buttonExactInsert.delete(key);
+      }
+    }
     if (!silent) {
       renderActiveList({ safe: true });
       renderDetailDrawer(index);
@@ -5473,8 +5768,8 @@ async function handleFile(file) {
     } catch (_) {}
     syncBlendToggleFlags(result);
     // Prefer rebuilding into the GroupOperator-level Inputs block (or inserting one)
-    let bounds = locateMacroGroupBounds(original, result);
-    let updated = original;
+    const baseText = applyToolRenameMap(original, result);
+    let updated = baseText;
     const safeEditExport = options.safeEditExport === true;
     if (!safeEditExport) {
       updated = applyLabelCountEdits(updated, result, eol);
@@ -5829,7 +6124,13 @@ async function handleFile(file) {
       if (!result) return text;
       const grp = locateMacroGroupBounds(text, result);
       if (!grp) return text;
-      const keep = (result.insertClickedKeys instanceof Set) ? result.insertClickedKeys : new Set();
+      const keep = new Set();
+      if (result.insertClickedKeys instanceof Set) {
+        result.insertClickedKeys.forEach((key) => keep.add(key));
+      }
+      if (result.buttonExactInsert instanceof Set) {
+        result.buttonExactInsert.forEach((key) => keep.add(key));
+      }
       let out = text;
       for (const e of (result.entries || [])) {
         if (!e || !e.sourceOp || !e.source) continue;

@@ -110,7 +110,8 @@ export function createNodesPane(options = {}) {
       });
       menu.appendChild(btn);
     };
-    addItem('Rename node...', () => requestRenameNode(node.name));
+    const renameLabel = node?.name ? `Rename "${node.name}"...` : 'Rename node...';
+    addItem(renameLabel, () => requestRenameNode(node));
     document.body.appendChild(menu);
     nodeContextMenu = menu;
     const pad = 8;
