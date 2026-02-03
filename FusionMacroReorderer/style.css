@@ -1192,6 +1192,9 @@ footer { color: var(--muted); border-top: 1px solid var(--border); margin-top: 2
 .add-control-modal[hidden] {
   display: none;
 }
+.csv-modal .add-control-form {
+  width: min(420px, calc(100% - 32px));
+}
 .add-control-form {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -2063,6 +2066,53 @@ body.pick-mode .pick-target {
   display: flex;
   flex-direction: column;
   flex: 1 1 120px;
+}
+
+.detail-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.detail-input-wrap input {
+  width: 100%;
+}
+
+.detail-input-wrap.has-action input {
+  padding-right: 2rem;
+}
+
+.csv-link-btn {
+  position: absolute;
+  right: 0.35rem;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.csv-link-btn:hover {
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.csv-link-btn.linked {
+  color: var(--accent);
+  border-color: rgba(79, 163, 255, 0.5);
+  background: rgba(79, 163, 255, 0.12);
+}
+
+.csv-link-btn.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .detail-default-item span {

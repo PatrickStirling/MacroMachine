@@ -170,6 +170,17 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
     if (changed) renderDocTabs();
   }
 
+  function selectAllDocs() {
+    let changed = false;
+    documents.forEach((doc) => {
+      if (!doc.selected) {
+        doc.selected = true;
+        changed = true;
+      }
+    });
+    if (changed) renderDocTabs();
+  }
+
   function toggleDocSelection(docId) {
     const doc = documents.find(d => d.id === docId);
     if (!doc) return;
@@ -189,6 +200,7 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
     state.exportFolderSelected = false;
     state.lastExportPath = '';
     state.drfxLink = null;
+    state.csvData = null;
   }
 
   function createBlankDocument() {
@@ -274,6 +286,7 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
     onCreateDoc: () => createBlankDocument(),
     onRenameDoc: (docId) => promptRenameDocument(docId),
     onToggleDocSelection: (docId) => toggleDocSelection(docId),
+    onSelectAll: () => selectAllDocs(),
     onClearSelection: () => clearDocSelections(),
     onCloseDoc: (docId) => closeDocument(docId),
     onCloseOthers: (docId) => closeDocumentsByFilter(d => d.id !== docId, 'Close other tabs without exporting?'),
@@ -315,6 +328,7 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
       exportFolderSelected: !!state.exportFolderSelected,
       lastExportPath: state.lastExportPath || '',
       drfxLink: state.drfxLink || null,
+      csvData: state.csvData || null,
     };
   }
 
@@ -346,6 +360,7 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
       state.exportFolderSelected = !!snap.exportFolderSelected;
       state.lastExportPath = snap.lastExportPath || '';
       state.drfxLink = snap.drfxLink || null;
+      state.csvData = snap.csvData || null;
 
       const codeText = snap.generatedText != null ? snap.generatedText : (state.originalText || '');
       updateCodeView(codeText);
@@ -1127,7 +1142,6 @@ function updateDocExportPathDisplay() {
       { id: 'edit', label: 'To Edit Page', enabled: hasMacro, action: exportToEditPage },
     ];
     items.push({ type: 'sep' });
-    items.push({ id: 'normalize-legacy', label: 'Normalize legacy names…', enabled: hasMacro, action: normalizeLegacyNamesMenu });
     if (activeDrfxLinked || showDrfxMulti || showSourceBulk) items.push({ type: 'sep' });
     if (activeDrfxLinked) {
       items.push({ id: 'source', label: 'To Source DRFX', enabled: hasMacro, action: exportToSourceDrfx });
@@ -1140,6 +1154,7 @@ function updateDocExportPathDisplay() {
     }
     return items;
   }
+
   exportMenuController = createExportMenuController({
     button: exportMenuBtn,
     menu: exportMenuEl,
@@ -2764,12 +2779,54 @@ function hideDetailDrawer() {
       currentInput.type = 'text';
       const currentNote = document.createElement('span');
       currentNote.className = 'detail-default-note';
+      const currentWrap = document.createElement('div');
+      currentWrap.className = 'detail-input-wrap';
+      currentWrap.appendChild(currentInput);
+      const hasCsv = !!(state.csvData && Array.isArray(state.csvData.headers) && state.csvData.headers.length);
+      const canLinkCsv = isTextControl(entry);
+      if (canLinkCsv) {
+        currentWrap.classList.add('has-action');
+        const csvBtn = document.createElement('button');
+        csvBtn.type = 'button';
+        csvBtn.className = 'csv-link-btn';
+        const linked = entry && entry.csvLink && entry.csvLink.column;
+        if (linked) csvBtn.classList.add('linked');
+        if (!hasCsv) csvBtn.classList.add('disabled');
+        csvBtn.innerHTML = getCsvLinkIcon();
+        csvBtn.title = linked
+          ? `Linked to ${entry.csvLink.column}`
+          : (hasCsv ? 'Link CSV column' : 'Import CSV to link');
+        csvBtn.addEventListener('click', async (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (!hasCsv) return;
+          const headers = state.csvData?.headers || [];
+          const picked = await openCsvColumnPicker({
+            title: 'Link CSV column',
+            headers,
+            current: entry?.csvLink?.column || '',
+            allowNone: true,
+          });
+          if (picked == null) return;
+          if (!picked) {
+            delete entry.csvLink;
+          } else {
+            entry.csvLink = { column: picked };
+          }
+          renderDetailDrawer(index);
+        });
+        currentWrap.appendChild(csvBtn);
+      }
       const refreshCurrent = () => {
         const info = getCurrentInputInfo(entry);
         currentInput.value = info.value || '';
         currentInput.placeholder = info.value ? '' : (info.note || '');
-        currentNote.textContent = info.note || '';
-        currentNote.hidden = !info.note;
+        const csvNote = entry?.csvLink?.column ? `Linked to CSV: ${entry.csvLink.column}` : '';
+        const noteParts = [];
+        if (info.note) noteParts.push(info.note);
+        if (csvNote) noteParts.push(csvNote);
+        currentNote.textContent = noteParts.join(' ');
+        currentNote.hidden = noteParts.length === 0;
       };
       const commitCurrent = () => {
         setEntryCurrentValue(index, currentInput.value);
@@ -2780,39 +2837,44 @@ function hideDetailDrawer() {
       });
       currentInput.addEventListener('blur', commitCurrent);
       currentGroup.appendChild(currentLabel);
-      currentGroup.appendChild(currentInput);
+      currentGroup.appendChild(currentWrap);
       currentGroup.appendChild(currentNote);
       currentRow.appendChild(currentGroup);
       refreshCurrent();
-      const defaultRow = document.createElement('div');
-      defaultRow.className = 'detail-default-row';
-      const rangeRow = document.createElement('div');
-      rangeRow.className = 'detail-default-row';
-      const buildDefaultInput = (title, key, handler) => {
-        const group = document.createElement('div');
-        group.className = 'detail-default-item';
-        const lbl = document.createElement('span');
-        lbl.textContent = title;
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.value = normalizeMetaValue(meta[key]) || '';
-        const originalMeta = entry.controlMetaOriginal || {};
-        if (originalMeta[key] != null) input.placeholder = `Original: ${originalMeta[key]}`;
-        const commit = () => handler(input.value);
-        input.addEventListener('keydown', (ev) => {
-          if (ev.key === 'Enter') { ev.preventDefault(); commit(); }
-        });
-        input.addEventListener('blur', commit);
-        group.appendChild(lbl);
-        group.appendChild(input);
-        return group;
-      };
-      defaultRow.appendChild(buildDefaultInput('Default', 'defaultValue', (val) => setEntryDefaultValue(index, val)));
-      rangeRow.appendChild(buildDefaultInput('Min', 'minScale', (val) => setEntryRangeValue(index, 'minScale', val)));
-      rangeRow.appendChild(buildDefaultInput('Max', 'maxScale', (val) => setEntryRangeValue(index, 'maxScale', val)));
       defaultsField.appendChild(currentRow);
-      defaultsField.appendChild(defaultRow);
-      defaultsField.appendChild(rangeRow);
+      if (!isTextControl(entry)) {
+        const defaultRow = document.createElement('div');
+        defaultRow.className = 'detail-default-row';
+        const rangeRow = document.createElement('div');
+        rangeRow.className = 'detail-default-row';
+        const buildDefaultInput = (title, key, handler) => {
+          const group = document.createElement('div');
+          group.className = 'detail-default-item';
+          const lbl = document.createElement('span');
+          lbl.textContent = title;
+          const input = document.createElement('input');
+          input.type = 'text';
+          input.value = formatDefaultForDisplay(entry, meta[key]) || '';
+          const originalMeta = entry.controlMetaOriginal || {};
+          if (originalMeta[key] != null) {
+            const originalDisplay = formatDefaultForDisplay(entry, originalMeta[key]);
+            input.placeholder = `Original: ${originalDisplay || ''}`;
+          }
+          const commit = () => handler(input.value);
+          input.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter') { ev.preventDefault(); commit(); }
+          });
+          input.addEventListener('blur', commit);
+          group.appendChild(lbl);
+          group.appendChild(input);
+          return group;
+        };
+        defaultRow.appendChild(buildDefaultInput('Default', 'defaultValue', (val) => setEntryDefaultValue(index, val)));
+        rangeRow.appendChild(buildDefaultInput('Min', 'minScale', (val) => setEntryRangeValue(index, 'minScale', val)));
+        rangeRow.appendChild(buildDefaultInput('Max', 'maxScale', (val) => setEntryRangeValue(index, 'maxScale', val)));
+        defaultsField.appendChild(defaultRow);
+        defaultsField.appendChild(rangeRow);
+      }
     }
     detailDrawerBody.appendChild(defaultsField);
     if (entry.isLabel) {
@@ -3065,6 +3127,496 @@ function hideDetailDrawer() {
     if (value == null) return null;
     const trimmed = String(value).trim();
     return trimmed.length ? trimmed : null;
+  }
+
+  function isTextControl(entry) {
+    const inputControl = normalizeInputControlValue(
+      entry?.controlMeta?.inputControl || entry?.controlMetaOriginal?.inputControl
+    );
+    if (inputControl && /text/i.test(inputControl)) return true;
+    if (String(entry?.source || '').toLowerCase().includes('styledtext')) return true;
+    const dataType = (entry?.controlMeta?.dataType || entry?.controlMetaOriginal?.dataType || entry?.dataType || '')
+      .replace(/"/g, '')
+      .trim()
+      .toLowerCase();
+    if (!dataType) return false;
+    if (dataType === 'text' || dataType === 'string' || dataType.includes('text')) return true;
+    const defaultRaw = entry?.controlMeta?.defaultValue ?? entry?.controlMetaOriginal?.defaultValue;
+    const defaultStr = defaultRaw != null ? String(defaultRaw).trim() : '';
+    if (defaultStr.toLowerCase().includes('styledtext')) return true;
+    if (defaultStr.startsWith('"') && defaultStr.endsWith('"')) return true;
+    return false;
+  }
+
+  function stripDefaultQuotes(value) {
+    if (value == null) return null;
+    let str = String(value).trim();
+    if (str.length >= 2 && str.startsWith('"') && str.endsWith('"')) {
+      str = unescapeSettingString(str.slice(1, -1));
+    }
+    return str;
+  }
+
+  function unescapeSettingString(value) {
+    return String(value || '')
+      .replace(/\\\\/g, '\\')
+      .replace(/\\"/g, '"')
+      .replace(/\\n/g, '\n')
+      .replace(/\\r/g, '\r')
+      .replace(/\\t/g, '\t');
+  }
+
+  function stripOuterQuotes(value) {
+    let str = String(value || '').trim();
+    if (str.startsWith('"') && str.endsWith('"')) str = str.slice(1, -1);
+    return str;
+  }
+
+  function isStyledTextValue(value) {
+    const stripped = stripOuterQuotes(value);
+    return /^StyledText\b/.test(stripped);
+  }
+
+  function extractStyledTextPlainText(value) {
+    const stripped = stripOuterQuotes(value);
+    if (!/^StyledText\b/.test(stripped)) return null;
+    const match = stripped.match(/(?:Text|Value)\s*=\s*"((?:\\.|[^"])*)"/);
+    if (!match) return null;
+    return unescapeSettingString(match[1]);
+  }
+
+  function updateStyledTextValue(value, plainText) {
+    const stripped = stripOuterQuotes(value);
+    if (!/^StyledText\b/.test(stripped)) return value;
+    const safeText = escapeQuotes(String(plainText || ''));
+    let updated = stripped;
+    if (/Text\s*=\s*"/.test(updated)) {
+      updated = updated.replace(/Text\s*=\s*"((?:\\.|[^"])*)"/, `Text = "${safeText}"`);
+    } else if (/Value\s*=\s*"/.test(updated)) {
+      updated = updated.replace(/Value\s*=\s*"((?:\\.|[^"])*)"/, `Value = "${safeText}"`);
+    }
+    return `"${escapeSettingString(updated)}"`;
+  }
+
+  function buildStyledTextBlock(plainText) {
+    const safeText = escapeSettingString(String(plainText || ''));
+    return `StyledText { Value = "${safeText}" }`;
+  }
+
+  function setInputValueInToolText(text, entry, value, eol, resultRef) {
+    try {
+      if (!text || !entry || !entry.sourceOp || !entry.source) return text;
+      const bounds = locateMacroGroupBounds(text, resultRef || state.parseResult);
+      if (!bounds) return text;
+      const toolBlock = findToolBlockInGroup(text, bounds.groupOpenIndex, bounds.groupCloseIndex, entry.sourceOp);
+      if (!toolBlock) return text;
+      const inputsBlock = findInputsInTool(text, toolBlock.open, toolBlock.close);
+      if (!inputsBlock) return text;
+      const inputBlock = findInputBlockInInputs(text, inputsBlock.open, inputsBlock.close, entry.source);
+      if (!inputBlock) return text;
+      const indent = (getLineIndent(text, inputBlock.open) || '') + '\t';
+      let body = text.slice(inputBlock.open + 1, inputBlock.close);
+      const nextText = String(value || '');
+      const useStyled = String(entry.source || '').toLowerCase().includes('styledtext') || /StyledText\s*\{/.test(body);
+      if (useStyled) {
+        const replacement = buildStyledTextBlock(nextText);
+        if (/Value\s*=\s*StyledText\s*\{[\s\S]*?\}/i.test(body)) {
+          body = body.replace(/Value\s*=\s*StyledText\s*\{[\s\S]*?\}/i, `Value = ${replacement}`);
+        } else {
+          body = setInstanceInputProp(body, 'Value', replacement, indent, eol || '\n');
+        }
+      } else {
+        const safe = `"${escapeSettingString(nextText)}"`;
+        body = setInstanceInputProp(body, 'Value', safe, indent, eol || '\n');
+      }
+      return text.slice(0, inputBlock.open + 1) + body + text.slice(inputBlock.close);
+    } catch (_) {
+      return text;
+    }
+  }
+
+  function resolveTextDefaultSource(entry, value) {
+    if (!entry || !isTextControl(entry)) return value;
+    try {
+      const inst = extractInstancePropValue(entry?.raw || '', 'Default');
+      if (inst != null && String(inst).trim()) return inst;
+      const toolValue = getInputValueFromTool(entry);
+      if (toolValue != null && String(toolValue).trim()) return toolValue;
+    } catch (_) {}
+    return value;
+  }
+
+  function extractStyledTextBlockFromInput(body) {
+    try {
+      if (!body) return null;
+      const match = body.match(/Value\s*=\s*StyledText\s*\{/i);
+      if (!match || match.index == null) return null;
+      const styledIdx = body.indexOf('StyledText', match.index);
+      const openIdx = body.indexOf('{', styledIdx);
+      if (openIdx < 0) return null;
+      const closeIdx = findMatchingBrace(body, openIdx);
+      if (closeIdx < 0) return null;
+      return body.slice(styledIdx, closeIdx + 1);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function extractStyledTextPlainTextFromInput(body) {
+    try {
+      if (!body) return null;
+      const match = body.match(/Value\s*=\s*StyledText\s*\{[\s\S]*?Value\s*=\s*"((?:\\.|[^"])*)"/i);
+      if (!match) return null;
+      return unescapeSettingString(match[1]);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function getInputValueFromTool(entry) {
+    try {
+      if (!entry || !entry.sourceOp || !entry.source || !state.originalText || !state.parseResult) return null;
+      const bounds = locateMacroGroupBounds(state.originalText, state.parseResult);
+      if (!bounds) return null;
+      const toolBlock = findToolBlockInGroup(state.originalText, bounds.groupOpenIndex, bounds.groupCloseIndex, entry.sourceOp);
+      if (!toolBlock) return null;
+      const inputsBlock = findInputsInTool(state.originalText, toolBlock.open, toolBlock.close);
+      if (!inputsBlock) return null;
+      const inputBlock = findInputBlockInInputs(state.originalText, inputsBlock.open, inputsBlock.close, entry.source);
+      if (!inputBlock) return null;
+      const body = state.originalText.slice(inputBlock.open + 1, inputBlock.close);
+      const styled = extractStyledTextBlockFromInput(body);
+      if (styled) return styled;
+      return extractControlPropValue(body, 'Value') || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function formatDefaultForDisplay(entry, value) {
+    const next = normalizeMetaValue(resolveTextDefaultSource(entry, value));
+    if (next == null) return null;
+    if (!isTextControl(entry)) return next;
+    const styled = extractStyledTextPlainText(next);
+    if (styled != null) return styled;
+    return stripDefaultQuotes(next);
+  }
+
+  function formatDefaultForStorage(entry, value) {
+    const next = normalizeMetaValue(value);
+    if (next == null) return null;
+    if (!isTextControl(entry)) return next;
+    const template = resolveTextDefaultSource(entry, entry?.controlMeta?.defaultValue ?? entry?.controlMetaOriginal?.defaultValue);
+    if (template && isStyledTextValue(template)) {
+      return updateStyledTextValue(template, next);
+    }
+    const stripped = stripDefaultQuotes(next);
+    return `"${escapeQuotes(stripped)}"`;
+  }
+
+  function detectCsvDelimiter(text) {
+    try {
+      const line = String(text || '').split(/\r?\n/)[0] || '';
+      const candidates = [',', '\t', ';', '|'];
+      let best = ',';
+      let bestCount = -1;
+      candidates.forEach((ch) => {
+        const count = (line.match(new RegExp(`\\${ch}`, 'g')) || []).length;
+        if (count > bestCount) { best = ch; bestCount = count; }
+      });
+      return best || ',';
+    } catch (_) { return ','; }
+  }
+
+  function parseCsvText(rawText) {
+    const text = String(rawText || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const delimiter = detectCsvDelimiter(text);
+    const rows = [];
+    let row = [];
+    let field = '';
+    let inQuotes = false;
+    for (let i = 0; i < text.length; i += 1) {
+      const ch = text[i];
+      const next = text[i + 1];
+      if (inQuotes) {
+        if (ch === '"' && next === '"') {
+          field += '"';
+          i += 1;
+          continue;
+        }
+        if (ch === '"' && next !== '"') {
+          inQuotes = false;
+          continue;
+        }
+        field += ch;
+        continue;
+      }
+      if (ch === '"') { inQuotes = true; continue; }
+      if (ch === delimiter) {
+        row.push(field);
+        field = '';
+        continue;
+      }
+      if (ch === '\n') {
+        row.push(field);
+        rows.push(row);
+        row = [];
+        field = '';
+        continue;
+      }
+      field += ch;
+    }
+    if (field.length || row.length) {
+      row.push(field);
+      rows.push(row);
+    }
+    const cleanedRows = rows.filter(r => r.some(v => String(v || '').trim().length));
+    if (!cleanedRows.length) return { headers: [], rows: [], delimiter };
+    const rawHeaders = cleanedRows[0].map(v => String(v || '').trim());
+    const headers = [];
+    const seen = new Map();
+    rawHeaders.forEach((h, idx) => {
+      let base = h || `Column ${idx + 1}`;
+      const key = base.toLowerCase();
+      const count = (seen.get(key) || 0) + 1;
+      seen.set(key, count);
+      if (count > 1) base = `${base} ${count}`;
+      headers.push(base);
+    });
+    const dataRows = cleanedRows.slice(1).map((r) => {
+      const obj = {};
+      headers.forEach((h, idx) => {
+        obj[h] = (r && r[idx] != null) ? String(r[idx]) : '';
+      });
+      return obj;
+    });
+    return { headers, rows: dataRows, delimiter };
+  }
+
+  function normalizeCsvUrl(raw) {
+    let url = String(raw || '').trim();
+    if (!url) return '';
+    if (!/^[a-z][a-z0-9+.-]*:/i.test(url)) url = `https://${url}`;
+    if (/\.csv(\?|#|$)/i.test(url)) return url;
+    const match = url.match(/docs\.google\.com\/spreadsheets\/d\/([^/]+)/i);
+    if (!match) return url;
+    const id = match[1];
+    const gidMatch = url.match(/[?&]gid=([0-9]+)/i);
+    const gid = gidMatch ? gidMatch[1] : '';
+    const base = `https://docs.google.com/spreadsheets/d/${id}/export?format=csv`;
+    return gid ? `${base}&gid=${gid}` : base;
+  }
+
+  function setCsvData(data, sourceName) {
+    if (!data || !Array.isArray(data.headers)) {
+      state.csvData = null;
+      return;
+    }
+    state.csvData = {
+      headers: data.headers || [],
+      rows: data.rows || [],
+      delimiter: data.delimiter || ',',
+      sourceName: sourceName || '',
+      nameColumn: data.nameColumn || null,
+    };
+    try { info(`CSV loaded: ${state.csvData.rows.length} rows.`); } catch (_) {}
+    if (activeDetailEntryIndex != null) renderDetailDrawer(activeDetailEntryIndex);
+  }
+
+  function cloneParseResultForCsv(result) {
+    if (!result) return null;
+    const clone = {
+      ...result,
+      entries: Array.isArray(result.entries)
+        ? result.entries.map((entry) => {
+          if (!entry) return entry;
+          return {
+            ...entry,
+            controlMeta: entry.controlMeta ? { ...entry.controlMeta } : {},
+            controlMetaOriginal: entry.controlMetaOriginal ? { ...entry.controlMetaOriginal } : {},
+          };
+        })
+        : [],
+      order: Array.isArray(result.order) ? [...result.order] : [],
+      pageOrder: Array.isArray(result.pageOrder) ? [...result.pageOrder] : [],
+      selected: result.selected ? new Set(Array.from(result.selected)) : new Set(),
+      collapsed: result.collapsed ? new Set(Array.from(result.collapsed)) : new Set(),
+      collapsedCG: result.collapsedCG ? new Set(Array.from(result.collapsedCG)) : new Set(),
+      blendToggles: result.blendToggles ? new Set(Array.from(result.blendToggles)) : new Set(),
+      buttonExactInsert: result.buttonExactInsert ? new Set(Array.from(result.buttonExactInsert)) : new Set(),
+      insertUrlMap: result.insertUrlMap ? new Map(result.insertUrlMap) : new Map(),
+      buttonOverrides: result.buttonOverrides ? new Map(result.buttonOverrides) : new Map(),
+    };
+    if (result.pageIcons instanceof Map) {
+      clone.pageIcons = new Map(result.pageIcons);
+    } else if (result.pageIcons && typeof result.pageIcons === 'object') {
+      clone.pageIcons = { ...result.pageIcons };
+    }
+    return clone;
+  }
+
+  function applyDefaultToEntryRaw(entry, next, newline) {
+    if (!entry || typeof entry.raw !== 'string') return;
+    const open = entry.raw.indexOf('{');
+    const close = entry.raw.lastIndexOf('}');
+    if (open < 0 || close <= open) return;
+    const indent = (getLineIndent(entry.raw, open) || '') + '\t';
+    let body = entry.raw.slice(open + 1, close);
+    if (next == null) body = removeInstanceInputProp(body, 'Default');
+    else body = setInstanceInputProp(body, 'Default', next, indent, newline || '\n');
+    entry.raw = entry.raw.slice(0, open + 1) + body + entry.raw.slice(close);
+  }
+
+  async function openCsvColumnPicker({ title, headers, current, allowNone = true } = {}) {
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'add-control-modal csv-modal';
+      const modal = document.createElement('form');
+      modal.className = 'add-control-form';
+      modal.setAttribute('role', 'dialog');
+      modal.setAttribute('aria-modal', 'true');
+      const header = document.createElement('header');
+      const headingWrap = document.createElement('div');
+      const eyebrow = document.createElement('p');
+      eyebrow.className = 'eyebrow';
+      eyebrow.textContent = 'CSV';
+      const heading = document.createElement('h3');
+      heading.textContent = title || 'Select CSV column';
+      headingWrap.appendChild(eyebrow);
+      headingWrap.appendChild(heading);
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.textContent = '×';
+      closeBtn.setAttribute('aria-label', 'Close');
+      header.appendChild(headingWrap);
+      header.appendChild(closeBtn);
+      const body = document.createElement('div');
+      body.className = 'form-body';
+      const label = document.createElement('label');
+      label.textContent = 'Column';
+      const select = document.createElement('select');
+      if (allowNone) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = 'Unlink (no column)';
+        select.appendChild(opt);
+      }
+      (headers || []).forEach((h) => {
+        const opt = document.createElement('option');
+        opt.value = h;
+        opt.textContent = h;
+        select.appendChild(opt);
+      });
+      if (current) select.value = current;
+      label.appendChild(select);
+      body.appendChild(label);
+      const actions = document.createElement('footer');
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.textContent = 'Cancel';
+      const okBtn = document.createElement('button');
+      okBtn.type = 'submit';
+      okBtn.className = 'primary';
+      okBtn.textContent = 'Link';
+      const close = (value) => {
+        try { overlay.remove(); } catch (_) {}
+        resolve(value);
+      };
+      cancelBtn.addEventListener('click', () => close(null));
+      closeBtn.addEventListener('click', () => close(null));
+      modal.addEventListener('submit', (ev) => {
+        ev.preventDefault();
+        close(select.value);
+      });
+      overlay.addEventListener('click', (ev) => {
+        if (ev.target === overlay) close(null);
+      });
+      actions.appendChild(cancelBtn);
+      actions.appendChild(okBtn);
+      modal.appendChild(header);
+      modal.appendChild(body);
+      modal.appendChild(actions);
+      overlay.appendChild(modal);
+      document.body.appendChild(overlay);
+      select.focus();
+    });
+  }
+
+  async function openCsvNameColumnPicker(headers, current) {
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'add-control-modal csv-modal';
+      const modal = document.createElement('form');
+      modal.className = 'add-control-form';
+      modal.setAttribute('role', 'dialog');
+      modal.setAttribute('aria-modal', 'true');
+      const header = document.createElement('header');
+      const headingWrap = document.createElement('div');
+      const eyebrow = document.createElement('p');
+      eyebrow.className = 'eyebrow';
+      eyebrow.textContent = 'CSV';
+      const heading = document.createElement('h3');
+      heading.textContent = 'Choose name column';
+      headingWrap.appendChild(eyebrow);
+      headingWrap.appendChild(heading);
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.textContent = '×';
+      closeBtn.setAttribute('aria-label', 'Close');
+      header.appendChild(headingWrap);
+      header.appendChild(closeBtn);
+      const body = document.createElement('div');
+      body.className = 'form-body';
+      const label = document.createElement('label');
+      label.textContent = 'Name column';
+      const select = document.createElement('select');
+      const rowOpt = document.createElement('option');
+      rowOpt.value = '__row__';
+      rowOpt.textContent = 'Row number';
+      select.appendChild(rowOpt);
+      (headers || []).forEach((h) => {
+        const opt = document.createElement('option');
+        opt.value = h;
+        opt.textContent = h;
+        select.appendChild(opt);
+      });
+      if (current) select.value = current;
+      label.appendChild(select);
+      body.appendChild(label);
+      const actions = document.createElement('footer');
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.textContent = 'Cancel';
+      const okBtn = document.createElement('button');
+      okBtn.type = 'submit';
+      okBtn.className = 'primary';
+      okBtn.textContent = 'Continue';
+      const close = (value) => {
+        try { overlay.remove(); } catch (_) {}
+        resolve(value);
+      };
+      cancelBtn.addEventListener('click', () => close(null));
+      closeBtn.addEventListener('click', () => close(null));
+      modal.addEventListener('submit', (ev) => {
+        ev.preventDefault();
+        close(select.value);
+      });
+      overlay.addEventListener('click', (ev) => {
+        if (ev.target === overlay) close(null);
+      });
+      actions.appendChild(cancelBtn);
+      actions.appendChild(okBtn);
+      modal.appendChild(header);
+      modal.appendChild(body);
+      modal.appendChild(actions);
+      overlay.appendChild(modal);
+      document.body.appendChild(overlay);
+      select.focus();
+    });
+  }
+
+  function getCsvLinkIcon() {
+    return '+';
   }
 
   function setEntryDefaultValue(index, value) {
@@ -3633,6 +4185,10 @@ function hideDetailDrawer() {
       try { setDiagnosticsEnabled(!diagnosticsController.isEnabled()); } catch (_) {}
     },
     handleNativeOpen,
+    onNormalizeLegacyNames: () => normalizeLegacyNamesMenu(),
+    onImportCsvFile: () => importCsvFromFile(),
+    onImportCsvUrl: () => importCsvFromUrl(),
+    onGenerateFromCsv: () => generateSettingsFromCsv(),
   });
 
   function setExportButtonLabel(label) {
@@ -3681,7 +4237,18 @@ function hideDetailDrawer() {
     nativeBridge.ipcRenderer.on('fmr-set-export-folder', (_event, payload = {}) => {
       const folderPath = payload.path;
       if (!folderPath) return;
-      setExportFolder(folderPath, { selected: true });
+      const selectedDocs = documents.filter(doc => doc && doc.selected);
+      if (selectedDocs.length) {
+        selectedDocs.forEach((doc) => {
+          if (doc.snapshot) {
+            doc.snapshot.exportFolder = folderPath;
+            doc.snapshot.exportFolderSelected = true;
+          }
+        });
+        info(`Export folder set for ${selectedDocs.length} selected tab(s).`);
+      } else {
+        setExportFolder(folderPath, { selected: true });
+      }
     });
   }
 
@@ -4504,6 +5071,53 @@ async function handleFile(file) {
   async function exportToEditPage() {
     if (!state.parseResult) return;
     try {
+      const selectedDocs = documents.filter(doc => doc && doc.selected);
+      if (selectedDocs.length) {
+        if (!IS_ELECTRON) {
+          error('Bulk Export to Edit Page is available in the desktop app.');
+          return;
+        }
+        const targetDocs = selectedDocs.filter(doc => doc.snapshot && doc.snapshot.parseResult);
+        if (!targetDocs.length) {
+          error('No valid selected tabs to export.');
+          return;
+        }
+        const missing = targetDocs.filter(doc => !(doc.snapshot.exportFolder || state.exportFolder));
+        if (missing.length) {
+          const msg = 'Choose a destination folder in Macro Explorer before exporting to the Edit Page.';
+          try { window.alert(msg); } catch (_) {}
+          error(msg);
+          return;
+        }
+        let saved = 0;
+        let failed = 0;
+        const results = [];
+        targetDocs.forEach((doc) => {
+          try {
+            const snap = doc.snapshot;
+            const newContent = rebuildContentWithNewOrder(snap.originalText || '', snap.parseResult, snap.newline || '\n');
+            const outName = buildMacroExportNameForSnapshot(snap);
+            const targetFolder = snap.exportFolder || state.exportFolder || resolveExportFolder();
+            const destPath = writeSettingToFolder(targetFolder, outName, newContent);
+            snap.lastExportPath = destPath;
+            doc.isDirty = false;
+            results.push({ name: outName, path: destPath, ok: true });
+            saved += 1;
+          } catch (_) {
+            results.push({ name: doc?.name || doc?.fileName || 'Untitled', path: '', ok: false });
+            failed += 1;
+          }
+        });
+        const summary = `Exported ${saved} preset(s) to the Edit Page${failed ? `, ${failed} failed.` : '.'}`;
+        info(summary);
+        try {
+          openBulkExportSummaryModal(summary, results);
+        } catch (_) {}
+        const active = getActiveDocument();
+        if (active) storeDocumentSnapshot(active);
+        updateDocExportPathDisplay();
+        return;
+      }
       if (!state.exportFolderSelected) {
         const msg = 'Choose a destination folder in Macro Explorer before exporting to the Edit Page.';
         try { window.alert(msg); } catch (_) {}
@@ -4580,6 +5194,69 @@ async function handleFile(file) {
       const linked = doc.snapshot.drfxLink && doc.snapshot.drfxLink.linked;
       return !linked;
     });
+  }
+
+  function openBulkExportSummaryModal(summary, results = []) {
+    const overlay = document.createElement('div');
+    overlay.className = 'add-control-modal csv-modal';
+    const modal = document.createElement('form');
+    modal.className = 'add-control-form';
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    const header = document.createElement('header');
+    const headingWrap = document.createElement('div');
+    const eyebrow = document.createElement('p');
+    eyebrow.className = 'eyebrow';
+    eyebrow.textContent = 'Export';
+    const heading = document.createElement('h3');
+    heading.textContent = 'Bulk Export Summary';
+    headingWrap.appendChild(eyebrow);
+    headingWrap.appendChild(heading);
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.textContent = '×';
+    closeBtn.setAttribute('aria-label', 'Close');
+    header.appendChild(headingWrap);
+    header.appendChild(closeBtn);
+    const body = document.createElement('div');
+    body.className = 'form-body';
+    const summaryEl = document.createElement('p');
+    summaryEl.textContent = summary;
+    const list = document.createElement('div');
+    list.style.display = 'flex';
+    list.style.flexDirection = 'column';
+    list.style.gap = '6px';
+    results.forEach((r) => {
+      const line = document.createElement('div');
+      line.textContent = r.ok ? r.name : `${r.name} (failed)`;
+      if (!r.ok) line.style.color = 'var(--danger)';
+      list.appendChild(line);
+    });
+    body.appendChild(summaryEl);
+    body.appendChild(list);
+    const actions = document.createElement('footer');
+    const okBtn = document.createElement('button');
+    okBtn.type = 'submit';
+    okBtn.className = 'primary';
+    okBtn.textContent = 'OK';
+    const close = () => {
+      try { overlay.remove(); } catch (_) {}
+    };
+    closeBtn.addEventListener('click', () => close());
+    modal.addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      close();
+    });
+    overlay.addEventListener('click', (ev) => {
+      if (ev.target === overlay) close();
+    });
+    actions.appendChild(okBtn);
+    modal.appendChild(header);
+    modal.appendChild(body);
+    modal.appendChild(actions);
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    okBtn.focus();
   }
 
   const DRFX_ROOT_OPTIONS = ['Edit', 'Fusion'];
@@ -4903,6 +5580,195 @@ async function handleFile(file) {
       error('Clipboard import failed: ' + (err?.message || err));
     }
   });
+
+  async function importCsvFromFile() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.csv,.tsv,.txt';
+    input.addEventListener('change', () => {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const text = String(reader.result || '');
+          const parsed = parseCsvText(text);
+          if (!parsed.headers.length) {
+            error('CSV appears to be empty or invalid.');
+            return;
+          }
+          setCsvData(parsed, file.name || 'CSV');
+        } catch (err) {
+          error(err?.message || err || 'Failed to parse CSV.');
+        }
+      };
+      reader.onerror = () => {
+        error('Failed to read CSV file.');
+      };
+      reader.readAsText(file);
+    });
+    input.click();
+  }
+
+  async function importCsvFromUrl() {
+    const raw = await openCsvUrlPrompt();
+    if (!raw) return;
+    const url = normalizeCsvUrl(raw);
+    if (!url) return;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        error(`CSV fetch failed (${res.status}).`);
+        return;
+      }
+      const text = await res.text();
+      const parsed = parseCsvText(text);
+      if (!parsed.headers.length) {
+        error('CSV appears to be empty or invalid.');
+        return;
+      }
+      setCsvData(parsed, url);
+    } catch (err) {
+      error(err?.message || err || 'CSV fetch failed.');
+    }
+  }
+
+  async function openCsvUrlPrompt() {
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'add-control-modal csv-modal';
+      const modal = document.createElement('form');
+      modal.className = 'add-control-form';
+      modal.setAttribute('role', 'dialog');
+      modal.setAttribute('aria-modal', 'true');
+      const header = document.createElement('header');
+      const headingWrap = document.createElement('div');
+      const eyebrow = document.createElement('p');
+      eyebrow.className = 'eyebrow';
+      eyebrow.textContent = 'CSV';
+      const heading = document.createElement('h3');
+      heading.textContent = 'Import CSV from URL';
+      headingWrap.appendChild(eyebrow);
+      headingWrap.appendChild(heading);
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.textContent = '×';
+      closeBtn.setAttribute('aria-label', 'Close');
+      header.appendChild(headingWrap);
+      header.appendChild(closeBtn);
+      const body = document.createElement('div');
+      body.className = 'form-body';
+      const label = document.createElement('label');
+      label.textContent = 'CSV URL';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.placeholder = 'https://example.com/data.csv';
+      label.appendChild(input);
+      body.appendChild(label);
+      const actions = document.createElement('footer');
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.textContent = 'Cancel';
+      const okBtn = document.createElement('button');
+      okBtn.type = 'submit';
+      okBtn.className = 'primary';
+      okBtn.textContent = 'Import';
+      const close = (value) => {
+        try { overlay.remove(); } catch (_) {}
+        resolve(value);
+      };
+      cancelBtn.addEventListener('click', () => close(null));
+      closeBtn.addEventListener('click', () => close(null));
+      modal.addEventListener('submit', (ev) => {
+        ev.preventDefault();
+        close(input.value);
+      });
+      overlay.addEventListener('click', (ev) => {
+        if (ev.target === overlay) close(null);
+      });
+      actions.appendChild(cancelBtn);
+      actions.appendChild(okBtn);
+      modal.appendChild(header);
+      modal.appendChild(body);
+      modal.appendChild(actions);
+      overlay.appendChild(modal);
+      document.body.appendChild(overlay);
+      input.focus();
+    });
+  }
+
+  async function generateSettingsFromCsv() {
+    if (!state.parseResult || !state.originalText) {
+      error('Load a macro before generating from CSV.');
+      return;
+    }
+    if (!state.csvData || !Array.isArray(state.csvData.headers) || !state.csvData.headers.length) {
+      error('Import a CSV first.');
+      return;
+    }
+    const activeDoc = getActiveDocument();
+    if (activeDoc) storeDocumentSnapshot(activeDoc);
+    const linked = (state.parseResult.entries || []).filter((entry) => entry && entry.csvLink && entry.csvLink.column);
+    if (!linked.length) {
+      error('No controls are linked to CSV columns yet.');
+      return;
+    }
+    const nameColumn = await openCsvNameColumnPicker(state.csvData.headers, state.csvData.nameColumn || null);
+    if (nameColumn == null) return;
+    state.csvData.nameColumn = nameColumn;
+    const baseName = (state.parseResult.macroName || state.parseResult.macroNameOriginal || 'Macro').trim();
+    const eol = state.newline || detectNewline(state.originalText) || '\n';
+    const rows = state.csvData.rows || [];
+    if (!rows.length) {
+      error('CSV has no data rows.');
+      return;
+    }
+    const baseText = state.originalText || '';
+    const baseResult = state.parseResult;
+    for (let i = 0; i < rows.length; i += 1) {
+      const row = rows[i] || {};
+      const rowLabel = nameColumn === '__row__'
+        ? `${baseName} ${i + 1}`
+        : (String(row[nameColumn] || '').trim() || `${baseName} ${i + 1}`);
+      const resultClone = cloneParseResultForCsv(baseResult);
+      if (!resultClone) continue;
+      resultClone.macroName = rowLabel;
+      let workingText = baseText;
+      const entries = resultClone.entries || [];
+      entries.forEach((entry) => {
+        if (!entry || !entry.csvLink || !entry.csvLink.column) return;
+        const col = entry.csvLink.column;
+        const rawVal = row[col] != null ? String(row[col]) : '';
+        if (isTextControl(entry)) {
+          workingText = setInputValueInToolText(workingText, entry, rawVal, eol, baseResult);
+        } else {
+          const formatted = formatDefaultForStorage(entry, rawVal);
+          entry.controlMeta = entry.controlMeta || {};
+          entry.controlMetaOriginal = entry.controlMetaOriginal || {};
+          entry.controlMeta.defaultValue = formatted;
+          entry.controlMetaDirty = true;
+          applyDefaultToEntryRaw(entry, formatted, eol);
+        }
+      });
+      const content = rebuildContentWithNewOrder(workingText, resultClone, eol);
+      const safeName = sanitizeFileBaseName(rowLabel || baseName);
+      const fileName = `${safeName || 'Macro'}.setting`;
+      await loadMacroFromText(fileName, content, {
+        preserveFileInfo: true,
+        preserveFilePath: false,
+        createDoc: true,
+        allowAutoUtility: false,
+        skipClear: false,
+      });
+      const doc = getActiveDocument();
+      if (doc) {
+        doc.name = rowLabel || doc.name;
+        doc.fileName = fileName;
+        doc.isDirty = true;
+      }
+    }
+    info(`Generated ${rows.length} macros from CSV.`);
+  }
 
 
 
@@ -5726,6 +6592,15 @@ async function handleFile(file) {
       return (safe || 'Macro') + '.setting';
     }
     return suggestOutputName(state.originalFileName || 'Macro.setting');
+  }
+
+  function buildMacroExportNameForSnapshot(snap) {
+    const macroName = (snap?.parseResult?.macroName || snap?.parseResult?.macroNameOriginal || '').trim();
+    if (macroName) {
+      const safe = sanitizeFileBaseName(macroName);
+      return (safe || 'Macro') + '.setting';
+    }
+    return suggestOutputName(snap?.originalFileName || 'Macro.setting');
   }
 
 
@@ -7358,13 +8233,32 @@ async function handleFile(file) {
       const bounds = locateMacroGroupBounds(state.originalText, state.parseResult);
       if (!bounds) return empty;
       const toolBlock = findToolBlockInGroup(state.originalText, bounds.groupOpenIndex, bounds.groupCloseIndex, entry.sourceOp);
-      if (!toolBlock) return { value: '', note: 'Inputs block not found.' };
+      if (!toolBlock) return isTextControl(entry) ? empty : { value: '', note: 'Inputs block not found.' };
+      if (isTextControl(entry) && String(entry.source || '').toLowerCase().includes('styledtext')) {
+        const direct = extractStyledTextValueFromTool(toolBlock.open, toolBlock.close);
+        if (direct != null) {
+          return { value: direct, note: '' };
+        }
+      }
       const inputsBlock = findInputsInTool(state.originalText, toolBlock.open, toolBlock.close);
-      if (!inputsBlock) return { value: '', note: 'Inputs block not found.' };
+      if (!inputsBlock) return isTextControl(entry) ? empty : { value: '', note: 'Inputs block not found.' };
       const inputBlock = findInputBlockInInputs(state.originalText, inputsBlock.open, inputsBlock.close, entry.source);
-      if (!inputBlock) return { value: '', note: 'Input not found on the tool.' };
+      if (!inputBlock) return isTextControl(entry) ? empty : { value: '', note: 'Input not found on the tool.' };
       const body = state.originalText.slice(inputBlock.open + 1, inputBlock.close);
-      const value = extractControlPropValue(body, 'Value') || '';
+      let value = extractControlPropValue(body, 'Value') || '';
+      if (isTextControl(entry)) {
+        const directPlain = extractStyledTextPlainTextFromInput(body);
+        if (directPlain != null) value = directPlain;
+        const styled = extractStyledTextBlockFromInput(body);
+        if (styled) {
+          const plain = extractStyledTextPlainText(styled);
+          if (plain != null) value = plain;
+        }
+        if (/^StyledText\b/.test(value.trim())) {
+          const plain = extractStyledTextPlainText(value.trim());
+          if (plain != null) value = plain;
+        }
+      }
       const sourceOp = extractControlPropValue(body, 'SourceOp');
       const source = extractControlPropValue(body, 'Source');
       const expression = extractControlPropValue(body, 'Expression');
@@ -7380,6 +8274,28 @@ async function handleFile(file) {
       return { value, note };
     } catch (_) {
       return empty;
+    }
+  }
+
+  function extractStyledTextValueFromTool(toolOpen, toolClose) {
+    try {
+      if (!state.originalText || toolOpen == null || toolClose == null) return null;
+      const segment = state.originalText.slice(toolOpen, toolClose);
+      const match = segment.match(/StyledText\s*=\s*Input\s*\{/i);
+      if (!match || match.index == null) return null;
+      const start = toolOpen + match.index;
+      const braceIndex = state.originalText.indexOf('{', start);
+      if (braceIndex < 0 || braceIndex > toolClose) return null;
+      const closeIndex = findMatchingBrace(state.originalText, braceIndex);
+      if (closeIndex < 0 || closeIndex > toolClose) return null;
+      const body = state.originalText.slice(braceIndex + 1, closeIndex);
+      const direct = extractStyledTextPlainTextFromInput(body);
+      if (direct != null) return direct;
+      const matchValue = body.match(/Value\s*=\s*"((?:\\.|[^"])*)"/i);
+      if (matchValue) return unescapeSettingString(matchValue[1]);
+      return null;
+    } catch (_) {
+      return null;
     }
   }
 

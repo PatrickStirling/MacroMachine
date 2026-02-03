@@ -1073,6 +1073,14 @@ app.whenReady().then(() => {
     {
       label: 'Edit',
       submenu: [
+        {
+          label: 'Normalize legacy names…',
+          click: () => {
+            const win = BrowserWindow.getFocusedWindow();
+            if (win) win.webContents.send('fmr-menu', { action: 'normalizeLegacy' });
+          },
+        },
+        { type: 'separator' },
         { role: 'undo' },
         { role: 'redo' },
         { type: 'separator' },
@@ -1096,6 +1104,33 @@ app.whenReady().then(() => {
           click: () => {
             const win = BrowserWindow.getFocusedWindow();
             if (win) win.webContents.send('fmr-menu', { action: 'toggleDiagnostics' });
+          },
+        },
+      ],
+    },
+    {
+      label: 'CSV',
+      submenu: [
+        {
+          label: 'Import CSV (File)…',
+          click: () => {
+            const win = BrowserWindow.getFocusedWindow();
+            if (win) win.webContents.send('fmr-menu', { action: 'csvImportFile' });
+          },
+        },
+        {
+          label: 'Import CSV (URL)…',
+          click: () => {
+            const win = BrowserWindow.getFocusedWindow();
+            if (win) win.webContents.send('fmr-menu', { action: 'csvImportUrl' });
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Generate from CSV…',
+          click: () => {
+            const win = BrowserWindow.getFocusedWindow();
+            if (win) win.webContents.send('fmr-menu', { action: 'csvGenerate' });
           },
         },
       ],

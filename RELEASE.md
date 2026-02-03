@@ -5,6 +5,7 @@ Use this flow for every update.
 ## 1) Bump version
 Update the version in:
 - `FusionMacroReorderer-electron/package.json`
+  - Ensure the file is UTF-8 **without BOM** (macOS CI fails if a BOM is present).
 
 ## 2) Commit
 ```powershell
@@ -26,4 +27,3 @@ GitHub → Actions → **Build and Publish**:
 GitHub → Releases → `vX.Y.Z`:
 - Windows: `.exe`, `.exe.blockmap`, `latest.yml`
 - macOS: `.dmg`, `.zip`, `.zip.blockmap`, `latest-mac.yml`
-

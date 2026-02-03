@@ -4,6 +4,7 @@ export function createDocTabContextMenu(options = {}) {
     onCreateDoc,
     onRenameDoc,
     onToggleDocSelection,
+    onSelectAll,
     onClearSelection,
     onCloseDoc,
     onCloseOthers,
@@ -50,6 +51,7 @@ export function createDocTabContextMenu(options = {}) {
     addItem('New tab', () => onCreateDoc?.());
     addItem('Rename...', () => onRenameDoc?.(docId));
     addItem(doc.selected ? 'Unselect for Export' : 'Select for Export', () => onToggleDocSelection?.(docId));
+    addItem('Select All for Export', () => onSelectAll?.());
     addItem('Clear Selection', () => onClearSelection?.());
     addSeparator();
     addItem('Close tab', () => onCloseDoc?.(docId), { danger: true });
