@@ -3,7 +3,7 @@
   --panel: #171923;
   --text: #e6e6eb;
   --muted: #a9adba;
-  --accent: #4fa3ff;
+  --accent: #5eb3ff;
   --border: #2a2f3a;
   --drag: #273042;
   --label-accent: #3bd06d;
@@ -126,11 +126,13 @@ main { padding: 0 var(--space-xl) var(--space-xl); }
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  transition: all 0.2s ease;
 }
 .doc-tab.active {
   background: var(--accent);
   border-color: var(--accent);
   color: #0d111b;
+  box-shadow: 0 2px 8px rgba(94, 179, 255, 0.3);
 }
 .doc-tab.selected {
   border-color: var(--label-accent);
@@ -318,11 +320,11 @@ body.nodes-hidden .show-nodes-btn {
   grid-row: 1 / span 2;
 }
 .title-panel {
-  background: #22314f;
+  background: linear-gradient(135deg, #22314f 0%, #1e2b45 100%);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: var(--space-md);
-  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.35), 0 2px 8px rgba(0, 0, 0, 0.25);
 }
 .title-panel h1 {
   margin: 0 0 6px 0;

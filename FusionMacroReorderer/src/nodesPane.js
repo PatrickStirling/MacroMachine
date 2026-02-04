@@ -934,6 +934,7 @@ export function createNodesPane(options = {}) {
       wrapper.appendChild(list);
       nodesList.appendChild(wrapper);
     }
+    refreshNodesChecks();
   }
 
   let lastSelectIndex = -1;
