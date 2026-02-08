@@ -100,7 +100,9 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
   let activeDocId = null;
   let docCounter = 1;
   let suppressDocDirty = false;
+  let suppressDocTabsRender = false;
   let draggingDocId = null;
+  let activeCsvBatchId = null;
   let exportMenuController = null;
   let docTabContextMenu = null;
   let docTabsController = null;
@@ -115,6 +117,8 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
       selected: false,
       createdAt: Date.now(),
       snapshot: null,
+      isCsvBatch: false,
+      csvBatch: null,
     };
   }
 
@@ -124,6 +128,55 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
     if (makeActive || !activeDocId) activeDocId = doc.id;
     renderDocTabs();
     return doc;
+  }
+
+  function createLazyDocumentFromText({ name, fileName, text }) {
+    const doc = createDocumentMeta({ name, fileName });
+    doc.isDirty = true;
+    doc.snapshot = {
+      parseResult: null,
+      originalText: text || '',
+      originalFileName: fileName || name || 'Imported.setting',
+      originalFilePath: '',
+      newline: detectNewline(text || ''),
+      generatedText: text || '',
+      lastDiffRange: null,
+      exportFolder: state.exportFolder || '',
+      exportFolderSelected: !!state.exportFolderSelected,
+      lastExportPath: '',
+      drfxLink: null,
+      csvData: state.csvData || null,
+      lazyParse: true,
+      csvGenerated: true,
+    };
+    return addDocument(doc, false);
+  }
+
+  function addCsvBatchDocument(info = {}) {
+    const count = Number.isFinite(info.count) ? info.count : 0;
+    const label = `CSV Batch (${count})`;
+    const doc = createDocumentMeta({ name: label, fileName: '' });
+    doc.isCsvBatch = true;
+    doc.csvBatch = {
+      count,
+      folderPath: info.folderPath || '',
+      baseName: info.baseName || '',
+      sourceDocId: info.sourceDocId || null,
+      createdAt: Date.now(),
+    };
+    doc.csvBatchSnapshot = info.snapshot || null;
+    doc.snapshot = info.snapshot || null;
+    doc.isDirty = false;
+    return addDocument(doc, false);
+  }
+
+  function selectCsvBatchDoc(doc) {
+    if (!doc) return;
+    activeDocId = doc.id;
+    doc.selected = true;
+    activeCsvBatchId = doc.id;
+    renderDocTabs();
+    info('CSV batch selected. Use Export to regenerate files.');
   }
 
   function getActiveDocument() {
@@ -201,6 +254,7 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
     state.lastExportPath = '';
     state.drfxLink = null;
     state.csvData = null;
+    updateDataMenuState();
   }
 
   function createBlankDocument() {
@@ -311,6 +365,7 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
     onCloseDocument: (docId) => closeDocument(docId),
     onCreateBlankDocument: () => handleNativeOpen(),
     onUpdateExportPathDisplay: () => updateDocExportPathDisplay(),
+    onSelectCsvBatch: (doc) => selectCsvBatchDoc(doc),
   });
 
   function buildDocumentSnapshot() {
@@ -345,6 +400,18 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
     const prevSuppress = suppressDocDirty;
     suppressDocDirty = true;
     try {
+      if (snap && snap.lazyParse && snap.originalText) {
+        loadMacroFromText(snap.originalFileName || doc?.fileName || doc?.name || 'Imported.setting', snap.originalText, {
+          createDoc: false,
+          preserveFileInfo: true,
+          preserveFilePath: true,
+          allowAutoUtility: false,
+          silentAuto: true,
+          skipClear: false,
+        });
+        storeDocumentSnapshot(doc);
+        return;
+      }
       if (!snap || !snap.parseResult) {
         resetStateToEmpty();
         clearUI();
@@ -361,6 +428,7 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
       state.lastExportPath = snap.lastExportPath || '';
       state.drfxLink = snap.drfxLink || null;
       state.csvData = snap.csvData || null;
+      updateDataMenuState();
 
       const codeText = snap.generatedText != null ? snap.generatedText : (state.originalText || '');
       updateCodeView(codeText);
@@ -369,7 +437,9 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
         fileInfo.textContent = `${state.originalFileName} (${(state.originalText || '').length.toLocaleString()} chars)`;
       }
       setMacroNameDisplay(state.parseResult.macroName || 'Unknown');
-      ctrlCountEl.textContent = String(state.parseResult.entries ? state.parseResult.entries.length : 0);
+      const entries = state.parseResult.entries || [];
+      ctrlCountEl.textContent = String(entries.length);
+      if (inputCountEl) inputCountEl.textContent = String(countRecognizedInputs(entries));
       controlsSection.hidden = false;
       resetBtn.disabled = false;
       exportBtn.disabled = false;
@@ -436,7 +506,235 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
   }
 
   function renderDocTabs() {
+    if (suppressDocTabsRender) return;
     docTabsController?.render?.();
+    updateCsvBatchBanner();
+    syncDataLinkPanel();
+  }
+
+  function getActiveCsvBatch() {
+    const active = getActiveDocument();
+    if (active && active.isCsvBatch) return active;
+    const selected = documents.filter(doc => doc && doc.selected && doc.isCsvBatch);
+    return selected.length ? selected[0] : null;
+  }
+
+  function updateCsvBatchBanner() {
+    if (!csvBatchBanner) return;
+    const batch = getActiveCsvBatch();
+    if (!batch) {
+      csvBatchBanner.hidden = true;
+      return;
+    }
+    const count = batch.csvBatch && Number.isFinite(batch.csvBatch.count) ? batch.csvBatch.count : 0;
+    csvBatchBanner.textContent = `CSV Batch selected (${count}) — Export will regenerate files.`;
+    csvBatchBanner.hidden = false;
+  }
+
+
+
+  function openDataSourceModal(source) {
+    const dataSource = String(source || '').trim();
+    if (!dataSource) return;
+    const overlay = document.createElement('div');
+    overlay.className = 'add-control-modal csv-modal';
+    const modal = document.createElement('form');
+    modal.className = 'add-control-form';
+    const header = document.createElement('header');
+    const headerText = document.createElement('div');
+    const eyebrow = document.createElement('div');
+    eyebrow.className = 'eyebrow';
+    eyebrow.textContent = 'Data';
+    const title = document.createElement('h3');
+    title.textContent = 'Data source URL';
+    headerText.appendChild(eyebrow);
+    headerText.appendChild(title);
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.innerHTML = '&times;';
+    header.appendChild(headerText);
+    header.appendChild(closeBtn);
+    const body = document.createElement('div');
+    body.className = 'form-body';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = dataSource;
+    input.readOnly = true;
+    body.appendChild(input);
+    const actions = document.createElement('footer');
+    actions.className = 'modal-actions';
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.textContent = 'Copy';
+    copyBtn.addEventListener('click', async () => {
+      try {
+        if (navigator?.clipboard?.writeText) {
+          await navigator.clipboard.writeText(dataSource);
+        }
+      } catch (_) {}
+    });
+    const doneBtn = document.createElement('button');
+    doneBtn.type = 'button';
+    doneBtn.className = 'primary';
+    doneBtn.textContent = 'Close';
+    const close = () => {
+      try { overlay.remove(); } catch (_) {}
+    };
+    closeBtn.addEventListener('click', close);
+    doneBtn.addEventListener('click', close);
+    overlay.addEventListener('click', (ev) => {
+      if (ev.target === overlay) close();
+    });
+    actions.appendChild(copyBtn);
+    actions.appendChild(doneBtn);
+    modal.appendChild(header);
+    modal.appendChild(body);
+    modal.appendChild(actions);
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    input.focus();
+    input.select();
+  }
+
+  function openDataLinkConfigModal() {
+    if (!state.parseResult) return;
+    const link = ensureDataLink(state.parseResult);
+    const dataSource = link?.source || state.csvData?.sourceName || '';
+    if (!dataSource) {
+      error('No data source set for this macro.');
+      return;
+    }
+    const overlay = document.createElement('div');
+    overlay.className = 'add-control-modal csv-modal';
+    const modal = document.createElement('form');
+    modal.className = 'add-control-form';
+    const header = document.createElement('header');
+    const headerText = document.createElement('div');
+    const eyebrow = document.createElement('div');
+    eyebrow.className = 'eyebrow';
+    eyebrow.textContent = 'Data';
+    const title = document.createElement('h3');
+    title.textContent = 'Data Link Settings';
+    headerText.appendChild(eyebrow);
+    headerText.appendChild(title);
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.innerHTML = '&times;';
+    header.appendChild(headerText);
+    header.appendChild(closeBtn);
+    const body = document.createElement('div');
+    body.className = 'form-body';
+
+    const sourceRow = document.createElement('div');
+    sourceRow.className = 'detail-actions';
+    const sourceBtn = document.createElement('button');
+    sourceBtn.type = 'button';
+    sourceBtn.textContent = 'View source URL';
+    sourceBtn.addEventListener('click', () => openDataSourceModal(dataSource));
+    sourceRow.appendChild(sourceBtn);
+    body.appendChild(sourceRow);
+
+    const modeLabel = document.createElement('label');
+    modeLabel.textContent = 'Row mode';
+    const modeSelect = document.createElement('select');
+    ['first', 'index', 'key'].forEach((value) => {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = value === 'first' ? 'First row'
+        : value === 'index' ? 'Row number'
+          : 'Key match';
+      modeSelect.appendChild(opt);
+    });
+    modeSelect.value = link.rowMode || 'first';
+    modeLabel.appendChild(modeSelect);
+    body.appendChild(modeLabel);
+
+    const indexLabel = document.createElement('label');
+    indexLabel.textContent = 'Row #';
+    const indexInput = document.createElement('input');
+    indexInput.type = 'number';
+    indexInput.min = '1';
+    indexInput.value = String(link.rowIndex || 1);
+    indexLabel.appendChild(indexInput);
+    body.appendChild(indexLabel);
+
+    const keyLabel = document.createElement('label');
+    keyLabel.textContent = 'Key column';
+    const keyInput = document.createElement('input');
+    keyInput.type = 'text';
+    keyInput.value = link.rowKey || '';
+    keyLabel.appendChild(keyInput);
+    body.appendChild(keyLabel);
+
+    const valueLabel = document.createElement('label');
+    valueLabel.textContent = 'Key value';
+    const valueInput = document.createElement('input');
+    valueInput.type = 'text';
+    valueInput.value = link.rowValue || '';
+    valueLabel.appendChild(valueInput);
+    body.appendChild(valueLabel);
+
+    const toggleVisibility = () => {
+      const mode = modeSelect.value || 'first';
+      indexLabel.style.display = mode === 'index' ? '' : 'none';
+      keyLabel.style.display = mode === 'key' ? '' : 'none';
+      valueLabel.style.display = mode === 'key' ? '' : 'none';
+    };
+    toggleVisibility();
+    modeSelect.addEventListener('change', toggleVisibility);
+
+    const actions = document.createElement('footer');
+    actions.className = 'modal-actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.textContent = 'Close';
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'submit';
+    saveBtn.className = 'primary';
+    saveBtn.textContent = 'Save';
+    const close = () => {
+      try { overlay.remove(); } catch (_) {}
+    };
+    cancelBtn.addEventListener('click', close);
+    closeBtn.addEventListener('click', close);
+    modal.addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      link.rowMode = modeSelect.value || 'first';
+      const val = Number(indexInput.value || 1);
+      link.rowIndex = Number.isFinite(val) ? val : 1;
+      link.rowKey = keyInput.value || '';
+      link.rowValue = valueInput.value || '';
+      markActiveDocumentDirty();
+      close();
+    });
+    overlay.addEventListener('click', (ev) => {
+      if (ev.target === overlay) close();
+    });
+    actions.appendChild(cancelBtn);
+    actions.appendChild(saveBtn);
+    modal.appendChild(header);
+    modal.appendChild(body);
+    modal.appendChild(actions);
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+  }
+
+  function syncDataLinkPanel() {
+    if (!dataLinkPanel) return;
+    if (!state.parseResult) {
+      dataLinkPanel.hidden = true;
+      return;
+    }
+    const hasCsv = !!(state.csvData && Array.isArray(state.csvData.headers) && state.csvData.headers.length);
+    if (!hasCsv) {
+      dataLinkPanel.hidden = true;
+      return;
+    }
+    dataLinkPanel.hidden = false;
+  }
+
+  function getSelectedCsvBatch() {
+    return documents.find(doc => doc && doc.selected && doc.isCsvBatch) || null;
   }
 
 function isInteractiveTarget(node) {
@@ -797,6 +1095,86 @@ function updateDocExportPathDisplay() {
     }
   }
 
+  function buildMacroMachineReloadUrl(filePath) {
+    const pathValue = String(filePath || '').trim();
+    if (!pathValue) return 'macro-machine://reload';
+    return `macro-machine://reload?path=${encodeURIComponent(pathValue)}&reload=1`;
+  }
+
+  function updateReloadButtonOverrideForPath(result, filePath) {
+    try {
+      const pathValue = String(filePath || '').trim();
+      if (!pathValue) return false;
+      const res = result || state.parseResult;
+      if (!res) return false;
+      const macroName = res.macroName || res.macroNameOriginal;
+      if (!macroName) return false;
+      const entries = Array.isArray(res.entries) ? res.entries : [];
+      const target = entries.find((entry) => {
+        if (!entry || entry.sourceOp !== macroName) return false;
+        const label = String(entry.name || entry.source || '').toLowerCase().trim();
+        if (label !== 'reload data') return false;
+        const kind = String(entry.kind || entry.inputControl || '').toLowerCase();
+        return kind.includes('button');
+      });
+      if (!target || !target.source) return false;
+      if (!res.buttonOverrides) res.buttonOverrides = new Map();
+      res.buttonOverrides.set(`${macroName}.${target.source}`, buildMacroMachineReloadUrl(pathValue));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async function addReloadButtonMenu() {
+    try {
+      if (!state.parseResult || !state.originalText) {
+        info('Load a macro before inserting a reload button.');
+        return;
+      }
+      const macroName = state.parseResult.macroName || state.parseResult.macroNameOriginal;
+      if (!macroName) {
+        error('Unable to locate the macro name for this preset.');
+        return;
+      }
+      let reloadPath = state.originalFilePath || state.lastExportPath;
+      if (!reloadPath) {
+        try {
+          const activeDoc = getActiveDocument();
+          const snapFolder = activeDoc?.snapshot?.exportFolder || '';
+          const snapSelected = !!activeDoc?.snapshot?.exportFolderSelected;
+          const exportFolder = snapFolder || (snapSelected ? getFusionTemplatesPath() : '') || resolveExportFolderStrict();
+          const outName = buildMacroExportName();
+          if (exportFolder && outName) {
+            try {
+              // eslint-disable-next-line global-require
+              const pathMod = require('path');
+              reloadPath = pathMod.join(exportFolder, outName);
+            } catch (_) {
+              reloadPath = exportFolder.replace(/[\\/]+$/, '') + '\\' + outName;
+            }
+          }
+        } catch (_) {}
+      }
+      if (!reloadPath) {
+        error('Set an export folder or export the macro so a file path is available for reloading.');
+        return;
+      }
+      const res = await addControlToGroup({
+        name: 'Reload Data',
+        type: 'button',
+        page: 'Controls',
+      });
+      if (!res || !res.controlId) return;
+      if (!state.parseResult.buttonOverrides) state.parseResult.buttonOverrides = new Map();
+      state.parseResult.buttonOverrides.set(`${macroName}.${res.controlId}`, buildMacroMachineReloadUrl(reloadPath));
+      renderActiveList({ safe: true });
+      info('Added Reload Data button to the macro.');
+    } catch (err) {
+      error(err?.message || String(err));
+    }
+  }
+
   function normalizeLegacyToolDefinitions(text, bounds) {
     try {
       const { groupOpenIndex: open, groupCloseIndex: close } = bounds;
@@ -1095,6 +1473,16 @@ function updateDocExportPathDisplay() {
     exportMenuController?.setEnabled?.(!!state.parseResult);
   }
 
+
+  function updateDataMenuState() {
+    if (!nativeBridge || !nativeBridge.ipcRenderer) return;
+    const source = state.csvData?.sourceName || '';
+    const reloadEnabled = /^https?:/i.test(String(source || ''));
+    try {
+      nativeBridge.ipcRenderer.invoke('set-data-menu-state', { reloadEnabled });
+    } catch (_) {}
+  }
+
   function getLooseMacroCount() {
     return documents.filter((doc) => {
       if (!doc || !doc.snapshot || !doc.snapshot.parseResult) return false;
@@ -1390,7 +1778,17 @@ function updateDocExportPathDisplay() {
   };
 
   const ctrlCountEl = document.getElementById('ctrlCount');
+  const inputCountEl = document.getElementById('inputCount');
+  const csvBatchBanner = document.getElementById('csvBatchBanner');
+  const dataLinkPanel = document.getElementById('dataLinkPanel');
+  const dataLinkConfigure = document.getElementById('dataLinkConfigure');
+  const dataLinkReload = document.getElementById('dataLinkReload');
   const operatorTypeSelect = document.getElementById('operatorType');
+
+  if (dataLinkPanel) dataLinkPanel.hidden = true;
+
+  dataLinkConfigure?.addEventListener('click', () => openDataLinkConfigModal());
+  dataLinkReload?.addEventListener('click', () => reloadDataLinkForCurrentMacro());
 
   const exportBtn = document.getElementById('exportBtn');
   const exportTemplatesBtn = document.getElementById('exportTemplatesBtn');
@@ -1666,6 +2064,7 @@ function hideDetailDrawer() {
     const exportPath = (snap?.lastExportPath || snap?.exportFolder || state.lastExportPath || state.exportFolder || '');
     addOperatorField();
     addInfoField('Controls', controlsCount);
+    addInfoField('Inputs', String(countRecognizedInputs(state.parseResult.entries || [])));
     addInfoField('Source path', filePath);
     addInfoField('Export path', exportPath);
     const link = state.drfxLink || snap?.drfxLink || null;
@@ -2777,6 +3176,7 @@ function hideDetailDrawer() {
       currentLabel.textContent = 'Current';
       const currentInput = document.createElement('input');
       currentInput.type = 'text';
+      currentInput.className = 'current-input';
       const currentNote = document.createElement('span');
       currentNote.className = 'detail-default-note';
       const currentWrap = document.createElement('div');
@@ -2784,22 +3184,20 @@ function hideDetailDrawer() {
       currentWrap.appendChild(currentInput);
       const hasCsv = !!(state.csvData && Array.isArray(state.csvData.headers) && state.csvData.headers.length);
       const canLinkCsv = isTextControl(entry);
-      if (canLinkCsv) {
+      if (canLinkCsv && hasCsv) {
         currentWrap.classList.add('has-action');
         const csvBtn = document.createElement('button');
         csvBtn.type = 'button';
         csvBtn.className = 'csv-link-btn';
         const linked = entry && entry.csvLink && entry.csvLink.column;
         if (linked) csvBtn.classList.add('linked');
-        if (!hasCsv) csvBtn.classList.add('disabled');
         csvBtn.innerHTML = getCsvLinkIcon();
         csvBtn.title = linked
           ? `Linked to ${entry.csvLink.column}`
-          : (hasCsv ? 'Link CSV column' : 'Import CSV to link');
+          : 'Link CSV column';
         csvBtn.addEventListener('click', async (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
-          if (!hasCsv) return;
           const headers = state.csvData?.headers || [];
           const picked = await openCsvColumnPicker({
             title: 'Link CSV column',
@@ -2807,20 +3205,31 @@ function hideDetailDrawer() {
             current: entry?.csvLink?.column || '',
             allowNone: true,
           });
-          if (picked == null) return;
-          if (!picked) {
-            delete entry.csvLink;
-          } else {
-            entry.csvLink = { column: picked };
-          }
+      if (picked == null) return;
+        if (!picked) {
+          delete entry.csvLink;
           renderDetailDrawer(index);
+          syncDataLinkPanel();
+          return;
+        }
+        entry.csvLink = { column: picked };
+        const link = ensureDataLink(state.parseResult);
+        syncDataLinkMappings(state.parseResult);
+        renderDetailDrawer(index);
+        syncDataLinkPanel();
+        if (state.csvData && Array.isArray(state.csvData.rows) && state.csvData.rows.length) {
+          const rows = state.csvData.rows || [];
+          if (rows.length) {
+            await applyCsvRowsToCurrentMacro(rows, link, { silent: true });
+          }
+        }
         });
         currentWrap.appendChild(csvBtn);
       }
       const refreshCurrent = () => {
         const info = getCurrentInputInfo(entry);
         currentInput.value = info.value || '';
-        currentInput.placeholder = info.value ? '' : (info.note || '');
+        currentInput.placeholder = info.value ? '' : (info.note || 'Current value');
         const csvNote = entry?.csvLink?.column ? `Linked to CSV: ${entry.csvLink.column}` : '';
         const noteParts = [];
         if (info.note) noteParts.push(info.note);
@@ -2836,9 +3245,274 @@ function hideDetailDrawer() {
         if (ev.key === 'Enter') { ev.preventDefault(); commitCurrent(); }
       });
       currentInput.addEventListener('blur', commitCurrent);
+      const cgBlock = getColorGroupBlockByIndex(index);
+      if (cgBlock && cgBlock.firstIndex === index && cgBlock.count >= 2) {
+        const components = getColorGroupComponents(cgBlock);
+        if (components) {
+          const hexRow = document.createElement('div');
+          hexRow.className = 'csv-hex-row';
+          const hexLabel = document.createElement('span');
+          hexLabel.textContent = 'Hex';
+          const hexWrap = document.createElement('div');
+          hexWrap.className = 'detail-input-wrap csv-hex-wrap';
+          const hexInput = document.createElement('input');
+          hexInput.type = 'text';
+          hexInput.placeholder = '#RRGGBB or #RRGGBBAA';
+          const hexPreview = document.createElement('div');
+          hexPreview.className = 'csv-hex-preview';
+          hexWrap.appendChild(hexInput);
+          hexWrap.appendChild(hexPreview);
+          const readComponent = (idx, fallback) => {
+            if (!Number.isFinite(idx)) return fallback;
+          const info = getCurrentInputInfo(state.parseResult.entries[idx]);
+            const cleaned = String(info.value || '').trim().replace(/^\"|\"$/g, '');
+            const num = parseFloat(cleaned);
+            return Number.isFinite(num) ? clamp01(num) : fallback;
+          };
+          const refreshHex = () => {
+            const r = readComponent(components.red, 0);
+            const g = readComponent(components.green, 0);
+            const b = readComponent(components.blue, 0);
+            const a = readComponent(components.alpha, 1);
+            const hex = formatHexColor({ r, g, b, a });
+            hexInput.value = hex;
+            hexPreview.style.background = `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${clamp01(a)})`;
+          };
+          const applyHex = (raw) => {
+            const parsed = parseHexColor(raw);
+            if (!parsed) return false;
+            const r = clamp01(parsed.r);
+            const g = clamp01(parsed.g);
+            const b = clamp01(parsed.b);
+            const a = parsed.hasAlpha ? clamp01(parsed.a) : 1;
+            const nextText = applyHexToColorGroup({
+              entries: state.parseResult.entries,
+              order: state.parseResult.order,
+              baseText: state.originalText || '',
+              groupIndex: index,
+              r: r.toFixed(6),
+              g: g.toFixed(6),
+              b: b.toFixed(6),
+              a: a.toFixed(6),
+              includeAlpha: parsed.hasAlpha,
+              eol: state.newline || '\n',
+              resultRef: state.parseResult,
+            });
+            if (nextText && nextText !== state.originalText) {
+              state.originalText = nextText;
+              markContentDirty();
+            }
+            hexInput.value = formatHexColor({ r, g, b, a, includeAlpha: parsed.hasAlpha });
+            hexPreview.style.background = `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${clamp01(a)})`;
+            return true;
+          };
+          hexInput.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter') { ev.preventDefault(); applyHex(hexInput.value); }
+          });
+          hexInput.addEventListener('blur', () => { applyHex(hexInput.value); });
+          if (hasCsv) {
+            hexWrap.classList.add('has-action');
+            const hexBtn = document.createElement('button');
+            hexBtn.type = 'button';
+            hexBtn.className = 'csv-link-btn';
+            const linked = entry && entry.csvLinkHex && entry.csvLinkHex.column;
+            if (linked) hexBtn.classList.add('linked');
+            hexBtn.innerHTML = getCsvLinkIcon();
+            hexBtn.title = linked
+              ? `Linked to ${entry.csvLinkHex.column}`
+              : 'Link CSV column';
+            hexBtn.addEventListener('click', async (ev) => {
+              ev.preventDefault();
+              ev.stopPropagation();
+              const headers = state.csvData?.headers || [];
+              const picked = await openCsvColumnPicker({
+                title: 'Link CSV column',
+                headers,
+                current: entry?.csvLinkHex?.column || '',
+                allowNone: true,
+              });
+              if (picked == null) return;
+              if (!picked) {
+                delete entry.csvLinkHex;
+              } else {
+                entry.csvLinkHex = entry.csvLinkHex || {};
+                entry.csvLinkHex.column = picked;
+              }
+              syncDataLinkMappings(state.parseResult);
+              syncDataLinkPanel();
+              renderDetailDrawer(index);
+              if (state.csvData && Array.isArray(state.csvData.rows) && state.csvData.rows.length) {
+                await applyCsvRowsToCurrentMacro(state.csvData.rows, ensureDataLink(state.parseResult), { silent: true });
+              }
+            });
+            hexWrap.appendChild(hexBtn);
+          }
+          hexRow.appendChild(hexLabel);
+          hexRow.appendChild(hexWrap);
+          currentGroup.appendChild(hexRow);
+
+          if (entry?.csvLinkHex?.column) {
+            const overrideRow = document.createElement('div');
+            overrideRow.className = 'csv-override-row';
+            const overrideLabel = document.createElement('span');
+            overrideLabel.textContent = 'Row override';
+            const overrideSelect = document.createElement('select');
+            overrideSelect.innerHTML = `
+              <option value="default">Default (macro)</option>
+              <option value="index">Row index</option>
+              <option value="key">Key/value</option>
+            `;
+            const overrideInputs = document.createElement('div');
+            overrideInputs.className = 'csv-override-inputs';
+            const indexInput = document.createElement('input');
+            indexInput.type = 'number';
+            indexInput.min = '1';
+            indexInput.placeholder = 'Row #';
+            const keyInput = document.createElement('input');
+            keyInput.type = 'text';
+            keyInput.placeholder = 'Column';
+            const valueInput = document.createElement('input');
+            valueInput.type = 'text';
+            valueInput.placeholder = 'Value';
+            overrideInputs.appendChild(indexInput);
+            overrideInputs.appendChild(keyInput);
+            overrideInputs.appendChild(valueInput);
+            const mode = entry.csvLinkHex.rowMode || 'default';
+            overrideSelect.value = mode;
+            if (Number.isFinite(entry.csvLinkHex.rowIndex)) indexInput.value = String(entry.csvLinkHex.rowIndex);
+            if (entry.csvLinkHex.rowKey) keyInput.value = String(entry.csvLinkHex.rowKey);
+            if (entry.csvLinkHex.rowValue) valueInput.value = String(entry.csvLinkHex.rowValue);
+            const syncOverrideVisibility = () => {
+              const val = overrideSelect.value || 'default';
+              indexInput.style.display = val === 'index' ? '' : 'none';
+              keyInput.style.display = val === 'key' ? '' : 'none';
+              valueInput.style.display = val === 'key' ? '' : 'none';
+            };
+            syncOverrideVisibility();
+            const applyOverride = async () => {
+              const val = overrideSelect.value || 'default';
+              entry.csvLinkHex = entry.csvLinkHex || {};
+              if (val === 'default') {
+                delete entry.csvLinkHex.rowMode;
+                delete entry.csvLinkHex.rowIndex;
+                delete entry.csvLinkHex.rowKey;
+                delete entry.csvLinkHex.rowValue;
+              } else {
+                entry.csvLinkHex.rowMode = val;
+                if (val === 'index') {
+                  const idx = Math.max(1, Number(indexInput.value || 1));
+                  entry.csvLinkHex.rowIndex = idx;
+                  delete entry.csvLinkHex.rowKey;
+                  delete entry.csvLinkHex.rowValue;
+                } else if (val === 'key') {
+                  entry.csvLinkHex.rowKey = keyInput.value || '';
+                  entry.csvLinkHex.rowValue = valueInput.value || '';
+                  delete entry.csvLinkHex.rowIndex;
+                }
+              }
+              syncDataLinkMappings(state.parseResult);
+              if (state.csvData && Array.isArray(state.csvData.rows) && state.csvData.rows.length) {
+                await applyCsvRowsToCurrentMacro(state.csvData.rows, ensureDataLink(state.parseResult), { silent: true });
+              }
+            };
+            overrideSelect.addEventListener('change', async () => {
+              syncOverrideVisibility();
+              await applyOverride();
+            });
+            indexInput.addEventListener('blur', applyOverride);
+            keyInput.addEventListener('blur', applyOverride);
+            valueInput.addEventListener('blur', applyOverride);
+            overrideRow.appendChild(overrideLabel);
+            overrideRow.appendChild(overrideSelect);
+            overrideRow.appendChild(overrideInputs);
+            currentGroup.appendChild(overrideRow);
+          }
+          refreshHex();
+        }
+      }
       currentGroup.appendChild(currentLabel);
       currentGroup.appendChild(currentWrap);
       currentGroup.appendChild(currentNote);
+      if (canLinkCsv && entry?.csvLink?.column) {
+        const overrideRow = document.createElement('div');
+        overrideRow.className = 'csv-override-row';
+        const overrideLabel = document.createElement('span');
+        overrideLabel.textContent = 'Row override';
+        const overrideSelect = document.createElement('select');
+        overrideSelect.innerHTML = `
+          <option value="default">Default (macro)</option>
+          <option value="index">Row index</option>
+          <option value="key">Key/value</option>
+        `;
+        const overrideInputs = document.createElement('div');
+        overrideInputs.className = 'csv-override-inputs';
+        const indexInput = document.createElement('input');
+        indexInput.type = 'number';
+        indexInput.min = '1';
+        indexInput.placeholder = 'Row #';
+        const keyInput = document.createElement('input');
+        keyInput.type = 'text';
+        keyInput.placeholder = 'Column';
+        const valueInput = document.createElement('input');
+        valueInput.type = 'text';
+        valueInput.placeholder = 'Value';
+        overrideInputs.appendChild(indexInput);
+        overrideInputs.appendChild(keyInput);
+        overrideInputs.appendChild(valueInput);
+
+        const link = ensureDataLink(state.parseResult);
+        const mode = entry.csvLink.rowMode || 'default';
+        overrideSelect.value = mode;
+        if (Number.isFinite(entry.csvLink.rowIndex)) indexInput.value = String(entry.csvLink.rowIndex);
+        if (entry.csvLink.rowKey) keyInput.value = String(entry.csvLink.rowKey);
+        if (entry.csvLink.rowValue) valueInput.value = String(entry.csvLink.rowValue);
+
+        const syncOverrideVisibility = () => {
+          const val = overrideSelect.value || 'default';
+          indexInput.style.display = val === 'index' ? '' : 'none';
+          keyInput.style.display = val === 'key' ? '' : 'none';
+          valueInput.style.display = val === 'key' ? '' : 'none';
+        };
+        syncOverrideVisibility();
+
+        const applyOverride = async () => {
+          const val = overrideSelect.value || 'default';
+          if (val === 'default') {
+            delete entry.csvLink.rowMode;
+            delete entry.csvLink.rowIndex;
+            delete entry.csvLink.rowKey;
+            delete entry.csvLink.rowValue;
+          } else {
+            entry.csvLink.rowMode = val;
+            if (val === 'index') {
+              const idx = Math.max(1, Number(indexInput.value || 1));
+              entry.csvLink.rowIndex = idx;
+              delete entry.csvLink.rowKey;
+              delete entry.csvLink.rowValue;
+            } else if (val === 'key') {
+              entry.csvLink.rowKey = keyInput.value || '';
+              entry.csvLink.rowValue = valueInput.value || '';
+              delete entry.csvLink.rowIndex;
+            }
+          }
+          syncDataLinkMappings(state.parseResult);
+          if (state.csvData && Array.isArray(state.csvData.rows) && state.csvData.rows.length) {
+            await applyCsvRowsToCurrentMacro(state.csvData.rows, link, { silent: true });
+          }
+        };
+        overrideSelect.addEventListener('change', async () => {
+          syncOverrideVisibility();
+          await applyOverride();
+        });
+        indexInput.addEventListener('blur', applyOverride);
+        keyInput.addEventListener('blur', applyOverride);
+        valueInput.addEventListener('blur', applyOverride);
+
+        overrideRow.appendChild(overrideLabel);
+        overrideRow.appendChild(overrideSelect);
+        overrideRow.appendChild(overrideInputs);
+        currentGroup.appendChild(overrideRow);
+      }
       currentRow.appendChild(currentGroup);
       refreshCurrent();
       defaultsField.appendChild(currentRow);
@@ -3135,6 +3809,13 @@ function hideDetailDrawer() {
     );
     if (inputControl && /text/i.test(inputControl)) return true;
     if (String(entry?.source || '').toLowerCase().includes('styledtext')) return true;
+    if (String(entry?.source || '') === 'Text') {
+      const toolTypes = state.parseResult?.luaToolTypes;
+      const toolType = (toolTypes && entry?.sourceOp && toolTypes.get)
+        ? toolTypes.get(entry.sourceOp)
+        : '';
+      if (String(toolType || '').toLowerCase().includes('follower')) return true;
+    }
     const dataType = (entry?.controlMeta?.dataType || entry?.controlMetaOriginal?.dataType || entry?.dataType || '')
       .replace(/"/g, '')
       .trim()
@@ -3146,6 +3827,52 @@ function hideDetailDrawer() {
     if (defaultStr.toLowerCase().includes('styledtext')) return true;
     if (defaultStr.startsWith('"') && defaultStr.endsWith('"')) return true;
     return false;
+  }
+
+  function clamp01(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return 0;
+    return Math.max(0, Math.min(1, num));
+  }
+
+  function parseHexColor(raw) {
+    if (!raw) return null;
+    let hex = String(raw).trim();
+    if (!hex) return null;
+    if ((hex.startsWith('"') && hex.endsWith('"')) || (hex.startsWith("'") && hex.endsWith("'"))) {
+      hex = hex.slice(1, -1).trim();
+    }
+    const match = hex.match(/#?([0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})/);
+    if (match && match[1]) {
+      hex = match[1];
+    }
+    if (hex.startsWith('#')) hex = hex.slice(1);
+    if (hex.length === 3 || hex.length === 4) {
+      hex = hex.split('').map(ch => ch + ch).join('');
+    }
+    if (hex.length !== 6 && hex.length !== 8) return null;
+    if (!/^[0-9a-fA-F]+$/.test(hex)) return null;
+    const r = parseInt(hex.slice(0, 2), 16) / 255;
+    const g = parseInt(hex.slice(2, 4), 16) / 255;
+    const b = parseInt(hex.slice(4, 6), 16) / 255;
+    const hasAlpha = hex.length === 8;
+    const a = hasAlpha ? (parseInt(hex.slice(6, 8), 16) / 255) : 1;
+    return { r, g, b, a, hasAlpha };
+  }
+
+  function toHexByte(value) {
+    const v = Math.round(clamp01(value) * 255);
+    return v.toString(16).padStart(2, '0').toUpperCase();
+  }
+
+  function formatHexColor(color) {
+    if (!color) return '';
+    const r = toHexByte(color.r);
+    const g = toHexByte(color.g);
+    const b = toHexByte(color.b);
+    const a = toHexByte(color.a);
+    const includeAlpha = color.includeAlpha || (Number.isFinite(color.a) && Math.abs(color.a - 1) > 0.0001);
+    return `#${r}${g}${b}${includeAlpha ? a : ''}`;
   }
 
   function stripDefaultQuotes(value) {
@@ -3203,6 +3930,33 @@ function hideDetailDrawer() {
     return `StyledText { Value = "${safeText}" }`;
   }
 
+  function updateToolInputBlockBody(body, entry, value, indent, eol) {
+    try {
+      const nextText = String(value || '');
+      const isText = isTextControl(entry);
+      const useStyled = isText && (String(entry?.source || '').toLowerCase().includes('styledtext') || /StyledText\s*\{/.test(body));
+      if (useStyled) {
+        const replacement = buildStyledTextBlock(nextText);
+        if (/Value\s*=\s*StyledText\s*\{[\s\S]*?\}/i.test(body)) {
+          return body.replace(/Value\s*=\s*StyledText\s*\{[\s\S]*?\}/i, `Value = ${replacement}`);
+        }
+        return setInstanceInputProp(body, 'Value', replacement, indent, eol || '\n');
+      }
+      if (isText) {
+        const safe = `"${escapeSettingString(nextText)}"`;
+        return setInstanceInputProp(body, 'Value', safe, indent, eol || '\n');
+      }
+      const raw = nextText.trim();
+      let updated = body;
+      updated = removeControlProp(updated, 'Expression');
+      updated = removeControlProp(updated, 'SourceOp');
+      updated = removeControlProp(updated, 'Source');
+      return setInstanceInputProp(updated, 'Value', raw, indent, eol || '\n');
+    } catch (_) {
+      return body;
+    }
+  }
+
   function setInputValueInToolText(text, entry, value, eol, resultRef) {
     try {
       if (!text || !entry || !entry.sourceOp || !entry.source) return text;
@@ -3216,23 +3970,66 @@ function hideDetailDrawer() {
       if (!inputBlock) return text;
       const indent = (getLineIndent(text, inputBlock.open) || '') + '\t';
       let body = text.slice(inputBlock.open + 1, inputBlock.close);
-      const nextText = String(value || '');
-      const useStyled = String(entry.source || '').toLowerCase().includes('styledtext') || /StyledText\s*\{/.test(body);
-      if (useStyled) {
-        const replacement = buildStyledTextBlock(nextText);
-        if (/Value\s*=\s*StyledText\s*\{[\s\S]*?\}/i.test(body)) {
-          body = body.replace(/Value\s*=\s*StyledText\s*\{[\s\S]*?\}/i, `Value = ${replacement}`);
-        } else {
-          body = setInstanceInputProp(body, 'Value', replacement, indent, eol || '\n');
-        }
+      body = updateToolInputBlockBody(body, entry, value, indent, eol);
+      return text.slice(0, inputBlock.open + 1) + body + text.slice(inputBlock.close);
+    } catch (_) {
+      return text;
+    }
+  }
+
+  function setInstanceDefaultInText(text, entry, value, eol, resultRef) {
+    try {
+      if (!text || !entry || !entry.key) return text;
+      const bounds = locateMacroGroupBounds(text, resultRef || state.parseResult);
+      if (!bounds || !resultRef || !resultRef.inputs) return text;
+      const inputs = resultRef.inputs;
+      const inputBlock = findInstanceInputBlockInInputs(text, inputs.openIndex, inputs.closeIndex, entry.key);
+      if (!inputBlock) return text;
+      const indent = (getLineIndent(text, inputBlock.open) || '') + '\t';
+      let body = text.slice(inputBlock.open + 1, inputBlock.close);
+      const formatted = formatDefaultForStorage(entry, String(value));
+      if (formatted == null) {
+        body = removeInstanceInputProp(body, 'Default');
       } else {
-        const safe = `"${escapeSettingString(nextText)}"`;
-        body = setInstanceInputProp(body, 'Value', safe, indent, eol || '\n');
+        body = setInstanceInputProp(body, 'Default', formatted, indent, eol || '\n');
       }
       return text.slice(0, inputBlock.open + 1) + body + text.slice(inputBlock.close);
     } catch (_) {
       return text;
     }
+  }
+
+  function applyNumericDefaultToEntry(entry, value, eol) {
+    if (!entry) return;
+    const formatted = formatDefaultForStorage(entry, String(value));
+    entry.controlMeta = entry.controlMeta || {};
+    entry.controlMetaOriginal = entry.controlMetaOriginal || {};
+    entry.controlMeta.defaultValue = formatted;
+    entry.controlMetaDirty = true;
+    applyDefaultToEntryRaw(entry, formatted, eol);
+  }
+
+  function applyHexToColorGroup({ entries, order, baseText, groupIndex, r, g, b, a, includeAlpha, eol, resultRef }) {
+    if (!entries || !order) return baseText || '';
+    const cgBlock = getColorGroupBlockByIndexFrom(entries, order, groupIndex);
+    if (!cgBlock) return baseText || '';
+    const components = getColorGroupComponentsFrom(entries, cgBlock);
+    if (!components) return baseText || '';
+    let updated = baseText || '';
+    const applyComponent = (compIdx, value) => {
+      if (!Number.isFinite(compIdx)) return;
+      const compEntry = entries[compIdx];
+      if (!compEntry) return;
+      const val = String(value);
+      updated = setInputValueInToolText(updated, compEntry, val, eol, resultRef);
+      updated = setInstanceDefaultInText(updated, compEntry, val, eol, resultRef);
+      applyNumericDefaultToEntry(compEntry, val, eol);
+    };
+    applyComponent(components.red, r);
+    applyComponent(components.green, g);
+    applyComponent(components.blue, b);
+    if (includeAlpha && a != null) applyComponent(components.alpha, a);
+    return updated;
   }
 
   function resolveTextDefaultSource(entry, value) {
@@ -3328,6 +4125,106 @@ function hideDetailDrawer() {
     } catch (_) { return ','; }
   }
 
+  function findInstanceInputBlockInInputs(text, inputsOpen, inputsClose, key) {
+    try {
+      if (!text || key == null) return null;
+      let i = inputsOpen + 1;
+      while (i < inputsClose) {
+        if (!isIdentStart(text[i])) { i++; continue; }
+        const start = i;
+        i++;
+        while (i < inputsClose && isIdentPart(text[i])) i++;
+        const ident = text.slice(start, i);
+        if (ident !== key) continue;
+        while (i < inputsClose && isSpace(text[i])) i++;
+        if (text[i] !== '=') continue;
+        i++;
+        while (i < inputsClose && isSpace(text[i])) i++;
+        if (text.slice(i, i + 13) !== 'InstanceInput') continue;
+        i += 13;
+        while (i < inputsClose && isSpace(text[i])) i++;
+        if (text[i] !== '{') continue;
+        const open = i;
+        const close = findMatchingBrace(text, open);
+        if (close < 0) return null;
+        return { open, close };
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function buildCsvPatchPlan(baseText, result, linkedEntries) {
+    try {
+      if (!baseText || !result || !Array.isArray(linkedEntries) || !linkedEntries.length) return null;
+      const bounds = locateMacroGroupBounds(baseText, result);
+      if (!bounds) return null;
+      const inputs = result.inputs;
+      const plan = [];
+      for (const entry of linkedEntries) {
+        if (!entry || !entry.csvLink || !entry.csvLink.column) continue;
+        if (isTextControl(entry)) {
+          if (!entry.sourceOp || !entry.source) continue;
+          const toolBlock = findToolBlockInGroup(baseText, bounds.groupOpenIndex, bounds.groupCloseIndex, entry.sourceOp);
+          if (!toolBlock) continue;
+          const inputsBlock = findInputsInTool(baseText, toolBlock.open, toolBlock.close);
+          if (!inputsBlock) continue;
+          const inputBlock = findInputBlockInInputs(baseText, inputsBlock.open, inputsBlock.close, entry.source);
+          if (!inputBlock) continue;
+          const indent = (getLineIndent(baseText, inputBlock.open) || '') + '\t';
+          plan.push({ kind: 'tool', entry, start: inputBlock.open, end: inputBlock.close, indent });
+          continue;
+        }
+        if (!inputs || typeof inputs.openIndex !== 'number' || typeof inputs.closeIndex !== 'number') continue;
+        if (!entry.key) continue;
+        const inst = findInstanceInputBlockInInputs(baseText, inputs.openIndex, inputs.closeIndex, entry.key);
+        if (!inst) continue;
+        const indent = (getLineIndent(baseText, inst.open) || '') + '\t';
+        plan.push({ kind: 'instance', entry, start: inst.open, end: inst.close, indent });
+      }
+      return plan;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function applyCsvRowEdits(baseText, plan, row, eol) {
+    if (!baseText || !Array.isArray(plan) || !plan.length) return baseText;
+    const edits = [];
+    for (const patch of plan) {
+      const entry = patch.entry;
+      if (!entry || !entry.csvLink || !entry.csvLink.column) continue;
+      const rawVal = row[entry.csvLink.column] != null ? String(row[entry.csvLink.column]) : '';
+      if (patch.kind === 'tool') {
+        const body = baseText.slice(patch.start + 1, patch.end);
+        const next = updateToolInputBlockBody(body, entry, rawVal, patch.indent, eol);
+        if (next !== body) edits.push({ start: patch.start + 1, end: patch.end, text: next });
+      } else if (patch.kind === 'instance') {
+        const body = baseText.slice(patch.start + 1, patch.end);
+        const formatted = formatDefaultForStorage(entry, rawVal);
+        let next = body;
+        if (formatted == null) next = removeInstanceInputProp(body, 'Default');
+        else next = setInstanceInputProp(body, 'Default', formatted, patch.indent, eol || '\n');
+        if (next !== body) edits.push({ start: patch.start + 1, end: patch.end, text: next });
+      }
+    }
+    if (!edits.length) return baseText;
+    edits.sort((a, b) => b.start - a.start);
+    let out = baseText;
+    for (const edit of edits) {
+      out = out.slice(0, edit.start) + edit.text + out.slice(edit.end);
+    }
+    return out;
+  }
+
+  function deriveSafeMacroName(rowLabel, result) {
+    const originalName = (result?.macroNameOriginal || result?.macroName || '').trim();
+    const desired = String(rowLabel || '').trim();
+    let safeName = sanitizeIdent(desired);
+    if (!safeName) safeName = sanitizeIdent(originalName) || 'Macro';
+    if (!isIdentStart(safeName[0])) safeName = `_${safeName}`;
+    return safeName;
+  }
+
   function parseCsvText(rawText) {
     const text = String(rawText || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     const delimiter = detectCsvDelimiter(text);
@@ -3410,6 +4307,7 @@ function hideDetailDrawer() {
   function setCsvData(data, sourceName) {
     if (!data || !Array.isArray(data.headers)) {
       state.csvData = null;
+      updateDataMenuState();
       return;
     }
     state.csvData = {
@@ -3421,6 +4319,50 @@ function hideDetailDrawer() {
     };
     try { info(`CSV loaded: ${state.csvData.rows.length} rows.`); } catch (_) {}
     if (activeDetailEntryIndex != null) renderDetailDrawer(activeDetailEntryIndex);
+    updateDataMenuState();
+    syncDataLinkPanel();
+  }
+
+  function applyFmrDataLinkToEntries(result) {
+    try {
+      const link = result?.dataLink;
+      if (!link || !Array.isArray(result?.entries)) return;
+      const mappings = link.mappings || {};
+      const overrides = link.overrides || {};
+      const hexMappings = link.hex || {};
+      result.entries.forEach((entry) => {
+        if (!entry || !entry.sourceOp || !entry.source) return;
+        const key = `${entry.sourceOp}.${entry.source}`;
+        const col = mappings[key];
+        if (col) {
+          entry.csvLink = { column: col };
+          const override = overrides[key];
+          if (override && override.rowMode) {
+            entry.csvLink.rowMode = override.rowMode;
+            if (Number.isFinite(override.rowIndex)) entry.csvLink.rowIndex = override.rowIndex;
+            if (override.rowKey != null) entry.csvLink.rowKey = override.rowKey;
+            if (override.rowValue != null) entry.csvLink.rowValue = override.rowValue;
+          }
+        }
+        const hex = hexMappings[key];
+        if (hex && hex.column) {
+          entry.csvLinkHex = { column: hex.column };
+          if (hex.rowMode) entry.csvLinkHex.rowMode = hex.rowMode;
+          if (Number.isFinite(hex.rowIndex)) entry.csvLinkHex.rowIndex = hex.rowIndex;
+          if (hex.rowKey != null) entry.csvLinkHex.rowKey = hex.rowKey;
+          if (hex.rowValue != null) entry.csvLinkHex.rowValue = hex.rowValue;
+        }
+      });
+      if (link.source) {
+        if (!state.csvData) {
+          state.csvData = { headers: [], rows: [], delimiter: ',', sourceName: link.source, nameColumn: link.nameColumn || null };
+        } else {
+          state.csvData.sourceName = link.source;
+          if (link.nameColumn) state.csvData.nameColumn = link.nameColumn;
+        }
+        updateDataMenuState();
+      }
+    } catch (_) {}
   }
 
   function cloneParseResultForCsv(result) {
@@ -3854,6 +4796,59 @@ function hideDetailDrawer() {
     runValidation('add-control');
     const typeLabel = type === 'button' ? 'button' : type === 'slider' ? 'slider' : type === 'screw' ? 'screw control' : type === 'separator' ? 'separator control' : 'label';
     info(`Added ${typeLabel} "${trimmedName}" to ${nodeName}.`);
+    return { nodeName, controlId, displayName: trimmedName };
+  }
+
+  async function addControlToGroup(config) {
+    if (!state.originalText || !state.parseResult) throw new Error('Load a macro before adding controls.');
+    pushHistory('add control');
+    const newline = state.newline || detectNewline(state.originalText);
+    const bounds = locateMacroGroupBounds(state.originalText, state.parseResult);
+    if (!bounds) throw new Error('Unable to locate the macro group block.');
+    const trimmedName = (config?.name || '').trim();
+    if (!trimmedName) throw new Error('Control name is required.');
+    const normalizedPage = (config?.page && String(config.page).trim()) ? String(config.page).trim() : 'Controls';
+    const typeRaw = (config?.type || 'label').toLowerCase();
+    const supportedTypes = new Set(['label', 'separator', 'button', 'slider', 'screw']);
+    const type = supportedTypes.has(typeRaw) ? typeRaw : 'label';
+    let workingText = state.originalText;
+    const ensured = ensureGroupUserControlsBlockExists(workingText, bounds, newline, state.parseResult);
+    if (!ensured || !ensured.block) throw new Error('Unable to locate Group UserControls.');
+    workingText = ensured.text;
+    const ucRange = ensured.block.open != null
+      ? ensured.block
+      : { open: ensured.block.openIndex, close: ensured.block.closeIndex };
+    if (ucRange.open == null || ucRange.close == null) throw new Error('Unable to locate Group UserControls.');
+    const controlId = generateUniqueControlId(workingText, ucRange, trimmedName);
+    const labelDefault = config?.labelDefault === 'open' ? 'open' : 'closed';
+    const lines = buildControlDefinitionLines(type, {
+      name: trimmedName,
+      page: normalizedPage,
+      labelCount: config?.labelCount,
+      labelDefault,
+    });
+    const pendingMeta = {
+      kind: type === 'label' ? 'label' : type === 'button' ? 'button' : null,
+      labelCount: type === 'label' && Number.isFinite(config?.labelCount) ? Number(config.labelCount) : null,
+      defaultValue: type === 'label' ? (labelDefault === 'closed' ? '0' : '1') : null,
+      inputControl:
+        type === 'slider' ? 'SliderControl'
+        : type === 'screw' ? 'ScrewControl'
+        : type === 'button' ? 'ButtonControl'
+        : type === 'separator' ? 'SeparatorControl'
+        : 'LabelControl',
+    };
+    workingText = insertUserControlBlock(workingText, ucRange, controlId, lines, newline);
+    const macroName = state.parseResult.macroName || state.parseResult.macroNameOriginal || 'Macro';
+    rememberPendingControlMeta(macroName, controlId, pendingMeta);
+    autoPublishCreatedControl(macroName, controlId, trimmedName, normalizedPage, pendingMeta);
+    const persisted = rebuildContentWithNewOrder(workingText, state.parseResult, newline);
+    state.originalText = persisted;
+    await reloadMacroFromCurrentText({ skipClear: true });
+    runValidation('add-control');
+    const typeLabel = type === 'button' ? 'button' : type === 'slider' ? 'slider' : type === 'screw' ? 'screw control' : type === 'separator' ? 'separator control' : 'label';
+    info(`Added ${typeLabel} "${trimmedName}" to the macro.`);
+    return { nodeName: macroName, controlId, displayName: trimmedName };
   }
 
   function autoPublishCreatedControl(nodeName, controlId, displayName, pageName, meta) {
@@ -4176,20 +5171,23 @@ function hideDetailDrawer() {
     restoreExtraState: (extra, context) => restoreHistoryExtras(extra, context),
   });
 
-  const nativeBridge = setupNativeBridge({
-    isElectron: IS_ELECTRON,
-    exportBtn,
-    importClipboardBtn,
-    exportClipboardBtn,
-    setDiagnosticsEnabled: () => {
-      try { setDiagnosticsEnabled(!diagnosticsController.isEnabled()); } catch (_) {}
-    },
-    handleNativeOpen,
-    onNormalizeLegacyNames: () => normalizeLegacyNamesMenu(),
-    onImportCsvFile: () => importCsvFromFile(),
-    onImportCsvUrl: () => importCsvFromUrl(),
-    onGenerateFromCsv: () => generateSettingsFromCsv(),
-  });
+    const nativeBridge = setupNativeBridge({
+      isElectron: IS_ELECTRON,
+      exportBtn,
+      importClipboardBtn,
+      exportClipboardBtn,
+      setDiagnosticsEnabled: () => {
+        try { setDiagnosticsEnabled(!diagnosticsController.isEnabled()); } catch (_) {}
+      },
+      handleNativeOpen,
+      onNormalizeLegacyNames: () => normalizeLegacyNamesMenu(),
+      onAddReloadButton: () => addReloadButtonMenu(),
+      onImportCsvFile: () => importCsvFromFile(),
+      onImportCsvUrl: () => importCsvFromUrl(),
+      onImportGoogleSheet: () => importGoogleSheetFromUrl(),
+      onReloadCsv: () => reloadCsvSource(),
+      onGenerateFromCsv: () => generateSettingsFromCsv(),
+    });
 
   function setExportButtonLabel(label) {
     if (!exportBtn) return;
@@ -4230,6 +5228,9 @@ function hideDetailDrawer() {
       if (!filePath) return;
       try {
         await handleDroppedPath(filePath);
+        if (payload.reloadDataLink) {
+          await reloadDataLinkForCurrentMacro();
+        }
       } catch (_) {
         /* ignore open-path errors */
       }
@@ -4543,6 +5544,12 @@ function hideDetailDrawer() {
     return state.exportFolder || getFusionTemplatesPath();
   }
 
+  function resolveExportFolderStrict() {
+    if (state.exportFolder) return state.exportFolder;
+    if (state.exportFolderSelected) return getFusionTemplatesPath();
+    return '';
+  }
+
   function buildExportDefaultPath(fileName) {
     const folder = resolveExportFolder();
     if (!folder) return fileName;
@@ -4652,6 +5659,9 @@ function hideDetailDrawer() {
       hydrateLabelVisibility(state.originalText, state.parseResult);
       hydrateControlMetadata(state.originalText, state.parseResult);
       if (!state.parseResult.operatorType) state.parseResult.operatorType = state.parseResult.operatorTypeOriginal || 'GroupOperator';
+      if (state.parseResult.dataLink) {
+        applyFmrDataLinkToEntries(state.parseResult);
+      }
       syncOperatorSelect();
       publishedControls.resetPageOptions?.();
       state.parseResult.buttonExactInsert = new Set();
@@ -4672,6 +5682,7 @@ function hideDetailDrawer() {
       }
       setMacroNameDisplay(state.parseResult.macroName || 'Unknown');
       ctrlCountEl.textContent = String(state.parseResult.entries.length);
+      if (inputCountEl) inputCountEl.textContent = String(countRecognizedInputs(state.parseResult.entries));
       registerLoadedDocument(state.originalFileName || sourceName, { createDoc });
       logDiag(`Parsed ok - macro: ${state.parseResult.macroName || 'Unknown'}, controls: ${state.parseResult.entries.length}`);
       controlsSection.hidden = false;
@@ -4701,6 +5712,7 @@ function hideDetailDrawer() {
       }
       updateUtilityActionsState();
       updateIntroToggleVisibility();
+      syncDataLinkPanel();
       if (IS_ELECTRON) setIntroCollapsed(true);
     } catch (err) {
       const msg = err.message || String(err);
@@ -4940,7 +5952,7 @@ async function handleFile(file) {
       return;
     }
     try {
-      const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, { safeEditExport: true });
+      const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, { safeEditExport: true, includeDataLink: true });
       const drfxRes = await native.saveDrfxPreset({
         sourcePath: state.originalFilePath,
         content: newContent,
@@ -5000,7 +6012,7 @@ async function handleFile(file) {
         continue;
       }
       try {
-        const content = rebuildContentWithNewOrder(snap.originalText || '', snap.parseResult, snap.newline);
+        const content = rebuildContentWithNewOrder(snap.originalText || '', snap.parseResult, snap.newline, { includeDataLink: true });
         // eslint-disable-next-line no-await-in-loop
         const res = await native.saveDrfxPreset({
           sourcePath: snap.originalFilePath,
@@ -5040,19 +6052,20 @@ async function handleFile(file) {
   async function exportToFile() {
     if (!state.parseResult) return;
     try {
-      const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline);
+      const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, { includeDataLink: true });
       const outName = suggestOutputName(state.originalFileName);
       const defaultPath = buildExportDefaultPath(outName);
       const native = getNativeApi();
       if (native && typeof native.saveSettingFile === 'function') {
         try {
           const res = await native.saveSettingFile({ defaultPath, content: newContent });
-          if (res && res.filePath) {
-            state.lastExportPath = res.filePath;
-            const doc = getActiveDocument();
-            if (doc) storeDocumentSnapshot(doc);
-            updateDocExportPathDisplay();
-          }
+        if (res && res.filePath) {
+          updateReloadButtonOverrideForPath(state.parseResult, res.filePath);
+          state.lastExportPath = res.filePath;
+          const doc = getActiveDocument();
+          if (doc) storeDocumentSnapshot(doc);
+          updateDocExportPathDisplay();
+        }
           info('Saved reordered .setting via native dialog');
           markActiveDocumentClean();
         } catch (err2) {
@@ -5077,9 +6090,22 @@ async function handleFile(file) {
           error('Bulk Export to Edit Page is available in the desktop app.');
           return;
         }
-        const targetDocs = selectedDocs.filter(doc => doc.snapshot && doc.snapshot.parseResult);
+        const batchDoc = selectedDocs.find(doc => doc && doc.isCsvBatch) || null;
+        const targetDocs = selectedDocs.filter(doc => doc.snapshot && (doc.snapshot.parseResult || doc.snapshot.originalText) && !doc.isCsvBatch);
         if (!targetDocs.length) {
-          error('No valid selected tabs to export.');
+          if (batchDoc) {
+            const snap = batchDoc.csvBatchSnapshot || batchDoc.snapshot || null;
+            if (snap) {
+              const folderPath = batchDoc.csvBatch?.folderPath || snap.exportFolder || resolveExportFolder();
+              await generateSettingsFromCsvCore(snap, {
+                filesOnly: true,
+                promptNameColumn: false,
+                folderPath,
+              });
+              return;
+            }
+          }
+          error(batchDoc ? 'CSV batch selected. Use Export to regenerate files.' : 'No valid selected tabs to export.');
           return;
         }
         const missing = targetDocs.filter(doc => !(doc.snapshot.exportFolder || state.exportFolder));
@@ -5095,10 +6121,13 @@ async function handleFile(file) {
         targetDocs.forEach((doc) => {
           try {
             const snap = doc.snapshot;
-            const newContent = rebuildContentWithNewOrder(snap.originalText || '', snap.parseResult, snap.newline || '\n');
+            const newContent = snap.parseResult
+              ? rebuildContentWithNewOrder(snap.originalText || '', snap.parseResult, snap.newline || '\n', { includeDataLink: true })
+              : (snap.originalText || '');
             const outName = buildMacroExportNameForSnapshot(snap);
             const targetFolder = snap.exportFolder || state.exportFolder || resolveExportFolder();
             const destPath = writeSettingToFolder(targetFolder, outName, newContent);
+            updateReloadButtonOverrideForPath(snap.parseResult || snap, destPath);
             snap.lastExportPath = destPath;
             doc.isDirty = false;
             results.push({ name: outName, path: destPath, ok: true });
@@ -5124,7 +6153,7 @@ async function handleFile(file) {
         error(msg);
         return;
       }
-      const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline);
+      const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, { includeDataLink: true });
       const outName = buildMacroExportName();
       if (!IS_ELECTRON) {
         triggerDownload(outName, newContent);
@@ -5135,6 +6164,7 @@ async function handleFile(file) {
       const targetFolder = resolveExportFolder();
       const destPath = writeSettingToFolder(targetFolder, outName, newContent);
       info(`Exported to ${destPath}`);
+      updateReloadButtonOverrideForPath(state.parseResult, destPath);
       state.lastExportPath = destPath;
       const doc = getActiveDocument();
       if (doc) storeDocumentSnapshot(doc);
@@ -5148,7 +6178,7 @@ async function handleFile(file) {
   async function exportToClipboard() {
     if (!state.parseResult) return;
     try {
-      const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline);
+      const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, { includeDataLink: true });
       const native = getNativeApi();
       if (native && typeof native.writeClipboard === 'function') {
         try {
@@ -5496,7 +6526,7 @@ async function handleFile(file) {
     const presetInputs = looseDocs.map((doc) => {
       const snap = doc.snapshot;
       const name = snap.parseResult?.macroName || doc.name || doc.fileName || 'Preset';
-      const content = rebuildContentWithNewOrder(snap.originalText || '', snap.parseResult, snap.newline);
+      const content = rebuildContentWithNewOrder(snap.originalText || '', snap.parseResult, snap.newline, { includeDataLink: true });
       return { doc, name, content };
     });
     const presets = buildUniquePresetNames(presetInputs.map(({ name, content }) => ({ name, content })));
@@ -5530,6 +6560,23 @@ async function handleFile(file) {
   }
 
   exportBtn?.addEventListener('click', async () => {
+    const activeDoc = getActiveDocument();
+    const selectedBatch = getSelectedCsvBatch();
+    let batchDoc = (activeDoc && activeDoc.isCsvBatch) ? activeDoc : selectedBatch;
+    if (!batchDoc && activeCsvBatchId) {
+      batchDoc = documents.find(doc => doc && doc.id === activeCsvBatchId && doc.isCsvBatch) || null;
+    }
+    const batchSnap = batchDoc ? (batchDoc.csvBatchSnapshot || batchDoc.snapshot) : null;
+    if (batchDoc && batchSnap) {
+      const snap = batchSnap;
+      const folderPath = batchDoc.csvBatch?.folderPath || snap.exportFolder || resolveExportFolder();
+      await generateSettingsFromCsvCore(snap, {
+        filesOnly: true,
+        promptNameColumn: false,
+        folderPath,
+      });
+      return;
+    }
     if (state.drfxLink && state.drfxLink.linked) {
       exportToSourceDrfx();
     } else {
@@ -5610,11 +6657,198 @@ async function handleFile(file) {
     input.click();
   }
 
+  async function fetchCsvFromUrl(url, sourceName) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        error(`CSV fetch failed (${res.status}).`);
+        return false;
+      }
+      const text = await res.text();
+      const parsed = parseCsvText(text);
+      if (!parsed.headers.length) {
+        error('CSV appears to be empty or invalid.');
+        return false;
+      }
+      setCsvData(parsed, sourceName || url);
+      return true;
+    } catch (err) {
+      error(err?.message || err || 'CSV fetch failed.');
+      return false;
+    }
+  }
+
+  function isGoogleSheetsUrl(url) {
+    return /docs\.google\.com\/spreadsheets\/d\//i.test(String(url || ''));
+  }
+
   async function importCsvFromUrl() {
     const raw = await openCsvUrlPrompt();
     if (!raw) return;
     const url = normalizeCsvUrl(raw);
     if (!url) return;
+    await fetchCsvFromUrl(url, url);
+  }
+
+  async function openGoogleSheetsUrlPrompt() {
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'add-control-modal csv-modal';
+      const modal = document.createElement('form');
+      modal.className = 'add-control-form';
+      const header = document.createElement('header');
+      const headerText = document.createElement('div');
+      const eyebrow = document.createElement('div');
+      eyebrow.className = 'eyebrow';
+      eyebrow.textContent = 'Data';
+      const title = document.createElement('h3');
+      title.textContent = 'Import Google Sheet (Public URL)';
+      headerText.appendChild(eyebrow);
+      headerText.appendChild(title);
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.innerHTML = '&times;';
+      header.appendChild(headerText);
+      header.appendChild(closeBtn);
+      const body = document.createElement('div');
+      body.className = 'form-body';
+      const note = document.createElement('p');
+      note.className = 'detail-default-note';
+      note.textContent = 'Sheet must be shared as “Anyone with the link”.';
+      body.appendChild(note);
+      const label = document.createElement('label');
+      label.textContent = 'Google Sheets URL';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.placeholder = 'https://docs.google.com/spreadsheets/d/...';
+      label.appendChild(input);
+      body.appendChild(label);
+      const actions = document.createElement('footer');
+      actions.className = 'modal-actions';
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.textContent = 'Cancel';
+      const okBtn = document.createElement('button');
+      okBtn.type = 'submit';
+      okBtn.className = 'primary';
+      okBtn.textContent = 'Import';
+      const close = (value) => {
+        try { overlay.remove(); } catch (_) {}
+        resolve(value);
+      };
+      cancelBtn.addEventListener('click', () => close(null));
+      closeBtn.addEventListener('click', () => close(null));
+      modal.addEventListener('submit', (ev) => {
+        ev.preventDefault();
+        close(input.value);
+      });
+      overlay.addEventListener('click', (ev) => {
+        if (ev.target === overlay) close(null);
+      });
+      actions.appendChild(cancelBtn);
+      actions.appendChild(okBtn);
+      modal.appendChild(header);
+      modal.appendChild(body);
+      modal.appendChild(actions);
+      overlay.appendChild(modal);
+      document.body.appendChild(overlay);
+      input.focus();
+    });
+  }
+
+  async function importGoogleSheetFromUrl() {
+    const raw = await openGoogleSheetsUrlPrompt();
+    if (!raw) return;
+    if (!isGoogleSheetsUrl(raw)) {
+      error('Please paste a Google Sheets URL.');
+      return;
+    }
+    const url = normalizeCsvUrl(raw);
+    if (!url) return;
+    await fetchCsvFromUrl(url, raw);
+  }
+
+  async function reloadCsvSource() {
+    const sourceName = state.csvData?.sourceName || '';
+    if (!sourceName || !/^https?:/i.test(sourceName)) {
+      error('No URL source to reload.');
+      return;
+    }
+    const url = normalizeCsvUrl(sourceName);
+    if (!url) return;
+    await fetchCsvFromUrl(url, sourceName);
+  }
+
+  function ensureDataLink(result) {
+    if (!result) return null;
+    if (!result.dataLink) {
+      result.dataLink = {
+        version: 1,
+        source: state.csvData?.sourceName || '',
+        nameColumn: state.csvData?.nameColumn || null,
+        rowMode: 'first',
+        rowIndex: 1,
+        rowKey: '',
+        rowValue: '',
+      };
+    } else {
+      if (!result.dataLink.source && state.csvData?.sourceName) {
+        result.dataLink.source = state.csvData.sourceName;
+      }
+      if (!result.dataLink.nameColumn && state.csvData?.nameColumn) {
+        result.dataLink.nameColumn = state.csvData.nameColumn;
+      }
+      if (!result.dataLink.rowMode) result.dataLink.rowMode = 'first';
+      if (!Number.isFinite(result.dataLink.rowIndex)) result.dataLink.rowIndex = 1;
+    }
+    return result.dataLink;
+  }
+
+  function resolveRowFromLink(rows, link) {
+    if (!Array.isArray(rows) || !rows.length || !link) return null;
+    const mode = link.rowMode || 'first';
+    if (mode === 'index') {
+      const idx = Math.max(1, Number(link.rowIndex || 1)) - 1;
+      return rows[idx] || null;
+    }
+    if (mode === 'key') {
+      const key = String(link.rowKey || '').trim();
+      const val = String(link.rowValue || '').trim();
+      if (!key) return null;
+      return rows.find(r => String(r?.[key] ?? '').trim() === val) || null;
+    }
+    return rows[0] || null;
+  }
+
+  function resolveRowForEntry(rows, link, entry, linkData) {
+    const data = linkData || entry?.csvLink;
+    if (!data) return resolveRowFromLink(rows, link);
+    const mode = data.rowMode || 'default';
+    if (mode === 'default' || mode === 'first') return resolveRowFromLink(rows, link);
+    const override = {
+      rowMode: mode,
+      rowIndex: data.rowIndex,
+      rowKey: data.rowKey,
+      rowValue: data.rowValue,
+    };
+    return resolveRowFromLink(rows, override);
+  }
+
+  async function reloadDataLinkForCurrentMacro() {
+    if (!state.parseResult) return;
+    const priorMappings = new Map();
+    (state.parseResult.entries || []).forEach((entry) => {
+      if (!entry || !entry.sourceOp || !entry.source) return;
+      if (!entry.csvLink || !entry.csvLink.column) return;
+      priorMappings.set(`${entry.sourceOp}.${entry.source}`, entry.csvLink.column);
+    });
+    const link = ensureDataLink(state.parseResult);
+    const source = String(link?.source || '').trim();
+    if (!source) {
+      error('No data source set for this macro.');
+      return;
+    }
+    const url = normalizeCsvUrl(source);
     try {
       const res = await fetch(url);
       if (!res.ok) {
@@ -5627,10 +6861,159 @@ async function handleFile(file) {
         error('CSV appears to be empty or invalid.');
         return;
       }
-      setCsvData(parsed, url);
+      setCsvData(parsed, source);
+      const rows = parsed.rows || [];
+      const baseRow = resolveRowFromLink(rows, link);
+      if (!baseRow) {
+        error('No matching row found for this macro.');
+        return;
+      }
+      await applyCsvRowsToCurrentMacro(rows, link, { silent: true });
+      if (priorMappings.size && state.parseResult) {
+        let applied = 0;
+        (state.parseResult.entries || []).forEach((entry) => {
+          if (!entry || !entry.sourceOp || !entry.source) return;
+          if (entry.csvLink && entry.csvLink.column) return;
+          const col = priorMappings.get(`${entry.sourceOp}.${entry.source}`);
+          if (!col) return;
+          entry.csvLink = { column: col };
+          applied += 1;
+        });
+        if (applied) {
+          ensureDataLink(state.parseResult);
+          syncDataLinkMappings(state.parseResult);
+          if (activeDetailEntryIndex != null) renderDetailDrawer(activeDetailEntryIndex);
+          if (typeof updateDataLinkPanelVisibility === 'function') {
+            updateDataLinkPanelVisibility();
+          }
+        }
+      }
+      info('Data reloaded for current macro.');
     } catch (err) {
-      error(err?.message || err || 'CSV fetch failed.');
+      error(err?.message || err || 'Failed to reload data.');
     }
+  }
+
+  async function applyCsvRowsToCurrentMacro(rows, link, options = {}) {
+    if (!state.parseResult) return;
+    const priorMappings = new Map();
+    const priorHexMappings = new Map();
+    (state.parseResult.entries || []).forEach((entry) => {
+      if (!entry || !entry.sourceOp || !entry.source) return;
+      const key = `${entry.sourceOp}.${entry.source}`;
+      if (entry.csvLink && entry.csvLink.column) {
+        priorMappings.set(key, { ...entry.csvLink });
+      }
+      if (entry.csvLinkHex && entry.csvLinkHex.column) {
+        priorHexMappings.set(key, { ...entry.csvLinkHex });
+      }
+    });
+    if (!Array.isArray(rows) || !rows.length) {
+      if (!options.silent) error('No matching row found for this macro.');
+      return;
+    }
+    const eol = state.newline || '\n';
+    let workingText = state.originalText || '';
+    const linkedEntries = (state.parseResult.entries || []).filter(entry => entry && entry.csvLink && entry.csvLink.column);
+    const hexEntries = (state.parseResult.entries || [])
+      .map((entry, idx) => ({ entry, idx }))
+      .filter(({ entry }) => entry && entry.csvLinkHex && entry.csvLinkHex.column);
+    const plan = buildCsvPatchPlan(workingText, state.parseResult, linkedEntries);
+    if (plan && plan.length) {
+      const baseRow = resolveRowFromLink(rows, link);
+      if (!baseRow) {
+        if (!options.silent) error('No matching row found for this macro.');
+        return;
+      }
+      if (linkedEntries.every((entry) => (entry.csvLink?.rowMode || 'default') === 'default')) {
+        workingText = applyCsvRowEdits(workingText, plan, baseRow, eol);
+      } else {
+        let updated = workingText;
+        linkedEntries.forEach((entry) => {
+          const row = resolveRowForEntry(rows, link, entry);
+          if (!row) return;
+          const entryPlan = plan.filter(p => p.entry === entry);
+          updated = applyCsvRowEdits(updated, entryPlan, row, eol);
+        });
+        workingText = updated;
+      }
+    } else {
+      linkedEntries.forEach((entry) => {
+        const row = resolveRowForEntry(rows, link, entry);
+        if (!row) return;
+        const col = entry.csvLink.column;
+        const rawVal = row[col] != null ? String(row[col]) : '';
+        if (isTextControl(entry)) {
+          workingText = setInputValueInToolText(workingText, entry, rawVal, eol, state.parseResult);
+        } else {
+          const formatted = formatDefaultForStorage(entry, rawVal);
+          entry.controlMeta = entry.controlMeta || {};
+          entry.controlMetaOriginal = entry.controlMetaOriginal || {};
+          entry.controlMeta.defaultValue = formatted;
+          entry.controlMetaDirty = true;
+          applyDefaultToEntryRaw(entry, formatted, eol);
+        }
+      });
+    }
+    if (hexEntries.length) {
+      hexEntries.forEach(({ entry, idx }) => {
+        const row = resolveRowForEntry(rows, link, entry, entry.csvLinkHex);
+        if (!row) return;
+        const col = entry.csvLinkHex.column;
+        const rawVal = row[col] != null ? String(row[col]) : '';
+        const parsed = parseHexColor(rawVal);
+        if (!parsed) return;
+        const r = clamp01(parsed.r);
+        const g = clamp01(parsed.g);
+        const b = clamp01(parsed.b);
+        const a = parsed.hasAlpha ? clamp01(parsed.a) : null;
+        workingText = applyHexToColorGroup({
+          entries: state.parseResult.entries,
+          order: state.parseResult.order,
+          baseText: workingText,
+          groupIndex: idx,
+          r,
+          g,
+          b,
+          a,
+          includeAlpha: parsed.hasAlpha,
+          eol,
+          resultRef: state.parseResult,
+        });
+      });
+    }
+    syncDataLinkMappings(state.parseResult);
+    const updated = rebuildContentWithNewOrder(workingText, state.parseResult, eol, { includeDataLink: true });
+    await loadMacroFromText(state.originalFileName || 'Imported.setting', updated, {
+      createDoc: false,
+      preserveFileInfo: true,
+      preserveFilePath: true,
+      allowAutoUtility: false,
+      silentAuto: true,
+      skipClear: false,
+    });
+    if (state.parseResult && (priorMappings.size || priorHexMappings.size)) {
+      let applied = 0;
+      (state.parseResult.entries || []).forEach((entry) => {
+        if (!entry || !entry.sourceOp || !entry.source) return;
+        const key = `${entry.sourceOp}.${entry.source}`;
+        if (priorMappings.has(key) && !(entry.csvLink && entry.csvLink.column)) {
+          entry.csvLink = { ...priorMappings.get(key) };
+          applied += 1;
+        }
+        if (priorHexMappings.has(key) && !(entry.csvLinkHex && entry.csvLinkHex.column)) {
+          entry.csvLinkHex = { ...priorHexMappings.get(key) };
+          applied += 1;
+        }
+      });
+      if (applied) {
+        ensureDataLink(state.parseResult);
+        syncDataLinkMappings(state.parseResult);
+        if (activeDetailEntryIndex != null) renderDetailDrawer(activeDetailEntryIndex);
+        syncDataLinkPanel();
+      }
+    }
+    if (!options.silent) info('Data applied from CSV.');
   }
 
   async function openCsvUrlPrompt() {
@@ -5697,6 +7080,194 @@ async function handleFile(file) {
     });
   }
 
+  async function generateSettingsFromCsvCore(snapshot, options = {}) {
+    const snap = snapshot || {};
+    const result = snap.parseResult || null;
+    const originalText = snap.originalText || '';
+    const csvData = snap.csvData || null;
+    if (!result || !originalText) {
+      error('Load a macro before generating from CSV.');
+      return false;
+    }
+    if (!csvData || !Array.isArray(csvData.headers) || !csvData.headers.length) {
+      error('Import a CSV first.');
+      return false;
+    }
+    const linked = (result.entries || []).filter((entry) => entry && (entry.csvLink && entry.csvLink.column || entry.csvLinkHex && entry.csvLinkHex.column));
+    if (!linked.length) {
+      error('No controls are linked to CSV columns yet.');
+      return false;
+    }
+    const promptName = options.promptNameColumn !== false;
+    let nameColumn = csvData.nameColumn || null;
+    if (promptName) {
+      nameColumn = await openCsvNameColumnPicker(csvData.headers, nameColumn);
+      if (nameColumn == null) return false;
+      csvData.nameColumn = nameColumn;
+    }
+    if (!nameColumn) nameColumn = '__row__';
+    const baseName = (result.macroName || result.macroNameOriginal || 'Macro').trim();
+    const eol = snap.newline || detectNewline(originalText) || '\n';
+    const rows = csvData.rows || [];
+    if (!rows.length) {
+      error('CSV has no data rows.');
+      return false;
+    }
+    const filesOnly = !!options.filesOnly;
+    const lazyTabs = options.lazyTabs !== false;
+    const openTabLimit = Number.isFinite(options.openTabLimit) ? Math.max(0, options.openTabLimit) : null;
+    const overflowToFolder = !!options.overflowToFolder;
+    const folderPath = options.folderPath || snap.exportFolder || state.exportFolder || resolveExportFolder();
+    if (filesOnly && !folderPath) {
+      error('No export folder available. Set an export folder first.');
+      return false;
+    }
+    const prevSuppress = suppressDocDirty;
+    const prevTabsSuppress = suppressDocTabsRender;
+    suppressDocDirty = true;
+    suppressDocTabsRender = true;
+    const baseText = rebuildContentWithNewOrder(originalText || '', result, eol, { commitChanges: false });
+    const linkedText = (result.entries || []).filter((entry) => entry && entry.csvLink && entry.csvLink.column);
+    const linkedHex = (result.entries || []).map((entry, idx) => ({ entry, idx }))
+      .filter(({ entry }) => entry && entry.csvLinkHex && entry.csvLinkHex.column);
+    const patchPlan = buildCsvPatchPlan(baseText, result, linkedText);
+    const useFastPath = Array.isArray(patchPlan) && patchPlan.length > 0;
+    const rowLabels = buildUniqueCsvNames(rows, nameColumn, baseName);
+    const applyHexRowEdits = (text, row, resultRef) => {
+      if (!linkedHex.length) return text;
+      let updated = text;
+      linkedHex.forEach(({ entry, idx }) => {
+        const col = entry.csvLinkHex.column;
+        const rawVal = row[col] != null ? String(row[col]) : '';
+        const parsed = parseHexColor(rawVal);
+        if (!parsed) return;
+        const r = clamp01(parsed.r);
+        const g = clamp01(parsed.g);
+        const b = clamp01(parsed.b);
+        const a = parsed.hasAlpha ? clamp01(parsed.a) : null;
+        updated = applyHexToColorGroup({
+          entries: resultRef?.entries || [],
+          order: resultRef?.order || [],
+          baseText: updated,
+          groupIndex: idx,
+          r,
+          g,
+          b,
+          a,
+          includeAlpha: parsed.hasAlpha,
+          eol,
+          resultRef,
+        });
+      });
+      return updated;
+    };
+    for (let i = 0; i < rows.length; i += 1) {
+      const row = rows[i] || {};
+      const rowLabel = rowLabels[i] || `${baseName} ${i + 1}`;
+      let content = '';
+      if (useFastPath) {
+        let workingText = applyCsvRowEdits(baseText, patchPlan, row, eol);
+        workingText = applyHexRowEdits(workingText, row, result);
+        const tmpResult = {
+          macroNameOriginal: result.macroNameOriginal || result.macroName || '',
+          macroName: rowLabel,
+          operatorType: result.operatorType || result.operatorTypeOriginal || 'GroupOperator',
+          operatorTypeOriginal: result.operatorTypeOriginal || result.operatorType || 'GroupOperator',
+        };
+        workingText = applyMacroNameRename(workingText, tmpResult);
+        const safeMacroName = deriveSafeMacroName(rowLabel, result);
+        workingText = ensureActiveToolName(workingText, safeMacroName, eol);
+        content = workingText;
+      } else {
+        const resultClone = cloneParseResultForCsv(result);
+        if (!resultClone) continue;
+        resultClone.macroName = rowLabel;
+        let workingText = baseText;
+        const entries = resultClone.entries || [];
+        entries.forEach((entry) => {
+          if (!entry || !entry.csvLink || !entry.csvLink.column) return;
+          const col = entry.csvLink.column;
+          const rawVal = row[col] != null ? String(row[col]) : '';
+          if (isTextControl(entry)) {
+            workingText = setInputValueInToolText(workingText, entry, rawVal, eol, result);
+          } else {
+            const formatted = formatDefaultForStorage(entry, rawVal);
+            entry.controlMeta = entry.controlMeta || {};
+            entry.controlMetaOriginal = entry.controlMetaOriginal || {};
+            entry.controlMeta.defaultValue = formatted;
+            entry.controlMetaDirty = true;
+            applyDefaultToEntryRaw(entry, formatted, eol);
+          }
+        });
+        workingText = applyHexRowEdits(workingText, row, resultClone);
+        content = rebuildContentWithNewOrder(workingText, resultClone, eol);
+      }
+      const safeName = sanitizeFileBaseName(rowLabel || baseName);
+      const fileName = `${safeName || 'Macro'}.setting`;
+      const shouldOpenTab = !filesOnly && (openTabLimit == null || i < openTabLimit);
+      if (!shouldOpenTab) {
+        if (overflowToFolder || filesOnly) {
+          if (!folderPath) {
+            error('No export folder available. Set an export folder first.');
+            suppressDocDirty = prevSuppress;
+            suppressDocTabsRender = prevTabsSuppress;
+            return false;
+          }
+          try {
+            writeSettingToFolder(folderPath, fileName, content);
+          } catch (err) {
+            error(err?.message || err || 'Failed to write CSV output.');
+            suppressDocDirty = prevSuppress;
+            suppressDocTabsRender = prevTabsSuppress;
+            return false;
+          }
+          continue;
+        }
+        continue;
+      }
+      if (filesOnly) {
+        try {
+          writeSettingToFolder(folderPath, fileName, content);
+        } catch (err) {
+          error(err?.message || err || 'Failed to write CSV output.');
+          suppressDocDirty = prevSuppress;
+          suppressDocTabsRender = prevTabsSuppress;
+          return false;
+        }
+      } else if (lazyTabs) {
+        createLazyDocumentFromText({ name: rowLabel || baseName, fileName, text: content });
+      } else {
+        await loadMacroFromText(fileName, content, {
+          preserveFileInfo: true,
+          preserveFilePath: false,
+          createDoc: true,
+          allowAutoUtility: false,
+          skipClear: false,
+        });
+        const doc = getActiveDocument();
+        if (doc) {
+          doc.name = rowLabel || doc.name;
+          doc.fileName = fileName;
+          doc.isDirty = true;
+        }
+      }
+    }
+    suppressDocDirty = prevSuppress;
+    suppressDocTabsRender = prevTabsSuppress;
+    renderDocTabs();
+    if (filesOnly) {
+      addCsvBatchDocument({
+        count: rows.length,
+        folderPath,
+        baseName,
+        sourceDocId: options.sourceDocId || null,
+        snapshot: options.storeSnapshot ? snap : null,
+      });
+    }
+    info(`Generated ${rows.length} macros from CSV.${filesOnly ? ' Files saved to export folder.' : ''}`);
+    return true;
+  }
+
   async function generateSettingsFromCsv() {
     if (!state.parseResult || !state.originalText) {
       error('Load a macro before generating from CSV.');
@@ -5708,66 +7279,20 @@ async function handleFile(file) {
     }
     const activeDoc = getActiveDocument();
     if (activeDoc) storeDocumentSnapshot(activeDoc);
-    const linked = (state.parseResult.entries || []).filter((entry) => entry && entry.csvLink && entry.csvLink.column);
-    if (!linked.length) {
-      error('No controls are linked to CSV columns yet.');
-      return;
-    }
-    const nameColumn = await openCsvNameColumnPicker(state.csvData.headers, state.csvData.nameColumn || null);
-    if (nameColumn == null) return;
-    state.csvData.nameColumn = nameColumn;
-    const baseName = (state.parseResult.macroName || state.parseResult.macroNameOriginal || 'Macro').trim();
-    const eol = state.newline || detectNewline(state.originalText) || '\n';
-    const rows = state.csvData.rows || [];
-    if (!rows.length) {
-      error('CSV has no data rows.');
-      return;
-    }
-    const baseText = state.originalText || '';
-    const baseResult = state.parseResult;
-    for (let i = 0; i < rows.length; i += 1) {
-      const row = rows[i] || {};
-      const rowLabel = nameColumn === '__row__'
-        ? `${baseName} ${i + 1}`
-        : (String(row[nameColumn] || '').trim() || `${baseName} ${i + 1}`);
-      const resultClone = cloneParseResultForCsv(baseResult);
-      if (!resultClone) continue;
-      resultClone.macroName = rowLabel;
-      let workingText = baseText;
-      const entries = resultClone.entries || [];
-      entries.forEach((entry) => {
-        if (!entry || !entry.csvLink || !entry.csvLink.column) return;
-        const col = entry.csvLink.column;
-        const rawVal = row[col] != null ? String(row[col]) : '';
-        if (isTextControl(entry)) {
-          workingText = setInputValueInToolText(workingText, entry, rawVal, eol, baseResult);
-        } else {
-          const formatted = formatDefaultForStorage(entry, rawVal);
-          entry.controlMeta = entry.controlMeta || {};
-          entry.controlMetaOriginal = entry.controlMetaOriginal || {};
-          entry.controlMeta.defaultValue = formatted;
-          entry.controlMetaDirty = true;
-          applyDefaultToEntryRaw(entry, formatted, eol);
-        }
-      });
-      const content = rebuildContentWithNewOrder(workingText, resultClone, eol);
-      const safeName = sanitizeFileBaseName(rowLabel || baseName);
-      const fileName = `${safeName || 'Macro'}.setting`;
-      await loadMacroFromText(fileName, content, {
-        preserveFileInfo: true,
-        preserveFilePath: false,
-        createDoc: true,
-        allowAutoUtility: false,
-        skipClear: false,
-      });
-      const doc = getActiveDocument();
-      if (doc) {
-        doc.name = rowLabel || doc.name;
-        doc.fileName = fileName;
-        doc.isDirty = true;
-      }
-    }
-    info(`Generated ${rows.length} macros from CSV.`);
+    const filesOnly = false;
+    const openTabLimit = null;
+    const overflowToFolder = false;
+    const snap = buildDocumentSnapshot();
+    if (!snap) return;
+    await generateSettingsFromCsvCore(snap, {
+      filesOnly,
+      promptNameColumn: true,
+      sourceDocId: activeDoc?.id || null,
+      storeSnapshot: false,
+      openTabLimit,
+      overflowToFolder,
+      lazyTabs: true,
+    });
   }
 
 
@@ -5816,6 +7341,103 @@ async function handleFile(file) {
       if (suffix) base = String(source).slice(0, String(source).length - suffix.length);
     }
     return base;
+  }
+
+  function getColorGroupBlockByIndexFrom(entries, order, idx) {
+    const entry = entries[idx];
+    if (!entry || !entry.sourceOp || !Number.isFinite(entry.controlGroup)) return null;
+    const key = `${entry.sourceOp}::${entry.controlGroup}`;
+    const startPos = order.indexOf(idx);
+    if (startPos < 0) return null;
+    let first = startPos;
+    let last = startPos;
+    for (let p = startPos - 1; p >= 0; p--) {
+      const e2 = entries[order[p]];
+      if (!e2 || e2.isLabel || !Number.isFinite(e2.controlGroup) || e2.sourceOp !== entry.sourceOp) break;
+      if (`${e2.sourceOp}::${e2.controlGroup}` !== key) break;
+      first = p;
+    }
+    for (let p = startPos + 1; p < order.length; p++) {
+      const e2 = entries[order[p]];
+      if (!e2 || e2.isLabel || !Number.isFinite(e2.controlGroup) || e2.sourceOp !== entry.sourceOp) break;
+      if (`${e2.sourceOp}::${e2.controlGroup}` !== key) break;
+      last = p;
+    }
+    const indices = order.slice(first, last + 1);
+    return { firstIndex: order[first], lastIndex: order[last], indices, count: indices.length, key };
+  }
+
+  function getColorGroupComponentsFrom(entries, cgBlock) {
+    if (!cgBlock) return null;
+    const parts = { red: null, green: null, blue: null, alpha: null };
+    cgBlock.indices.forEach((idx) => {
+      const e = entries[idx];
+      if (!e || !e.source) return;
+      const name = normalizeId(String(e.source || '')).toLowerCase();
+      if (/red(\d*)$/.test(name)) { parts.red = idx; return; }
+      if (/green(\d*)$/.test(name)) { parts.green = idx; return; }
+      if (/blue(\d*)$/.test(name)) { parts.blue = idx; return; }
+      if (/alpha(\d*)$/.test(name)) { parts.alpha = idx; return; }
+      if (/r(\d*)$/.test(name)) { parts.red = idx; return; }
+      if (/g(\d*)$/.test(name)) { parts.green = idx; return; }
+      if (/b(\d*)$/.test(name)) { parts.blue = idx; return; }
+      if (/a(\d*)$/.test(name)) { parts.alpha = idx; return; }
+      if (name.includes('red')) { parts.red = idx; return; }
+      if (name.includes('green')) { parts.green = idx; return; }
+      if (name.includes('blue')) { parts.blue = idx; return; }
+      if (name.includes('alpha')) { parts.alpha = idx; return; }
+    });
+    if (parts.red == null || parts.green == null || parts.blue == null) {
+      const ordered = cgBlock.indices.slice();
+      if (ordered.length >= 3) {
+        if (parts.red == null) parts.red = ordered[0];
+        if (parts.green == null) parts.green = ordered[1];
+        if (parts.blue == null) parts.blue = ordered[2];
+        if (ordered.length >= 4 && parts.alpha == null) parts.alpha = ordered[3];
+      }
+    }
+    if (parts.red == null || parts.green == null || parts.blue == null) {
+      const ranked = cgBlock.indices.slice().map((idx) => {
+        const e = entries[idx];
+        const name = e && e.source ? normalizeId(String(e.source)).toLowerCase() : '';
+        let score = 10;
+        if (name.includes('red')) score = 1;
+        else if (name.includes('green')) score = 2;
+        else if (name.includes('blue')) score = 3;
+        else if (name.includes('alpha')) score = 4;
+        return { idx, score };
+      }).sort((a, b) => a.score - b.score);
+      const ordered = ranked.map(r => r.idx);
+      if (ordered.length >= 3) {
+        if (parts.red == null) parts.red = ordered[0];
+        if (parts.green == null) parts.green = ordered[1];
+        if (parts.blue == null) parts.blue = ordered[2];
+        if (ordered.length >= 4 && parts.alpha == null) parts.alpha = ordered[3];
+      }
+    }
+    if (parts.red == null || parts.green == null || parts.blue == null) {
+      try {
+        const names = cgBlock.indices.map((idx) => {
+          const e = entries[idx];
+          return e && e.source ? normalizeId(String(e.source)) : '?';
+        });
+        logDiag?.(`[ColorGroup] unresolved mapping key=${cgBlock.key} names=${names.join(', ')} parts=${JSON.stringify(parts)}`);
+      } catch (_) {}
+    }
+    return parts;
+  }
+
+  function getColorGroupBlockByIndex(idx) {
+    if (!state.parseResult) return null;
+    const entries = state.parseResult.entries || [];
+    const order = state.parseResult.order || [];
+    return getColorGroupBlockByIndexFrom(entries, order, idx);
+  }
+
+  function getColorGroupComponents(cgBlock) {
+    if (!cgBlock || !state.parseResult) return null;
+    const entries = state.parseResult.entries || [];
+    return getColorGroupComponentsFrom(entries, cgBlock);
   }
 
   function highlightNode(op, src, pulse = true) {
@@ -5936,6 +7558,9 @@ async function handleFile(file) {
     setExportButtonLabel(DEFAULT_EXPORT_LABEL);
     exportTemplatesBtn && (exportTemplatesBtn.disabled = true);
     if (operatorTypeSelect) operatorTypeSelect.value = 'GroupOperator';
+    if (ctrlCountEl) ctrlCountEl.textContent = '0';
+    if (inputCountEl) inputCountEl.textContent = '0';
+    if (csvBatchBanner) csvBatchBanner.hidden = true;
     removeCommonPageBtn && (removeCommonPageBtn.disabled = true);
     deselectAllBtn && (deselectAllBtn.disabled = true);
     hideDetailDrawer();
@@ -5954,6 +7579,18 @@ async function handleFile(file) {
     if (addUtilityNodeBtn) {
       addUtilityNodeBtn.disabled = !state.parseResult;
     }
+  }
+
+  function countRecognizedInputs(entries) {
+    if (!Array.isArray(entries) || !entries.length) return 0;
+    let count = 0;
+    for (const entry of entries) {
+      if (!entry) continue;
+      if (entry.locked) { count++; continue; }
+      const key = typeof entry.key === 'string' ? entry.key.toLowerCase() : '';
+      if (/^maininput\d+$/.test(key) || /^main\d+input$/.test(key)) count++;
+    }
+    return count;
   }
 
   function escapeHtml(str) {
@@ -6578,6 +8215,122 @@ async function handleFile(file) {
     return sanitizeFileBaseName(name + '.reordered.setting');
   }
 
+  function buildFmrDataLinkBlock(link, eol) {
+    try {
+      if (!link) return '';
+      const json = JSON.stringify(link);
+      const nl = eol || '\n';
+      return `${nl}-- FMR_DATA_LINK_BEGIN${nl}-- ${json}${nl}-- FMR_DATA_LINK_END${nl}`;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function stripFmrDataLinkBlock(text) {
+    if (!text) return text;
+    return text.replace(/\\n?--\\s*FMR_DATA_LINK_BEGIN\\s*[\\s\\S]*?--\\s*FMR_DATA_LINK_END\\s*\\n?/g, '\\n');
+  }
+
+  function buildFmrDataLinkPayload(result) {
+    try {
+      const csv = result?.csvData || state.csvData || null;
+      const source = result?.dataLink?.source || csv?.sourceName || '';
+      const hasMappings = Array.isArray(result?.entries) && result.entries.some(e => e?.csvLink?.column || e?.csvLinkHex?.column);
+      if (!source || !hasMappings) return null;
+      const mappings = (result?.dataLink && result.dataLink.mappings)
+        ? { ...result.dataLink.mappings }
+        : {};
+      const overrides = (result?.dataLink && result.dataLink.overrides)
+        ? { ...result.dataLink.overrides }
+        : {};
+      const hex = (result?.dataLink && result.dataLink.hex)
+        ? { ...result.dataLink.hex }
+        : {};
+      result.entries.forEach((entry) => {
+        if (!entry || !entry.sourceOp || !entry.source) return;
+        const key = `${entry.sourceOp}.${entry.source}`;
+        if (entry.csvLink && entry.csvLink.column) {
+          mappings[key] = entry.csvLink.column;
+          if (entry.csvLink.rowMode && entry.csvLink.rowMode !== 'default') {
+            overrides[key] = {
+              rowMode: entry.csvLink.rowMode,
+              rowIndex: Number.isFinite(entry.csvLink.rowIndex) ? entry.csvLink.rowIndex : null,
+              rowKey: entry.csvLink.rowKey || null,
+              rowValue: entry.csvLink.rowValue || null,
+            };
+          } else if (overrides[key]) {
+            delete overrides[key];
+          }
+        }
+        if (entry.csvLinkHex && entry.csvLinkHex.column) {
+          hex[key] = {
+            column: entry.csvLinkHex.column,
+            rowMode: entry.csvLinkHex.rowMode || null,
+            rowIndex: Number.isFinite(entry.csvLinkHex.rowIndex) ? entry.csvLinkHex.rowIndex : null,
+            rowKey: entry.csvLinkHex.rowKey || null,
+            rowValue: entry.csvLinkHex.rowValue || null,
+          };
+        } else if (hex[key]) {
+          delete hex[key];
+        }
+      });
+      if (!Object.keys(mappings).length && !Object.keys(hex).length) return null;
+      const link = result?.dataLink || {};
+      return {
+        version: 1,
+        source,
+        nameColumn: link.nameColumn || csv?.nameColumn || null,
+        rowMode: link.rowMode || 'first',
+        rowIndex: Number.isFinite(link.rowIndex) ? link.rowIndex : null,
+        rowKey: link.rowKey || null,
+        rowValue: link.rowValue || null,
+        mappings,
+        overrides: Object.keys(overrides).length ? overrides : undefined,
+        hex: Object.keys(hex).length ? hex : undefined,
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function syncDataLinkMappings(result) {
+    if (!result) return;
+    const link = ensureDataLink(result);
+    if (!link) return;
+    const mappings = {};
+    const overrides = {};
+    const hex = {};
+    (result.entries || []).forEach((entry) => {
+      if (!entry || !entry.csvLink || !entry.csvLink.column || !entry.sourceOp || !entry.source) return;
+      const key = `${entry.sourceOp}.${entry.source}`;
+      mappings[key] = entry.csvLink.column;
+      if (entry.csvLink.rowMode && entry.csvLink.rowMode !== 'default') {
+        overrides[key] = {
+          rowMode: entry.csvLink.rowMode,
+          rowIndex: Number.isFinite(entry.csvLink.rowIndex) ? entry.csvLink.rowIndex : null,
+          rowKey: entry.csvLink.rowKey || null,
+          rowValue: entry.csvLink.rowValue || null,
+        };
+      }
+    });
+    (result.entries || []).forEach((entry) => {
+      if (!entry || !entry.csvLinkHex || !entry.csvLinkHex.column || !entry.sourceOp || !entry.source) return;
+      const key = `${entry.sourceOp}.${entry.source}`;
+      hex[key] = {
+        column: entry.csvLinkHex.column,
+        rowMode: entry.csvLinkHex.rowMode || null,
+        rowIndex: Number.isFinite(entry.csvLinkHex.rowIndex) ? entry.csvLinkHex.rowIndex : null,
+        rowKey: entry.csvLinkHex.rowKey || null,
+        rowValue: entry.csvLinkHex.rowValue || null,
+      };
+    });
+    link.mappings = mappings;
+    if (Object.keys(overrides).length) link.overrides = overrides;
+    else delete link.overrides;
+    if (Object.keys(hex).length) link.hex = hex;
+    else delete link.hex;
+  }
+
   function sanitizeFileBaseName(value) {
     return String(value || '')
       .replace(/[\\/:*?"<>|]/g, '_')
@@ -6595,12 +8348,35 @@ async function handleFile(file) {
   }
 
   function buildMacroExportNameForSnapshot(snap) {
+    if (snap?.csvGenerated && snap?.originalFileName) {
+      return sanitizeFileBaseName(String(snap.originalFileName));
+    }
     const macroName = (snap?.parseResult?.macroName || snap?.parseResult?.macroNameOriginal || '').trim();
     if (macroName) {
       const safe = sanitizeFileBaseName(macroName);
       return (safe || 'Macro') + '.setting';
     }
     return suggestOutputName(snap?.originalFileName || 'Macro.setting');
+  }
+
+  function buildUniqueCsvNames(rows, nameColumn, baseName) {
+    const names = [];
+    const counts = new Map();
+    for (let i = 0; i < rows.length; i += 1) {
+      const row = rows[i] || {};
+      let label = '';
+      if (nameColumn === '__row__') {
+        label = `${baseName} ${i + 1}`;
+      } else {
+        const raw = String(row[nameColumn] || '').trim();
+        label = raw || `${baseName} ${i + 1}`;
+      }
+      const key = label.toLowerCase();
+      const count = (counts.get(key) || 0) + 1;
+      counts.set(key, count);
+      names.push(count > 1 ? `${label}_${count}` : label);
+    }
+    return names;
   }
 
 
@@ -6645,6 +8421,7 @@ async function handleFile(file) {
     // Prefer rebuilding into the GroupOperator-level Inputs block (or inserting one)
     const baseText = applyToolRenameMap(original, result);
     let updated = baseText;
+    const dataLink = (options.includeDataLink !== false) ? buildFmrDataLinkPayload(result) : null;
     const safeEditExport = options.safeEditExport === true;
     if (!safeEditExport) {
       updated = applyLabelCountEdits(updated, result, eol);
@@ -6661,6 +8438,10 @@ async function handleFile(file) {
       updated = ensureGroupInputsBlock(updated, result, eol);
       updated = rewritePrimaryInputsBlock(updated, result, eol);
       updated = ensureActiveToolName(updated, (result?.macroName || result?.macroNameOriginal || '').trim(), eol);
+      if (dataLink) {
+        updated = stripFmrDataLinkBlock(updated);
+        updated += buildFmrDataLinkBlock(dataLink, eol);
+      }
       return updated;
     }
 
@@ -8233,7 +10014,15 @@ async function handleFile(file) {
       const bounds = locateMacroGroupBounds(state.originalText, state.parseResult);
       if (!bounds) return empty;
       const toolBlock = findToolBlockInGroup(state.originalText, bounds.groupOpenIndex, bounds.groupCloseIndex, entry.sourceOp);
-      if (!toolBlock) return isTextControl(entry) ? empty : { value: '', note: 'Inputs block not found.' };
+      if (!toolBlock) {
+        const fallback = normalizeMetaValue(
+          entry?.controlMeta?.defaultValue ??
+          entry?.controlMetaOriginal?.defaultValue ??
+          extractInstancePropValue(entry?.raw || '', 'Default')
+        );
+        const formatted = formatDefaultForDisplay(entry, fallback);
+        return formatted != null ? { value: formatted, note: 'Using Inputs default.' } : (isTextControl(entry) ? empty : { value: '', note: 'Inputs block not found.' });
+      }
       if (isTextControl(entry) && String(entry.source || '').toLowerCase().includes('styledtext')) {
         const direct = extractStyledTextValueFromTool(toolBlock.open, toolBlock.close);
         if (direct != null) {
@@ -8241,9 +10030,25 @@ async function handleFile(file) {
         }
       }
       const inputsBlock = findInputsInTool(state.originalText, toolBlock.open, toolBlock.close);
-      if (!inputsBlock) return isTextControl(entry) ? empty : { value: '', note: 'Inputs block not found.' };
+      if (!inputsBlock) {
+        const fallback = normalizeMetaValue(
+          entry?.controlMeta?.defaultValue ??
+          entry?.controlMetaOriginal?.defaultValue ??
+          extractInstancePropValue(entry?.raw || '', 'Default')
+        );
+        const formatted = formatDefaultForDisplay(entry, fallback);
+        return formatted != null ? { value: formatted, note: 'Using Inputs default.' } : (isTextControl(entry) ? empty : { value: '', note: 'Inputs block not found.' });
+      }
       const inputBlock = findInputBlockInInputs(state.originalText, inputsBlock.open, inputsBlock.close, entry.source);
-      if (!inputBlock) return isTextControl(entry) ? empty : { value: '', note: 'Input not found on the tool.' };
+      if (!inputBlock) {
+        const fallback = normalizeMetaValue(
+          entry?.controlMeta?.defaultValue ??
+          entry?.controlMetaOriginal?.defaultValue ??
+          extractInstancePropValue(entry?.raw || '', 'Default')
+        );
+        const formatted = formatDefaultForDisplay(entry, fallback);
+        return formatted != null ? { value: formatted, note: 'Using Inputs default.' } : (isTextControl(entry) ? empty : { value: '', note: 'Input not found on the tool.' });
+      }
       const body = state.originalText.slice(inputBlock.open + 1, inputBlock.close);
       let value = extractControlPropValue(body, 'Value') || '';
       if (isTextControl(entry)) {
@@ -8270,6 +10075,17 @@ async function handleFile(file) {
         const op = strip(sourceOp);
         const src = strip(source);
         note = `Driven by ${op || 'SourceOp'}${src ? '.' + src : ''}. Setting a value overrides the link.`;
+      }
+      if (!value && !expression && !sourceOp && !source) {
+        const fallback = normalizeMetaValue(
+          entry?.controlMeta?.defaultValue ??
+          entry?.controlMetaOriginal?.defaultValue ??
+          extractInstancePropValue(entry?.raw || '', 'Default')
+        );
+        if (fallback != null) {
+          const formatted = formatDefaultForDisplay(entry, fallback);
+          if (formatted != null && String(formatted).trim()) value = formatted;
+        }
       }
       return { value, note };
     } catch (_) {

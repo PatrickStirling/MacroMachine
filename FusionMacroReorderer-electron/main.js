@@ -1023,12 +1023,32 @@ ipcMain.handle('set-export-folder', async (_event, payload = {}) => {
   return { ok: true };
 });
 
+ipcMain.handle('set-data-menu-state', async (_event, payload = {}) => {
+  try {
+    const menu = Menu.getApplicationMenu();
+    const item = menu?.getMenuItemById('dataReloadCsv');
+    if (item) item.enabled = !!payload.reloadEnabled;
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
+});
+
 ipcMain.handle('get-user-data-path', async () => {
   return { path: app.getPath('userData') };
 });
 
 app.whenReady().then(() => {
   createMainWindow();
+  try {
+    if (app.setAsDefaultProtocolClient) {
+      if (process.defaultApp && process.argv.length >= 2) {
+        app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [path.resolve(process.argv[1])]);
+      } else {
+        app.setAsDefaultProtocolClient(PROTOCOL);
+      }
+    }
+  } catch (_) {}
 
   // Application menu with basic file actions wired into the renderer
   const template = [
@@ -1049,6 +1069,13 @@ app.whenReady().then(() => {
           click: () => {
             const win = BrowserWindow.getFocusedWindow();
             if (win) win.webContents.send('fmr-menu', { action: 'save' });
+          },
+        },
+        {
+          label: 'Insert Reload Buttonâ€¦',
+          click: () => {
+            const win = BrowserWindow.getFocusedWindow();
+            if (win) win.webContents.send('fmr-menu', { action: 'addReloadButton' });
           },
         },
         { type: 'separator' },
@@ -1109,7 +1136,7 @@ app.whenReady().then(() => {
       ],
     },
     {
-      label: 'CSV',
+      label: 'Data',
       submenu: [
         {
           label: 'Import CSV (File)…',
@@ -1123,6 +1150,29 @@ app.whenReady().then(() => {
           click: () => {
             const win = BrowserWindow.getFocusedWindow();
             if (win) win.webContents.send('fmr-menu', { action: 'csvImportUrl' });
+          },
+        },
+        {
+          label: 'Import Google Sheet (Public URL)…',
+          click: () => {
+            const win = BrowserWindow.getFocusedWindow();
+            if (win) win.webContents.send('fmr-menu', { action: 'csvImportSheet' });
+          },
+        },
+        {
+          label: 'Reload Sheet',
+          id: 'dataReloadCsv',
+          enabled: false,
+          click: () => {
+            const win = BrowserWindow.getFocusedWindow();
+            if (win) win.webContents.send('fmr-menu', { action: 'csvReload' });
+          },
+        },
+        {
+          label: 'Insert Reload Buttonâ€¦',
+          click: () => {
+            const win = BrowserWindow.getFocusedWindow();
+            if (win) win.webContents.send('fmr-menu', { action: 'addReloadButton' });
           },
         },
         { type: 'separator' },
@@ -1157,6 +1207,62 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
   });
+});
+
+const PROTOCOL = 'macro-machine';
+let pendingProtocolPayload = null;
+
+function parseProtocolUrl(url) {
+  try {
+    if (!url || typeof url !== 'string') return null;
+    const parsed = new URL(url);
+    if (parsed.protocol !== `${PROTOCOL}:`) return null;
+    const host = (parsed.host || '').toLowerCase();
+    const pathValue = parsed.searchParams.get('path') || '';
+    const reloadFlag = parsed.searchParams.get('reload');
+    const wantsReload = reloadFlag === '1' || reloadFlag === 'true' || host === 'reload';
+    const decodedPath = pathValue ? decodeURIComponent(pathValue) : '';
+    if (!decodedPath) return null;
+    return { path: decodedPath, reloadDataLink: wantsReload };
+  } catch (_) {
+    return null;
+  }
+}
+
+function dispatchProtocolPayload(payload) {
+  if (!payload) return;
+  const win = mainWindow && !mainWindow.isDestroyed()
+    ? mainWindow
+    : BrowserWindow.getFocusedWindow();
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('fmr-open-path', payload);
+    return;
+  }
+  pendingProtocolPayload = payload;
+}
+
+app.on('open-url', (event, url) => {
+  try { event.preventDefault(); } catch (_) {}
+  const payload = parseProtocolUrl(url);
+  if (payload) dispatchProtocolPayload(payload);
+});
+
+app.whenReady().then(() => {
+  const argUrl = process.argv.find((arg) => String(arg).startsWith(`${PROTOCOL}://`));
+  const payload = parseProtocolUrl(argUrl);
+  if (payload) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      dispatchProtocolPayload(payload);
+    } else {
+      pendingProtocolPayload = payload;
+      setTimeout(() => {
+        if (pendingProtocolPayload && mainWindow && !mainWindow.isDestroyed()) {
+          dispatchProtocolPayload(pendingProtocolPayload);
+          pendingProtocolPayload = null;
+        }
+      }, 500);
+    }
+  }
 });
 
 app.on('window-all-closed', () => {

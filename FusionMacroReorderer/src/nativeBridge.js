@@ -15,8 +15,11 @@ export function setupNativeBridge({
   setDiagnosticsEnabled,
   handleNativeOpen,
   onNormalizeLegacyNames,
+  onAddReloadButton,
   onImportCsvFile,
   onImportCsvUrl,
+  onImportGoogleSheet,
+  onReloadCsv,
   onGenerateFromCsv,
 }) {
   if (!isElectron || typeof window === 'undefined' || window.FusionMacroReordererNative) {
@@ -58,10 +61,16 @@ export function setupNativeBridge({
             if (typeof setDiagnosticsEnabled === 'function') setDiagnosticsEnabled();
           } else if (action === 'normalizeLegacy') {
             if (typeof onNormalizeLegacyNames === 'function') onNormalizeLegacyNames();
+          } else if (action === 'addReloadButton') {
+            if (typeof onAddReloadButton === 'function') onAddReloadButton();
           } else if (action === 'csvImportFile') {
             if (typeof onImportCsvFile === 'function') onImportCsvFile();
           } else if (action === 'csvImportUrl') {
             if (typeof onImportCsvUrl === 'function') onImportCsvUrl();
+          } else if (action === 'csvImportSheet') {
+            if (typeof onImportGoogleSheet === 'function') onImportGoogleSheet();
+          } else if (action === 'csvReload') {
+            if (typeof onReloadCsv === 'function') onReloadCsv();
           } else if (action === 'csvGenerate') {
             if (typeof onGenerateFromCsv === 'function') onGenerateFromCsv();
           }

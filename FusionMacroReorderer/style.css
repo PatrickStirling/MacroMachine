@@ -134,6 +134,38 @@ main { padding: 0 var(--space-xl) var(--space-xl); }
   color: #0d111b;
   box-shadow: 0 2px 8px rgba(94, 179, 255, 0.3);
 }
+.doc-tab.csv-batch {
+  border-style: dashed;
+  opacity: 0.85;
+}
+.doc-tab.csv-batch .doc-tab-label {
+  color: var(--muted);
+}
+.csv-batch-banner {
+  margin-bottom: var(--space-sm);
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px dashed rgba(94, 179, 255, 0.45);
+  background: rgba(94, 179, 255, 0.12);
+  color: var(--text);
+  font-size: var(--font-small);
+  letter-spacing: 0.01em;
+}
+.data-link-panel {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.data-link-panel[hidden] {
+  display: none;
+}
+.data-link-panel.inline {
+  margin-bottom: 0;
+  align-items: center;
+}
+.data-link-panel button {
+  font-size: var(--font-small);
+}
 .doc-tab.selected {
   border-color: var(--label-accent);
   box-shadow: 0 0 0 1px rgba(59, 208, 109, 0.5);
@@ -2127,6 +2159,59 @@ body.pick-mode .pick-target {
   color: var(--muted);
   margin-top: 0.25rem;
   line-height: 1.3;
+}
+.csv-override-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  margin-top: 0.35rem;
+}
+.csv-override-row select,
+.csv-override-row input {
+  background: #1f2433;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+  min-height: 30px;
+}
+.csv-override-inputs {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+.csv-override-inputs input {
+  width: 7rem;
+}
+.csv-hex-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  margin-top: 0.35rem;
+}
+.csv-hex-wrap {
+  flex: 1 1 160px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.csv-hex-wrap input {
+  flex: 1 1 auto;
+  width: auto;
+}
+.csv-hex-preview {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: #000;
+  margin-left: 0.4rem;
+}
+.csv-hex-wrap .csv-link-btn {
+  right: 2.4rem;
 }
 .detail-style-row {
   display: flex;

@@ -65,6 +65,7 @@
             <div class="meta">
               <div><input id="macroName" class="macro-name" type="text" aria-label="Macro name" /></div>
               <div><strong>Controls found:</strong> <span id="ctrlCount">0</span></div>
+              <div><strong>Inputs found:</strong> <span id="inputCount">0</span></div>
               <div class="operator-select">
                 <strong>Operator:</strong>
                 <select id="operatorType">
@@ -86,6 +87,10 @@
                   <button id="exportMenuBtn" type="button" disabled>Export as...</button>
                   <div id="exportMenu" class="export-menu" hidden></div>
                 </div>
+                <div id="dataLinkPanel" class="data-link-panel inline" hidden>
+                  <button id="dataLinkConfigure" type="button">Data Link</button>
+                  <button id="dataLinkReload" type="button">Reload Data</button>
+                </div>
                 <button id="exportClipboardBtn" type="button" disabled hidden>Export to clipboard</button>
                 <button id="exportBtn" type="button" disabled hidden>Export reordered .setting</button>
                 <button id="exportTemplatesBtn" type="button" disabled hidden>Export to Edit Page</button>
@@ -95,6 +100,9 @@
             <div class="list-wrapper">
               <div class="editor-actions">
                 <button id="openCatalogEditorBtn" type="button" hidden>Catalog Editor (temp)</button>
+              </div>
+              <div id="csvBatchBanner" class="csv-batch-banner" hidden>
+                CSV Batch selected — Export will regenerate files.
               </div>
               <h2>Published Controls</h2>
               <div class="nodes-toolbar published-toolbar">

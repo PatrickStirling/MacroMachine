@@ -10,6 +10,7 @@ import {
 import { parseLabelMarkup, normalizeLabelStyle } from './labelMarkup.js';
 
 export function parseSetting(text) {
+  const dataLink = extractFmrDataLink(text);
   let blocks = findAllInputsBlocksWithInstanceInputs(text);
   let preferGroupInputs = false;
   if (!blocks.length) {
@@ -100,7 +101,22 @@ export function parseSetting(text) {
     entries,
     order,
     originalOrder: [...order],
+    dataLink,
   };
+}
+
+function extractFmrDataLink(text) {
+  try {
+    if (!text) return null;
+    const re = /--\\s*FMR_DATA_LINK_BEGIN\\s*\\n--\\s*([\\s\\S]*?)\\n--\\s*FMR_DATA_LINK_END/;
+    const m = text.match(re);
+    if (!m || !m[1]) return null;
+    const json = m[1].replace(/^\\s*--\\s?/gm, '').trim();
+    if (!json) return null;
+    return JSON.parse(json);
+  } catch (_) {
+    return null;
+  }
 }
 
 export function findEnclosingGroupForIndex(text, index) {

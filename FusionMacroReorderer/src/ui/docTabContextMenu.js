@@ -49,7 +49,9 @@ export function createDocTabContextMenu(options = {}) {
       root.appendChild(sep);
     };
     addItem('New tab', () => onCreateDoc?.());
-    addItem('Rename...', () => onRenameDoc?.(docId));
+    if (!doc.isCsvBatch) {
+      addItem('Rename...', () => onRenameDoc?.(docId));
+    }
     addItem(doc.selected ? 'Unselect for Export' : 'Select for Export', () => onToggleDocSelection?.(docId));
     addItem('Select All for Export', () => onSelectAll?.());
     addItem('Clear Selection', () => onClearSelection?.());

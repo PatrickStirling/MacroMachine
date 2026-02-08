@@ -17,6 +17,7 @@ export function createDocTabsController(options = {}) {
     onCloseDocument,
     onCreateBlankDocument,
     onUpdateExportPathDisplay,
+    onSelectCsvBatch,
   } = options;
 
   const render = () => {
@@ -57,34 +58,39 @@ export function createDocTabsController(options = {}) {
     }
     const activeDocId = getActiveDocId();
     documents.forEach((doc) => {
+      const isBatch = !!doc.isCsvBatch;
       const wrap = document.createElement('div');
-      wrap.className = `doc-tab${doc.id === activeDocId ? ' active' : ''}${doc.selected ? ' selected' : ''}`;
+      wrap.className = `doc-tab${doc.id === activeDocId ? ' active' : ''}${doc.selected ? ' selected' : ''}${isBatch ? ' csv-batch' : ''}`;
       wrap.dataset.docId = doc.id;
-      wrap.draggable = true;
-      wrap.addEventListener('dragstart', (ev) => {
-        setDraggingDocId(doc.id);
-        wrap.classList.add('dragging');
-        ev.dataTransfer?.setData('text/plain', doc.id);
-      });
-      wrap.addEventListener('dragend', () => {
-        setDraggingDocId(null);
-        wrap.classList.remove('dragging');
-        docTabsEl.querySelectorAll('.doc-tab.drag-over').forEach(el => el.classList.remove('drag-over'));
-      });
-      wrap.addEventListener('dragover', (ev) => {
-        if (!getDraggingDocId() || getDraggingDocId() === doc.id) return;
-        ev.preventDefault();
-        wrap.classList.add('drag-over');
-      });
-      wrap.addEventListener('dragleave', () => wrap.classList.remove('drag-over'));
-      wrap.addEventListener('drop', (ev) => {
-        const dragging = getDraggingDocId();
-        if (!dragging || dragging === doc.id) return;
-        ev.preventDefault();
-        wrap.classList.remove('drag-over');
-        onReorderDocuments?.(dragging, doc.id);
-        setDraggingDocId(null);
-      });
+      if (!isBatch) {
+        wrap.draggable = true;
+        wrap.addEventListener('dragstart', (ev) => {
+          setDraggingDocId(doc.id);
+          wrap.classList.add('dragging');
+          ev.dataTransfer?.setData('text/plain', doc.id);
+        });
+        wrap.addEventListener('dragend', () => {
+          setDraggingDocId(null);
+          wrap.classList.remove('dragging');
+          docTabsEl.querySelectorAll('.doc-tab.drag-over').forEach(el => el.classList.remove('drag-over'));
+        });
+        wrap.addEventListener('dragover', (ev) => {
+          if (!getDraggingDocId() || getDraggingDocId() === doc.id) return;
+          ev.preventDefault();
+          wrap.classList.add('drag-over');
+        });
+        wrap.addEventListener('dragleave', () => wrap.classList.remove('drag-over'));
+        wrap.addEventListener('drop', (ev) => {
+          const dragging = getDraggingDocId();
+          if (!dragging || dragging === doc.id) return;
+          ev.preventDefault();
+          wrap.classList.remove('drag-over');
+          onReorderDocuments?.(dragging, doc.id);
+          setDraggingDocId(null);
+        });
+      } else {
+        wrap.draggable = false;
+      }
       const labelBtn = document.createElement('button');
       labelBtn.type = 'button';
       labelBtn.className = 'doc-tab-label';
@@ -93,26 +99,45 @@ export function createDocTabsController(options = {}) {
       const exportPath = doc.snapshot && doc.snapshot.exportFolder ? doc.snapshot.exportFolder : '';
       const exportLabel = lastExport || exportPath || '';
       labelBtn.textContent = doc.isDirty ? `${label} *` : label;
-      labelBtn.title = `${doc.fileName || doc.name || 'Untitled'} • Export: ${exportLabel || 'Default (Fusion Templates)'}`;
-      labelBtn.addEventListener('click', (ev) => {
-        if (ev.ctrlKey || ev.metaKey) {
+      if (isBatch) {
+        const count = doc.csvBatch && Number.isFinite(doc.csvBatch.count) ? doc.csvBatch.count : 0;
+        const folder = doc.csvBatch && doc.csvBatch.folderPath ? doc.csvBatch.folderPath : '';
+        labelBtn.title = `CSV batch: ${count} files${folder ? ` • ${folder}` : ''}`;
+        labelBtn.addEventListener('click', (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
-          onToggleDocSelection?.(doc.id);
-          return;
-        }
-        onClearDocSelections?.();
-        onSwitchDocument?.(doc.id);
-      });
-      labelBtn.addEventListener('dblclick', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        onPromptRename?.(doc.id);
-      });
-      labelBtn.addEventListener('contextmenu', (ev) => {
-        ev.preventDefault();
-        onOpenContextMenu?.(doc.id, ev.clientX, ev.clientY);
-      });
+          if (ev.ctrlKey || ev.metaKey) {
+            onToggleDocSelection?.(doc.id);
+            return;
+          }
+          onSelectCsvBatch?.(doc);
+        });
+        labelBtn.addEventListener('contextmenu', (ev) => {
+          ev.preventDefault();
+          onOpenContextMenu?.(doc.id, ev.clientX, ev.clientY);
+        });
+      } else {
+        labelBtn.title = `${doc.fileName || doc.name || 'Untitled'} • Export: ${exportLabel || 'Default (Fusion Templates)'}`;
+        labelBtn.addEventListener('click', (ev) => {
+          if (ev.ctrlKey || ev.metaKey) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            onToggleDocSelection?.(doc.id);
+            return;
+          }
+          onClearDocSelections?.();
+          onSwitchDocument?.(doc.id);
+        });
+        labelBtn.addEventListener('dblclick', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          onPromptRename?.(doc.id);
+        });
+        labelBtn.addEventListener('contextmenu', (ev) => {
+          ev.preventDefault();
+          onOpenContextMenu?.(doc.id, ev.clientX, ev.clientY);
+        });
+      }
       labelBtn.draggable = false;
       const closeBtn = document.createElement('button');
       closeBtn.type = 'button';
@@ -125,7 +150,12 @@ export function createDocTabsController(options = {}) {
       });
       closeBtn.draggable = false;
       wrap.appendChild(labelBtn);
-      wrap.appendChild(closeBtn);
+      if (!isBatch) {
+        wrap.appendChild(closeBtn);
+      } else {
+        closeBtn.title = 'Remove batch';
+        wrap.appendChild(closeBtn);
+      }
       docTabsEl.appendChild(wrap);
     });
     const addBtn = document.createElement('button');
