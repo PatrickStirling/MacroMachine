@@ -3128,7 +3128,7 @@ function hideDetailDrawer() {
       currentWrap.appendChild(currentInput);
       const hasCsv = !!(state.csvData && Array.isArray(state.csvData.headers) && state.csvData.headers.length);
       const hasLinkSource = !!(state.parseResult && state.parseResult.dataLink && state.parseResult.dataLink.source);
-      const canLinkCsv = isTextControl(entry);
+      const canLinkCsv = isCsvLinkableControl(entry);
       if (canLinkCsv && (hasCsv || hasLinkSource || entry?.csvLink?.column)) {
         currentWrap.classList.add('has-action');
         const csvBtn = document.createElement('button');
@@ -3778,6 +3778,118 @@ function hideDetailDrawer() {
     return false;
   }
 
+  function isCheckboxControl(entry) {
+    const inputControl = normalizeInputControlValue(
+      entry?.controlMeta?.inputControl || entry?.controlMetaOriginal?.inputControl
+    );
+    if (inputControl && /checkbox/i.test(inputControl)) return true;
+    const dataType = (entry?.controlMeta?.dataType || entry?.controlMetaOriginal?.dataType || entry?.dataType || '')
+      .replace(/"/g, '')
+      .trim()
+      .toLowerCase();
+    if (dataType.includes('bool')) return true;
+    return false;
+  }
+
+  function isComboControl(entry) {
+    const inputControl = normalizeInputControlValue(
+      entry?.controlMeta?.inputControl || entry?.controlMetaOriginal?.inputControl
+    );
+    return !!(inputControl && /combo/i.test(inputControl));
+  }
+
+  function isIntegerControl(entry) {
+    const integerFlag = entry?.controlMeta?.integer ?? entry?.controlMetaOriginal?.integer;
+    if (integerFlag != null) {
+      const normalized = String(integerFlag).replace(/"/g, '').trim().toLowerCase();
+      if (normalized === 'true' || normalized === '1') return true;
+      if (normalized === 'false' || normalized === '0') return false;
+    }
+    const dataType = (entry?.controlMeta?.dataType || entry?.controlMetaOriginal?.dataType || entry?.dataType || '')
+      .replace(/"/g, '')
+      .trim()
+      .toLowerCase();
+    if (dataType.includes('int')) return true;
+    return false;
+  }
+
+  function isCsvLinkableControl(entry) {
+    if (!entry || entry.isButton || entry.isLabel) return false;
+    const inputControl = normalizeInputControlValue(
+      entry?.controlMeta?.inputControl || entry?.controlMetaOriginal?.inputControl
+    );
+    if (inputControl && POINT_INPUT_CONTROLS.includes(inputControl)) return false;
+    if (isTextControl(entry)) return true;
+    if (isCheckboxControl(entry) || isComboControl(entry)) return true;
+    const dataType = (entry?.controlMeta?.dataType || entry?.controlMetaOriginal?.dataType || entry?.dataType || '')
+      .replace(/"/g, '')
+      .trim()
+      .toLowerCase();
+    if (dataType.includes('number') || dataType.includes('float') || dataType.includes('int')) return true;
+    if (inputControl) {
+      const lower = inputControl.toLowerCase();
+      if (lower.includes('slider') || lower.includes('screw')) return true;
+    }
+    const def = entry?.controlMeta?.defaultValue ?? entry?.controlMetaOriginal?.defaultValue;
+    if (def != null && /^-?\d+(\.\d+)?$/.test(String(def).trim())) return true;
+    return false;
+  }
+
+  function parseCsvBooleanValue(raw) {
+    if (raw == null) return null;
+    const cleaned = String(raw).trim().toLowerCase();
+    if (!cleaned) return null;
+    if (['true', 'yes', 'y', 'on'].includes(cleaned)) return 1;
+    if (['false', 'no', 'n', 'off'].includes(cleaned)) return 0;
+    if (cleaned === '1') return 1;
+    if (cleaned === '0') return 0;
+    return null;
+  }
+
+  function parseCsvNumericValue(raw) {
+    if (raw == null) return null;
+    let text = String(raw).trim();
+    if (!text) return null;
+    if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'"))) {
+      text = text.slice(1, -1).trim();
+    }
+    if (!text) return null;
+    const paren = text.startsWith('(') && text.endsWith(')');
+    if (paren) text = `-${text.slice(1, -1)}`;
+    text = text.replace(/[$€£¥₩₹]/g, '').replace(/,/g, '').replace(/\s+/g, '');
+    if (!text) return null;
+    const numeric = /^[-+]?(\d+(\.\d+)?|\.\d+)([eE][-+]?\d+)?$/.test(text);
+    if (!numeric) return null;
+    const num = Number(text);
+    return Number.isFinite(num) ? num : null;
+  }
+
+  function clampNumericToEntry(entry, value) {
+    let next = value;
+    const minRaw = entry?.controlMeta?.minAllowed ?? entry?.controlMetaOriginal?.minAllowed;
+    const maxRaw = entry?.controlMeta?.maxAllowed ?? entry?.controlMetaOriginal?.maxAllowed;
+    const min = minRaw != null ? Number(String(minRaw).replace(/"/g, '').trim()) : null;
+    const max = maxRaw != null ? Number(String(maxRaw).replace(/"/g, '').trim()) : null;
+    if (Number.isFinite(min)) next = Math.max(min, next);
+    if (Number.isFinite(max)) next = Math.min(max, next);
+    return next;
+  }
+
+  function coerceCsvNumericValue(entry, raw) {
+    const boolVal = parseCsvBooleanValue(raw);
+    if (boolVal != null) {
+      if (isCheckboxControl(entry)) return boolVal ? 1 : 0;
+      return boolVal;
+    }
+    const num = parseCsvNumericValue(raw);
+    if (!Number.isFinite(num)) return null;
+    let next = num;
+    if (isCheckboxControl(entry)) next = num ? 1 : 0;
+    if (isComboControl(entry) || isIntegerControl(entry)) next = Math.round(next);
+    next = clampNumericToEntry(entry, next);
+    return next;
+  }
+
   function clamp01(value) {
     const num = Number(value);
     if (!Number.isFinite(num)) return 0;
@@ -4051,7 +4163,11 @@ function hideDetailDrawer() {
   function formatDefaultForStorage(entry, value) {
     const next = normalizeMetaValue(value);
     if (next == null) return null;
-    if (!isTextControl(entry)) return next;
+    if (!isTextControl(entry)) {
+      const numeric = coerceCsvNumericValue(entry, next);
+      if (numeric == null) return null;
+      return String(numeric);
+    }
     const template = resolveTextDefaultSource(entry, entry?.controlMeta?.defaultValue ?? entry?.controlMetaOriginal?.defaultValue);
     if (template && isStyledTextValue(template)) {
       return updateStyledTextValue(template, next);
@@ -4139,23 +4255,30 @@ function hideDetailDrawer() {
   function applyCsvRowEdits(baseText, plan, row, eol) {
     if (!baseText || !Array.isArray(plan) || !plan.length) return baseText;
     const edits = [];
-    for (const patch of plan) {
-      const entry = patch.entry;
-      if (!entry || !entry.csvLink || !entry.csvLink.column) continue;
-      const rawVal = row[entry.csvLink.column] != null ? String(row[entry.csvLink.column]) : '';
-      if (patch.kind === 'tool') {
-        const body = baseText.slice(patch.start + 1, patch.end);
-        const next = updateToolInputBlockBody(body, entry, rawVal, patch.indent, eol);
-        if (next !== body) edits.push({ start: patch.start + 1, end: patch.end, text: next });
-      } else if (patch.kind === 'instance') {
-        const body = baseText.slice(patch.start + 1, patch.end);
-        const formatted = formatDefaultForStorage(entry, rawVal);
-        let next = body;
-        if (formatted == null) next = removeInstanceInputProp(body, 'Default');
-        else next = setInstanceInputProp(body, 'Default', formatted, patch.indent, eol || '\n');
-        if (next !== body) edits.push({ start: patch.start + 1, end: patch.end, text: next });
+      for (const patch of plan) {
+        const entry = patch.entry;
+        if (!entry || !entry.csvLink || !entry.csvLink.column) continue;
+        const rawVal = row[entry.csvLink.column] != null ? String(row[entry.csvLink.column]) : '';
+        if (patch.kind === 'tool') {
+          const body = baseText.slice(patch.start + 1, patch.end);
+          const next = updateToolInputBlockBody(body, entry, rawVal, patch.indent, eol);
+          if (next !== body) edits.push({ start: patch.start + 1, end: patch.end, text: next });
+        } else if (patch.kind === 'instance') {
+          const body = baseText.slice(patch.start + 1, patch.end);
+          const formatted = formatDefaultForStorage(entry, rawVal);
+          if (formatted != null) {
+            entry.controlMeta = entry.controlMeta || {};
+            entry.controlMetaOriginal = entry.controlMetaOriginal || {};
+            entry.controlMeta.defaultValue = formatted;
+            entry.controlMetaDirty = true;
+            applyDefaultToEntryRaw(entry, formatted, eol);
+          }
+          let next = body;
+          if (formatted == null) next = removeInstanceInputProp(body, 'Default');
+          else next = setInstanceInputProp(body, 'Default', formatted, patch.indent, eol || '\n');
+          if (next !== body) edits.push({ start: patch.start + 1, end: patch.end, text: next });
+        }
       }
-    }
     if (!edits.length) return baseText;
     edits.sort((a, b) => b.start - a.start);
     let out = baseText;
@@ -10121,11 +10244,11 @@ async function handleFile(file) {
         const formatted = formatDefaultForDisplay(entry, fallback);
         return formatted != null ? { value: formatted, note: 'Using Inputs default.' } : (isTextControl(entry) ? empty : { value: '', note: 'Input not found on the tool.' });
       }
-      const body = state.originalText.slice(inputBlock.open + 1, inputBlock.close);
-      let value = extractControlPropValue(body, 'Value') || '';
-      if (isTextControl(entry)) {
-        const directPlain = extractStyledTextPlainTextFromInput(body);
-        if (directPlain != null) value = directPlain;
+        const body = state.originalText.slice(inputBlock.open + 1, inputBlock.close);
+        let value = extractControlPropValue(body, 'Value') || '';
+        if (isTextControl(entry)) {
+          const directPlain = extractStyledTextPlainTextFromInput(body);
+          if (directPlain != null) value = directPlain;
         const styled = extractStyledTextBlockFromInput(body);
         if (styled) {
           const plain = extractStyledTextPlainText(styled);
@@ -10148,22 +10271,34 @@ async function handleFile(file) {
         const src = strip(source);
         note = `Driven by ${op || 'SourceOp'}${src ? '.' + src : ''}. Setting a value overrides the link.`;
       }
-      if (!value && !expression && !sourceOp && !source) {
-        const fallback = normalizeMetaValue(
-          entry?.controlMeta?.defaultValue ??
-          entry?.controlMetaOriginal?.defaultValue ??
-          extractInstancePropValue(entry?.raw || '', 'Default')
-        );
-        if (fallback != null) {
-          const formatted = formatDefaultForDisplay(entry, fallback);
-          if (formatted != null && String(formatted).trim()) value = formatted;
+        if (!value && !expression && !sourceOp && !source) {
+          const fallback = normalizeMetaValue(
+            entry?.controlMeta?.defaultValue ??
+            entry?.controlMetaOriginal?.defaultValue ??
+            extractInstancePropValue(entry?.raw || '', 'Default')
+          );
+          if (fallback != null) {
+            const formatted = formatDefaultForDisplay(entry, fallback);
+            if (formatted != null && String(formatted).trim()) value = formatted;
+          }
         }
+        if (entry?.csvLink?.column && !isTextControl(entry)) {
+          const linkedDefault = normalizeMetaValue(
+            entry?.controlMeta?.defaultValue ??
+            entry?.controlMetaOriginal?.defaultValue ??
+            extractInstancePropValue(entry?.raw || '', 'Default')
+          );
+          const formatted = formatDefaultForDisplay(entry, linkedDefault);
+          if (formatted != null && String(formatted).trim()) {
+            value = formatted;
+            if (!note) note = `Linked to CSV: ${entry.csvLink.column}`;
+          }
+        }
+        return { value, note };
+      } catch (_) {
+        return empty;
       }
-      return { value, note };
-    } catch (_) {
-      return empty;
     }
-  }
 
   function extractStyledTextValueFromTool(toolOpen, toolClose) {
     try {
@@ -10209,11 +10344,14 @@ async function handleFile(file) {
           const block = findControlBlockInUc(text, uc.open, uc.close, entry.source);
           if (block) {
             const body = text.slice(block.open + 1, block.close);
-            meta.inputControl = extractControlPropValue(body, 'INPID_InputControl');
-            meta.dataType = extractControlPropValue(body, 'LINKID_DataType');
-            meta.defaultValue = extractControlPropValue(body, 'INP_Default');
-            meta.minScale = extractControlPropValue(body, 'INP_MinScale');
-            meta.maxScale = extractControlPropValue(body, 'INP_MaxScale');
+              meta.inputControl = extractControlPropValue(body, 'INPID_InputControl');
+              meta.dataType = extractControlPropValue(body, 'LINKID_DataType');
+              meta.defaultValue = extractControlPropValue(body, 'INP_Default');
+              meta.integer = extractControlPropValue(body, 'INP_Integer');
+              meta.minAllowed = extractControlPropValue(body, 'INP_MinAllowed');
+              meta.maxAllowed = extractControlPropValue(body, 'INP_MaxAllowed');
+              meta.minScale = extractControlPropValue(body, 'INP_MinScale');
+              meta.maxScale = extractControlPropValue(body, 'INP_MaxScale');
             const execLine = extractBtncsExecuteString(text, uc.open, uc.close, entry.source);
             if (execLine) {
               const first = execLine.indexOf('"');
@@ -12370,6 +12508,36 @@ function applyBlendCheckboxesToTool(text, bounds, toolName, controls, eol, resul
       listSelected: () => state.parseResult ? Array.from(state.parseResult.selected || []) : [],
 
       order: () => state.parseResult ? Array.from(state.parseResult.order || []) : [],
+
+      getEntry: (idx) => {
+        try {
+          if (!state.parseResult || !Array.isArray(state.parseResult.entries)) return null;
+          return state.parseResult.entries[idx] || null;
+        } catch (_) { return null; }
+      },
+
+      getCsvState: () => {
+        try {
+          return {
+            hasCsv: !!(state.csvData && Array.isArray(state.csvData.headers) && state.csvData.headers.length),
+            source: state.csvData?.sourceName || '',
+            headers: state.csvData?.headers || [],
+          };
+        } catch (_) { return null; }
+      },
+
+      testCsvCoerce: (idx, raw) => {
+        try {
+          const entry = state.parseResult?.entries?.[idx];
+          if (!entry) return null;
+          return {
+            inputControl: entry?.controlMeta?.inputControl,
+            dataType: entry?.controlMeta?.dataType,
+            raw,
+            coerced: coerceCsvNumericValue(entry, raw),
+          };
+        } catch (_) { return null; }
+      },
 
       version: 'anchor-debug-1',
       setDiag: (on) => { try { setDiagnosticsEnabled(!!on); } catch(_) {} },
