@@ -3832,6 +3832,7 @@ function hideDetailDrawer() {
     }
     const def = entry?.controlMeta?.defaultValue ?? entry?.controlMetaOriginal?.defaultValue;
     if (def != null && /^-?\d+(\.\d+)?$/.test(String(def).trim())) return true;
+    if (!dataType) return true;
     return false;
   }
 

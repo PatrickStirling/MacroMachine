@@ -1,6 +1,6 @@
 {
   "name": "fusion-macro-reorderer-electron",
-  "version": "0.2.32",
+  "version": "0.2.33",
   "description": "Desktop wrapper for Macro Machine",
   "main": "main.js",
   "dependencies": {
