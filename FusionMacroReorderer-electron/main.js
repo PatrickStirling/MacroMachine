@@ -4,9 +4,42 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 
-let mainWindow = null;
-let explorerWindow = null;
-const drfxPresetTempMap = new Map();
+  let mainWindow = null;
+  let explorerWindow = null;
+  const drfxPresetTempMap = new Map();
+
+  const PROTOCOL_NAME = 'macromachine';
+
+  function handleProtocolUrl(url) {
+    if (!url) return;
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.focus();
+        mainWindow.webContents.send('fmr-protocol', { url });
+      }
+    } catch (_) {}
+  }
+
+  function findProtocolArg(argv) {
+    const prefix = `${PROTOCOL_NAME}://`;
+    const arg = (argv || []).find(a => typeof a === 'string' && a.toLowerCase().startsWith(prefix));
+    return arg || '';
+  }
+
+  const gotLock = app.requestSingleInstanceLock();
+  if (!gotLock) {
+    app.quit();
+  } else {
+    app.on('second-instance', (_event, argv) => {
+      const url = findProtocolArg(argv);
+      if (url) handleProtocolUrl(url);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.focus();
+      }
+    });
+  }
 let updateCheckInFlight = false;
 let lastUpdateCheckManual = false;
 let autoUpdaterReady = false;
@@ -1034,14 +1067,26 @@ ipcMain.handle('set-data-menu-state', async (_event, payload = {}) => {
   }
 });
 
-ipcMain.handle('get-user-data-path', async () => {
-  return { path: app.getPath('userData') };
-});
+  ipcMain.handle('get-user-data-path', async () => {
+    return { path: app.getPath('userData') };
+  });
 
-app.whenReady().then(() => {
-  createMainWindow();
-  // Application menu with basic file actions wired into the renderer
-  const template = [
+  app.on('open-url', (event, url) => {
+    event.preventDefault();
+    handleProtocolUrl(url);
+  });
+
+  app.whenReady().then(() => {
+    createMainWindow();
+    try {
+      app.setAsDefaultProtocolClient(PROTOCOL_NAME);
+    } catch (_) {}
+    const initialUrl = findProtocolArg(process.argv || []);
+    if (initialUrl) {
+      setTimeout(() => handleProtocolUrl(initialUrl), 300);
+    }
+    // Application menu with basic file actions wired into the renderer
+    const template = [
     {
       label: 'File',
       submenu: [
@@ -1118,9 +1163,9 @@ app.whenReady().then(() => {
         },
       ],
     },
-    {
-      label: 'Data',
-      submenu: [
+      {
+        label: 'Data',
+        submenu: [
         {
           label: 'Import CSV (File)...',
           click: () => {
@@ -1142,25 +1187,33 @@ app.whenReady().then(() => {
             if (win) win.webContents.send('fmr-menu', { action: 'csvImportSheet' });
           },
         },
-        {
-          label: 'Reload Sheet',
-          id: 'dataReloadCsv',
-          enabled: false,
-          click: () => {
-            const win = BrowserWindow.getFocusedWindow();
-            if (win) win.webContents.send('fmr-menu', { action: 'csvReload' });
+          {
+            label: 'Reload Sheet',
+            id: 'dataReloadCsv',
+            enabled: false,
+            click: () => {
+              const win = BrowserWindow.getFocusedWindow();
+              if (win) win.webContents.send('fmr-menu', { action: 'csvReload' });
+            },
           },
-        },
-        { type: 'separator' },
-        {
-          label: 'Generate from CSV...',
-          click: () => {
-            const win = BrowserWindow.getFocusedWindow();
-            if (win) win.webContents.send('fmr-menu', { action: 'csvGenerate' });
+          { type: 'separator' },
+          {
+            label: 'Generate from CSV...',
+            click: () => {
+              const win = BrowserWindow.getFocusedWindow();
+              if (win) win.webContents.send('fmr-menu', { action: 'csvGenerate' });
+            },
           },
-        },
-      ],
-    },
+          { type: 'separator' },
+          {
+            label: 'Insert Update Data Button',
+            click: () => {
+              const win = BrowserWindow.getFocusedWindow();
+              if (win) win.webContents.send('fmr-menu', { action: 'insertUpdateData' });
+            },
+          },
+        ],
+      },
     {
       label: 'Help',
       submenu: [

@@ -21,6 +21,8 @@ export function setupNativeBridge({
   onImportGoogleSheet,
   onReloadCsv,
   onGenerateFromCsv,
+  onInsertUpdateDataButton,
+  onProtocolUrl,
 }) {
   if (!isElectron || typeof window === 'undefined' || window.FusionMacroReordererNative) {
     return;
@@ -71,16 +73,26 @@ export function setupNativeBridge({
             if (typeof onReloadCsv === 'function') onReloadCsv();
           } else if (action === 'csvGenerate') {
             if (typeof onGenerateFromCsv === 'function') onGenerateFromCsv();
+          } else if (action === 'insertUpdateData') {
+            if (typeof onInsertUpdateDataButton === 'function') onInsertUpdateDataButton();
           }
         } catch (_) {
           /* ignore menu handler errors */
+        }
+      });
+
+      ipcRenderer.on('fmr-protocol', async (_event, payload = {}) => {
+        try {
+          if (typeof onProtocolUrl === 'function') onProtocolUrl(payload?.url || '');
+        } catch (_) {
+          /* ignore protocol handler errors */
         }
       });
     } catch (_) {
       /* ignore ipc wiring errors */
     }
 
-    return { ipcRenderer };
+  return { ipcRenderer };
   } catch (_) {
     // If require/electron fails, leave the bridge undefined.
     return null;

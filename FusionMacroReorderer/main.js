@@ -106,8 +106,73 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
   let activeCsvBatchId = null;
   let exportMenuController = null;
   let docTabContextMenu = null;
+  let pendingReloadAfterImport = false;
   let docTabsController = null;
   const textPrompt = createTextPrompt();
+
+  function openConfirmModal({ title, message, confirmText, cancelText } = {}) {
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'add-control-modal';
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+
+      const form = document.createElement('form');
+      form.className = 'add-control-form';
+
+      const header = document.createElement('header');
+      const headerWrap = document.createElement('div');
+      const titleEl = document.createElement('h3');
+      titleEl.textContent = title || 'Confirm';
+      headerWrap.appendChild(titleEl);
+
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.textContent = 'x';
+      closeBtn.setAttribute('aria-label', 'Close');
+      header.appendChild(headerWrap);
+      header.appendChild(closeBtn);
+
+      const body = document.createElement('div');
+      body.className = 'form-body';
+      const p = document.createElement('p');
+      p.textContent = message || 'Are you sure?';
+      body.appendChild(p);
+
+      const actions = document.createElement('div');
+      actions.className = 'modal-actions';
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.textContent = cancelText || 'Cancel';
+      const okBtn = document.createElement('button');
+      okBtn.type = 'submit';
+      okBtn.textContent = confirmText || 'OK';
+      actions.appendChild(cancelBtn);
+      actions.appendChild(okBtn);
+
+      form.appendChild(header);
+      form.appendChild(body);
+      form.appendChild(actions);
+      overlay.appendChild(form);
+      document.body.appendChild(overlay);
+
+      const cleanup = (value) => {
+        try { overlay.remove(); } catch (_) {}
+        resolve(value);
+      };
+
+      const onCancel = () => cleanup(false);
+      const onSubmit = (ev) => { ev.preventDefault(); cleanup(true); };
+      const onOverlayClick = (ev) => { if (ev.target === overlay) onCancel(); };
+      const onKeyDown = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); onCancel(); } };
+
+      cancelBtn.addEventListener('click', onCancel);
+      closeBtn.addEventListener('click', onCancel);
+      form.addEventListener('submit', onSubmit);
+      overlay.addEventListener('click', onOverlayClick);
+      document.addEventListener('keydown', onKeyDown, { once: true });
+    });
+  }
 
   function createDocumentMeta({ name, fileName } = {}) {
     return {
@@ -4759,14 +4824,16 @@ function hideDetailDrawer() {
       if (page) lines.push(page);
       return lines;
     }
-    if (type === 'button') {
-      const lines = [
-        `LINKS_Name = "${name}",`,
-        'INPID_InputControl = "ButtonControl",',
-      ];
-      if (page) lines.push(page);
-      return lines;
-    }
+      if (type === 'button') {
+        const lines = [
+          `LINKS_Name = "${name}",`,
+          'LINKID_DataType = "Number",',
+          'INP_Default = 0,',
+          'INPID_InputControl = "ButtonControl",',
+        ];
+        if (page) lines.push(page);
+        return lines;
+      }
     if (type === 'separator') {
       const lines = [
         `LINKS_Name = "${name}",`,
@@ -5259,6 +5326,8 @@ function hideDetailDrawer() {
       onImportGoogleSheet: () => importGoogleSheetFromUrl(),
       onReloadCsv: () => reloadCsvSource(),
       onGenerateFromCsv: () => generateSettingsFromCsv(),
+      onInsertUpdateDataButton: () => insertUpdateDataButton(),
+      onProtocolUrl: (url) => handleProtocolUrl(url),
     });
 
   function setExportButtonLabel(label) {
@@ -5804,11 +5873,18 @@ function hideDetailDrawer() {
         pendingOpenNodes.clear();
         nodesPane.parseAndRenderNodes();
       }
-      updateUtilityActionsState();
-      updateIntroToggleVisibility();
-      syncDataLinkPanel();
-      if (IS_ELECTRON) setIntroCollapsed(true);
-    } catch (err) {
+        updateUtilityActionsState();
+        updateIntroToggleVisibility();
+        syncDataLinkPanel();
+        if (pendingReloadAfterImport) {
+          pendingReloadAfterImport = false;
+          const source = state.parseResult?.dataLink?.source || '';
+          if (/^https?:/i.test(String(source || ''))) {
+            try { await reloadDataLinkForCurrentMacro(); } catch (_) {}
+          }
+        }
+        if (IS_ELECTRON) setIntroCollapsed(true);
+      } catch (err) {
       const msg = err.message || String(err);
       error(msg);
       logDiag(`Parse error: ${msg}`);
@@ -6870,6 +6946,146 @@ async function handleFile(file) {
     const url = normalizeCsvUrl(sourceName);
     if (!url) return;
     await fetchCsvFromUrl(url, sourceName);
+  }
+
+  const UPDATE_DATA_PROTOCOL = 'macromachine://reload';
+
+  function buildLauncherLuaForUrl(url) {
+    const safeUrl = String(url || '');
+    return [
+      `local url = "${safeUrl}"`,
+      'local sep = package.config:sub(1,1)',
+      'if sep == "\\\\" then',
+      '  os.execute(\'start "" "\'..url..\'"\')',
+      'else',
+      '  local uname = io.popen("uname"):read("*l")',
+      '  if uname == "Darwin" then',
+      '    os.execute(\'open "\'..url..\'"\')',
+      '  else',
+      '    os.execute(\'xdg-open "\'..url..\'"\')',
+      '  end',
+      'end',
+      '',
+    ].join('\n');
+  }
+
+  async function insertUpdateDataButton() {
+    if (!state.parseResult || !state.originalText) {
+      error('Load a macro before inserting the Update Data button.');
+      return;
+    }
+    const hasLink = !!(state.parseResult?.dataLink?.source || state.csvData?.sourceName);
+    if (!hasLink) {
+      const proceed = await openConfirmModal({
+        title: 'No data link found',
+        message: 'This macro does not have a data link yet. Insert the Update Data button anyway?',
+        confirmText: 'Insert Button',
+        cancelText: 'Cancel',
+      });
+      if (!proceed) return;
+    }
+    const pickPrimaryToolName = () => {
+      try {
+        const bounds = locateMacroGroupBounds(state.originalText, state.parseResult);
+        if (!bounds) return '';
+        const toolsBlock = findOrderedBlock(state.originalText, bounds.groupOpenIndex, bounds.groupCloseIndex, 'Tools');
+        if (!toolsBlock) return '';
+        const entries = parseOrderedBlockEntries(state.originalText, toolsBlock.open, toolsBlock.close);
+        return entries && entries.length ? entries[0].name : '';
+      } catch (_) { return ''; }
+    };
+    const primaryTool = pickPrimaryToolName();
+    const useNode = primaryTool && primaryTool !== state.parseResult.macroName;
+    const res = useNode
+      ? await addControlToNode(primaryTool, { name: 'Update Data', type: 'button', page: 'Controls' })
+      : await addControlToGroup({ name: 'Update Data', type: 'button', page: 'Controls' });
+    if (!res || !res.controlId) return;
+    const macroName = res.nodeName;
+    const idx = (state.parseResult.entries || []).findIndex(e => e && e.sourceOp === macroName && e.source === res.controlId);
+    if (idx < 0) {
+      error('Unable to locate the newly created Update Data button.');
+      return;
+    }
+    const lua = buildLauncherLuaForUrl(UPDATE_DATA_PROTOCOL);
+    updateEntryButtonExecute(idx, lua, { silent: true, skipHistory: true });
+    renderActiveList({ safe: true });
+    renderDetailDrawer(idx);
+    info('Inserted Update Data button. Use it in Fusion to open Macro Machine.');
+  }
+
+  function handleProtocolUrl(url) {
+    const raw = String(url || '').trim();
+    if (!raw) return;
+    if (raw.toLowerCase().startsWith(UPDATE_DATA_PROTOCOL)) {
+      openUpdateFromMacroModal();
+    }
+  }
+
+  function openUpdateFromMacroModal() {
+    if (!document || !document.body) return;
+    const overlay = document.createElement('div');
+    overlay.className = 'add-control-modal';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+
+    const form = document.createElement('form');
+    form.className = 'add-control-form';
+
+    const header = document.createElement('header');
+    const headerWrap = document.createElement('div');
+    const titleEl = document.createElement('h3');
+    titleEl.textContent = 'Update Data from Fusion';
+    headerWrap.appendChild(titleEl);
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.textContent = 'x';
+    closeBtn.setAttribute('aria-label', 'Close');
+    header.appendChild(headerWrap);
+    header.appendChild(closeBtn);
+
+    const body = document.createElement('div');
+    body.className = 'form-body';
+    const p = document.createElement('p');
+    p.textContent = 'Paste the macro from Fusion, then click Import to reload data links and export again.';
+    body.appendChild(p);
+
+    const actions = document.createElement('div');
+    actions.className = 'modal-actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.textContent = 'Cancel';
+    const importBtn = document.createElement('button');
+    importBtn.type = 'button';
+    importBtn.textContent = 'Import from Clipboard';
+    actions.appendChild(cancelBtn);
+    actions.appendChild(importBtn);
+
+    form.appendChild(header);
+    form.appendChild(body);
+    form.appendChild(actions);
+    overlay.appendChild(form);
+    document.body.appendChild(overlay);
+
+    const cleanup = () => {
+      try { overlay.remove(); } catch (_) {}
+    };
+    const onCancel = () => cleanup();
+    const onSubmit = (ev) => { ev.preventDefault(); };
+    const onOverlayClick = (ev) => { if (ev.target === overlay) onCancel(); };
+    const onKeyDown = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); onCancel(); } };
+
+    cancelBtn.addEventListener('click', onCancel);
+    closeBtn.addEventListener('click', onCancel);
+    form.addEventListener('submit', onSubmit);
+    overlay.addEventListener('click', onOverlayClick);
+    document.addEventListener('keydown', onKeyDown, { once: true });
+
+    importBtn.addEventListener('click', () => {
+      pendingReloadAfterImport = true;
+      try { importClipboardBtn && importClipboardBtn.click(); } catch (_) {}
+      cleanup();
+    });
   }
 
   function ensureDataLink(result) {
