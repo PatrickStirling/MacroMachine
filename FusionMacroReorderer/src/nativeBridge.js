@@ -61,8 +61,6 @@ export function setupNativeBridge({
             if (typeof setDiagnosticsEnabled === 'function') setDiagnosticsEnabled();
           } else if (action === 'normalizeLegacy') {
             if (typeof onNormalizeLegacyNames === 'function') onNormalizeLegacyNames();
-          } else if (action === 'addReloadButton') {
-            if (typeof onAddReloadButton === 'function') onAddReloadButton();
           } else if (action === 'csvImportFile') {
             if (typeof onImportCsvFile === 'function') onImportCsvFile();
           } else if (action === 'csvImportUrl') {

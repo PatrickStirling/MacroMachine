@@ -108,10 +108,12 @@ export function parseSetting(text) {
 function extractFmrDataLink(text) {
   try {
     if (!text) return null;
-    const re = /--\\s*FMR_DATA_LINK_BEGIN\\s*\\n--\\s*([\\s\\S]*?)\\n--\\s*FMR_DATA_LINK_END/;
-    const m = text.match(re);
-    if (!m || !m[1]) return null;
-    const json = m[1].replace(/^\\s*--\\s?/gm, '').trim();
+    const re = /--\s*FMR_DATA_LINK_BEGIN\s*\r?\n--\s*([\s\S]*?)\r?\n--\s*FMR_DATA_LINK_END/g;
+    const matches = Array.from(text.matchAll(re));
+    if (!matches.length) return null;
+    const last = matches[matches.length - 1];
+    if (!last || !last[1]) return null;
+    const json = last[1].replace(/^\\s*--\\s?/gm, '').trim();
     if (!json) return null;
     return JSON.parse(json);
   } catch (_) {

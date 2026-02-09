@@ -101,6 +101,7 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
   let docCounter = 1;
   let suppressDocDirty = false;
   let suppressDocTabsRender = false;
+  let pendingDocRenderTimer = null;
   let draggingDocId = null;
   let activeCsvBatchId = null;
   let exportMenuController = null;
@@ -395,7 +396,7 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
     return doc;
   }
 
-  function applyDocumentSnapshot(doc) {
+  function applyDocumentSnapshot(doc, options = {}) {
     const snap = doc && doc.snapshot ? doc.snapshot : null;
     const prevSuppress = suppressDocDirty;
     suppressDocDirty = true;
@@ -451,21 +452,42 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
       clearNodeSelectionBtn && (clearNodeSelectionBtn.disabled = true);
       pendingControlMeta.clear();
       pendingOpenNodes.clear();
-      publishedControls?.resetPageOptions?.();
-      renderActiveList();
-      refreshPageTabs?.();
-      updateRemoveSelectedState();
-      hideDetailDrawer();
-      clearHighlights?.();
-      nodesPane?.clearNodeSelection?.();
-      nodesPane?.parseAndRenderNodes?.();
-      updateUndoRedoState();
-      updateUtilityActionsState();
       updateExportButtonLabelFromPath(state.originalFilePath);
       updateIntroToggleVisibility();
+      if (options.deferHeavy) {
+        scheduleDeferredDocRender();
+      } else {
+        runHeavyDocumentRender();
+      }
     } finally {
       suppressDocDirty = prevSuppress;
     }
+  }
+
+  function runHeavyDocumentRender() {
+    publishedControls?.resetPageOptions?.();
+    renderActiveList();
+    refreshPageTabs?.();
+    updateRemoveSelectedState();
+    hideDetailDrawer();
+    clearHighlights?.();
+    nodesPane?.clearNodeSelection?.();
+    nodesPane?.parseAndRenderNodes?.();
+    updateUndoRedoState();
+    updateUtilityActionsState();
+  }
+
+  function scheduleDeferredDocRender() {
+    if (pendingDocRenderTimer) {
+      clearTimeout(pendingDocRenderTimer);
+      pendingDocRenderTimer = null;
+    }
+    const targetId = activeDocId;
+    pendingDocRenderTimer = setTimeout(() => {
+      pendingDocRenderTimer = null;
+      if (activeDocId !== targetId) return;
+      runHeavyDocumentRender();
+    }, 180);
   }
 
   function switchToDocument(docId) {
@@ -475,7 +497,7 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
     const next = documents.find((doc) => doc.id === docId);
     if (!next) return;
     activeDocId = next.id;
-    applyDocumentSnapshot(next);
+    applyDocumentSnapshot(next, { deferHeavy: true });
     renderDocTabs();
   }
 
@@ -726,7 +748,8 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
       return;
     }
     const hasCsv = !!(state.csvData && Array.isArray(state.csvData.headers) && state.csvData.headers.length);
-    if (!hasCsv) {
+    const hasLinkSource = !!(state.parseResult && state.parseResult.dataLink && state.parseResult.dataLink.source);
+    if (!hasCsv && !hasLinkSource) {
       dataLinkPanel.hidden = true;
       return;
     }
@@ -1095,86 +1118,6 @@ function updateDocExportPathDisplay() {
     }
   }
 
-  function buildMacroMachineReloadUrl(filePath) {
-    const pathValue = String(filePath || '').trim();
-    if (!pathValue) return 'macro-machine://reload';
-    return `macro-machine://reload?path=${encodeURIComponent(pathValue)}&reload=1`;
-  }
-
-  function updateReloadButtonOverrideForPath(result, filePath) {
-    try {
-      const pathValue = String(filePath || '').trim();
-      if (!pathValue) return false;
-      const res = result || state.parseResult;
-      if (!res) return false;
-      const macroName = res.macroName || res.macroNameOriginal;
-      if (!macroName) return false;
-      const entries = Array.isArray(res.entries) ? res.entries : [];
-      const target = entries.find((entry) => {
-        if (!entry || entry.sourceOp !== macroName) return false;
-        const label = String(entry.name || entry.source || '').toLowerCase().trim();
-        if (label !== 'reload data') return false;
-        const kind = String(entry.kind || entry.inputControl || '').toLowerCase();
-        return kind.includes('button');
-      });
-      if (!target || !target.source) return false;
-      if (!res.buttonOverrides) res.buttonOverrides = new Map();
-      res.buttonOverrides.set(`${macroName}.${target.source}`, buildMacroMachineReloadUrl(pathValue));
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  async function addReloadButtonMenu() {
-    try {
-      if (!state.parseResult || !state.originalText) {
-        info('Load a macro before inserting a reload button.');
-        return;
-      }
-      const macroName = state.parseResult.macroName || state.parseResult.macroNameOriginal;
-      if (!macroName) {
-        error('Unable to locate the macro name for this preset.');
-        return;
-      }
-      let reloadPath = state.originalFilePath || state.lastExportPath;
-      if (!reloadPath) {
-        try {
-          const activeDoc = getActiveDocument();
-          const snapFolder = activeDoc?.snapshot?.exportFolder || '';
-          const snapSelected = !!activeDoc?.snapshot?.exportFolderSelected;
-          const exportFolder = snapFolder || (snapSelected ? getFusionTemplatesPath() : '') || resolveExportFolderStrict();
-          const outName = buildMacroExportName();
-          if (exportFolder && outName) {
-            try {
-              // eslint-disable-next-line global-require
-              const pathMod = require('path');
-              reloadPath = pathMod.join(exportFolder, outName);
-            } catch (_) {
-              reloadPath = exportFolder.replace(/[\\/]+$/, '') + '\\' + outName;
-            }
-          }
-        } catch (_) {}
-      }
-      if (!reloadPath) {
-        error('Set an export folder or export the macro so a file path is available for reloading.');
-        return;
-      }
-      const res = await addControlToGroup({
-        name: 'Reload Data',
-        type: 'button',
-        page: 'Controls',
-      });
-      if (!res || !res.controlId) return;
-      if (!state.parseResult.buttonOverrides) state.parseResult.buttonOverrides = new Map();
-      state.parseResult.buttonOverrides.set(`${macroName}.${res.controlId}`, buildMacroMachineReloadUrl(reloadPath));
-      renderActiveList({ safe: true });
-      info('Added Reload Data button to the macro.');
-    } catch (err) {
-      error(err?.message || String(err));
-    }
-  }
-
   function normalizeLegacyToolDefinitions(text, bounds) {
     try {
       const { groupOpenIndex: open, groupCloseIndex: close } = bounds;
@@ -1476,7 +1419,7 @@ function updateDocExportPathDisplay() {
 
   function updateDataMenuState() {
     if (!nativeBridge || !nativeBridge.ipcRenderer) return;
-    const source = state.csvData?.sourceName || '';
+    const source = state.csvData?.sourceName || state.parseResult?.dataLink?.source || '';
     const reloadEnabled = /^https?:/i.test(String(source || ''));
     try {
       nativeBridge.ipcRenderer.invoke('set-data-menu-state', { reloadEnabled });
@@ -1792,6 +1735,7 @@ function updateDocExportPathDisplay() {
 
   const exportBtn = document.getElementById('exportBtn');
   const exportTemplatesBtn = document.getElementById('exportTemplatesBtn');
+  ensureDefaultMacroExplorerFolders();
 
   const exportClipboardBtn = document.getElementById('exportClipboardBtn');
   const importClipboardBtn = document.getElementById('importClipboardBtn');
@@ -3183,8 +3127,9 @@ function hideDetailDrawer() {
       currentWrap.className = 'detail-input-wrap';
       currentWrap.appendChild(currentInput);
       const hasCsv = !!(state.csvData && Array.isArray(state.csvData.headers) && state.csvData.headers.length);
+      const hasLinkSource = !!(state.parseResult && state.parseResult.dataLink && state.parseResult.dataLink.source);
       const canLinkCsv = isTextControl(entry);
-      if (canLinkCsv && hasCsv) {
+      if (canLinkCsv && (hasCsv || hasLinkSource || entry?.csvLink?.column)) {
         currentWrap.classList.add('has-action');
         const csvBtn = document.createElement('button');
         csvBtn.type = 'button';
@@ -3199,6 +3144,10 @@ function hideDetailDrawer() {
           ev.preventDefault();
           ev.stopPropagation();
           const headers = state.csvData?.headers || [];
+          if (!headers.length) {
+            error('Import a CSV or Google Sheet first.');
+            return;
+          }
           const picked = await openCsvColumnPicker({
             title: 'Link CSV column',
             headers,
@@ -5181,7 +5130,6 @@ function hideDetailDrawer() {
       },
       handleNativeOpen,
       onNormalizeLegacyNames: () => normalizeLegacyNamesMenu(),
-      onAddReloadButton: () => addReloadButtonMenu(),
       onImportCsvFile: () => importCsvFromFile(),
       onImportCsvUrl: () => importCsvFromUrl(),
       onImportGoogleSheet: () => importGoogleSheetFromUrl(),
@@ -5228,9 +5176,6 @@ function hideDetailDrawer() {
       if (!filePath) return;
       try {
         await handleDroppedPath(filePath);
-        if (payload.reloadDataLink) {
-          await reloadDataLinkForCurrentMacro();
-        }
       } catch (_) {
         /* ignore open-path errors */
       }
@@ -5540,6 +5485,24 @@ function hideDetailDrawer() {
     }
   }
 
+  function ensureDefaultMacroExplorerFolders() {
+    if (!IS_ELECTRON) return;
+    const templates = getFusionTemplatesPath();
+    if (!templates) return;
+    try {
+      // eslint-disable-next-line global-require
+      const fs = require('fs');
+      // eslint-disable-next-line global-require
+      const path = require('path');
+      if (!fs.existsSync(templates)) return;
+      const editRoot = path.join(templates, 'Edit');
+      fs.mkdirSync(editRoot, { recursive: true });
+      ['Transitions', 'Effects', 'Titles', 'Generators'].forEach((name) => {
+        fs.mkdirSync(path.join(editRoot, name), { recursive: true });
+      });
+    } catch (_) {}
+  }
+
   function resolveExportFolder() {
     return state.exportFolder || getFusionTemplatesPath();
   }
@@ -5659,9 +5622,16 @@ function hideDetailDrawer() {
       hydrateLabelVisibility(state.originalText, state.parseResult);
       hydrateControlMetadata(state.originalText, state.parseResult);
       if (!state.parseResult.operatorType) state.parseResult.operatorType = state.parseResult.operatorTypeOriginal || 'GroupOperator';
+      const hiddenLink = extractHiddenDataLink(state.originalText, state.parseResult)
+        || extractHiddenDataLinkFallback(state.originalText);
+      if (hiddenLink) {
+        state.parseResult.dataLink = hiddenLink;
+      }
       if (state.parseResult.dataLink) {
         applyFmrDataLinkToEntries(state.parseResult);
       }
+      updateDataMenuState();
+      syncDataLinkPanel();
       syncOperatorSelect();
       publishedControls.resetPageOptions?.();
       state.parseResult.buttonExactInsert = new Set();
@@ -6053,14 +6023,15 @@ async function handleFile(file) {
     if (!state.parseResult) return;
     try {
       const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, { includeDataLink: true });
-      const outName = suggestOutputName(state.originalFileName);
+      const macroName = (state.parseResult.macroName || '').trim();
+      const baseName = macroName ? `${macroName}.setting` : state.originalFileName;
+      const outName = suggestOutputName(baseName);
       const defaultPath = buildExportDefaultPath(outName);
       const native = getNativeApi();
       if (native && typeof native.saveSettingFile === 'function') {
         try {
           const res = await native.saveSettingFile({ defaultPath, content: newContent });
         if (res && res.filePath) {
-          updateReloadButtonOverrideForPath(state.parseResult, res.filePath);
           state.lastExportPath = res.filePath;
           const doc = getActiveDocument();
           if (doc) storeDocumentSnapshot(doc);
@@ -6127,7 +6098,6 @@ async function handleFile(file) {
             const outName = buildMacroExportNameForSnapshot(snap);
             const targetFolder = snap.exportFolder || state.exportFolder || resolveExportFolder();
             const destPath = writeSettingToFolder(targetFolder, outName, newContent);
-            updateReloadButtonOverrideForPath(snap.parseResult || snap, destPath);
             snap.lastExportPath = destPath;
             doc.isDirty = false;
             results.push({ name: outName, path: destPath, ok: true });
@@ -6164,7 +6134,6 @@ async function handleFile(file) {
       const targetFolder = resolveExportFolder();
       const destPath = writeSettingToFolder(targetFolder, outName, newContent);
       info(`Exported to ${destPath}`);
-      updateReloadButtonOverrideForPath(state.parseResult, destPath);
       state.lastExportPath = destPath;
       const doc = getActiveDocument();
       if (doc) storeDocumentSnapshot(doc);
@@ -7133,6 +7102,7 @@ async function handleFile(file) {
     const patchPlan = buildCsvPatchPlan(baseText, result, linkedText);
     const useFastPath = Array.isArray(patchPlan) && patchPlan.length > 0;
     const rowLabels = buildUniqueCsvNames(rows, nameColumn, baseName);
+    const baseLink = ensureDataLink(result);
     const applyHexRowEdits = (text, row, resultRef) => {
       if (!linkedHex.length) return text;
       let updated = text;
@@ -7164,6 +7134,9 @@ async function handleFile(file) {
     for (let i = 0; i < rows.length; i += 1) {
       const row = rows[i] || {};
       const rowLabel = rowLabels[i] || `${baseName} ${i + 1}`;
+      const rowLink = baseLink
+        ? { ...baseLink, rowMode: 'index', rowIndex: i + 1 }
+        : null;
       let content = '';
       if (useFastPath) {
         let workingText = applyCsvRowEdits(baseText, patchPlan, row, eol);
@@ -7173,15 +7146,25 @@ async function handleFile(file) {
           macroName: rowLabel,
           operatorType: result.operatorType || result.operatorTypeOriginal || 'GroupOperator',
           operatorTypeOriginal: result.operatorTypeOriginal || result.operatorType || 'GroupOperator',
+          dataLink: rowLink || null,
+          csvData,
+          entries: result.entries || [],
         };
         workingText = applyMacroNameRename(workingText, tmpResult);
         const safeMacroName = deriveSafeMacroName(rowLabel, result);
         workingText = ensureActiveToolName(workingText, safeMacroName, eol);
+        const linkPayload = buildFmrDataLinkPayload(tmpResult);
         content = workingText;
+        if (linkPayload) {
+          content = stripFmrDataLinkBlock(content);
+          content += buildFmrDataLinkBlock(linkPayload, eol);
+        }
       } else {
         const resultClone = cloneParseResultForCsv(result);
         if (!resultClone) continue;
         resultClone.macroName = rowLabel;
+        resultClone.dataLink = rowLink || null;
+        resultClone.csvData = csvData;
         let workingText = baseText;
         const entries = resultClone.entries || [];
         entries.forEach((entry) => {
@@ -8228,7 +8211,96 @@ async function handleFile(file) {
 
   function stripFmrDataLinkBlock(text) {
     if (!text) return text;
-    return text.replace(/\\n?--\\s*FMR_DATA_LINK_BEGIN\\s*[\\s\\S]*?--\\s*FMR_DATA_LINK_END\\s*\\n?/g, '\\n');
+    return text.replace(/\s*--\s*FMR_DATA_LINK_BEGIN[\s\S]*?--\s*FMR_DATA_LINK_END\s*/g, '\n');
+  }
+
+  const FMR_DATA_LINK_CONTROL = 'FMR_DataLink';
+
+  function extractHiddenDataLink(text, result) {
+    try {
+      if (!text) return null;
+      const bounds = locateMacroGroupBounds(text, result);
+      if (!bounds) return null;
+      const uc = findGroupUserControlsBlock(text, bounds.groupOpenIndex, bounds.groupCloseIndex);
+      if (!uc) return null;
+      const block = findControlBlockInUc(text, uc.openIndex, uc.closeIndex, FMR_DATA_LINK_CONTROL);
+      if (!block) return null;
+      const body = text.slice(block.open + 1, block.close);
+      const raw = extractControlPropValue(body, 'INP_Default');
+      if (!raw) return null;
+      let json = raw.trim();
+      if (json.startsWith('"') && json.endsWith('"')) {
+        json = unescapeSettingString(json.slice(1, -1));
+      }
+      json = (json || '').trim();
+      if (!json) return null;
+      return JSON.parse(json);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function extractHiddenDataLinkFallback(text) {
+    try {
+      if (!text) return null;
+      const re = /FMR_DataLink\s*=\s*\{[\s\S]*?INP_Default\s*=\s*("([^"\\]|\\.)*")/g;
+      let match = null;
+      let last = null;
+      // eslint-disable-next-line no-cond-assign
+      while ((match = re.exec(text)) !== null) {
+        last = match[1];
+      }
+      if (!last) return null;
+      let json = last.trim();
+      if (json.startsWith('"') && json.endsWith('"')) {
+        json = unescapeSettingString(json.slice(1, -1));
+      }
+      json = (json || '').trim();
+      if (!json) return null;
+      return JSON.parse(json);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function upsertHiddenDataLinkControl(text, result, link, eol) {
+    try {
+      if (!text) return text;
+      const bounds = locateMacroGroupBounds(text, result);
+      if (!bounds) return text;
+      const ensured = ensureGroupUserControlsBlockExists(text, bounds, eol || '\n', result);
+      let updated = ensured.text;
+      const uc = ensured.block || findGroupUserControlsBlock(updated, bounds.groupOpenIndex, bounds.groupCloseIndex);
+      if (!uc) return updated;
+      const controlId = FMR_DATA_LINK_CONTROL;
+      let block = findControlBlockInUc(updated, uc.openIndex, uc.closeIndex, controlId);
+      if (!block) {
+        const defaultJson = link ? JSON.stringify(link) : '';
+        const safeJson = `"${escapeSettingString(defaultJson)}"`;
+        const lines = [
+          `LINKS_Name = "FMR Data Link",`,
+          `INPID_InputControl = "TextEditControl",`,
+          `ICS_ControlPage = "Controls",`,
+          `IC_Visible = false,`,
+          `INP_Default = ${safeJson},`,
+        ];
+        updated = insertUserControlBlock(updated, { open: uc.openIndex, close: uc.closeIndex }, controlId, lines, eol || '\n');
+        block = findControlBlockInUc(updated, uc.openIndex, uc.closeIndex, controlId);
+        if (!block) return updated;
+      }
+      const indent = (getLineIndent(updated, block.open) || '') + '\t';
+      let body = updated.slice(block.open + 1, block.close);
+      body = upsertControlProp(body, 'IC_Visible', 'false', indent, eol || '\n');
+      if (link) {
+        const safeJson = `"${escapeSettingString(JSON.stringify(link))}"`;
+        body = upsertControlProp(body, 'INP_Default', safeJson, indent, eol || '\n');
+      } else {
+        body = removeControlProp(body, 'INP_Default');
+      }
+      return updated.slice(0, block.open + 1) + body + updated.slice(block.close);
+    } catch (_) {
+      return text;
+    }
   }
 
   function buildFmrDataLinkPayload(result) {
@@ -8438,9 +8510,9 @@ async function handleFile(file) {
       updated = ensureGroupInputsBlock(updated, result, eol);
       updated = rewritePrimaryInputsBlock(updated, result, eol);
       updated = ensureActiveToolName(updated, (result?.macroName || result?.macroNameOriginal || '').trim(), eol);
-      if (dataLink) {
+      if (options.includeDataLink !== false) {
         updated = stripFmrDataLinkBlock(updated);
-        updated += buildFmrDataLinkBlock(dataLink, eol);
+        updated = upsertHiddenDataLinkControl(updated, result, dataLink, eol);
       }
       return updated;
     }
@@ -12543,7 +12615,28 @@ end
       return out;
     } catch(_) { return text; }
   }
+  let validationTimer = null;
+  let pendingValidationContext = null;
+
   function runValidation(context) {
+    try {
+      const entries = state.parseResult?.entries || [];
+      const isLarge = entries.length > 250;
+      if (isLarge && context !== 'manual') {
+        pendingValidationContext = context || 'auto';
+        if (validationTimer) clearTimeout(validationTimer);
+        validationTimer = setTimeout(() => {
+          validationTimer = null;
+          runValidationNow(pendingValidationContext);
+          pendingValidationContext = null;
+        }, 250);
+        return [];
+      }
+    } catch (_) {}
+    return runValidationNow(context);
+  }
+
+  function runValidationNow(context) {
     try {
       if (!state.parseResult || !state.originalText) return [];
       const issues = [];

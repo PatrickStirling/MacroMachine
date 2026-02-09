@@ -1,6 +1,6 @@
 {
   "name": "fusion-macro-reorderer-electron",
-  "version": "0.2.30",
+  "version": "0.2.31",
   "description": "Desktop wrapper for Macro Machine",
   "main": "main.js",
   "dependencies": {
@@ -48,14 +48,6 @@
     "win": {
       "target": "nsis"
     },
-    "protocols": [
-      {
-        "name": "Macro Machine",
-        "schemes": [
-          "macro-machine"
-        ]
-      }
-    ],
     "publish": [
       {
         "provider": "github",

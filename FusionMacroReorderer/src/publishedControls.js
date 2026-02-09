@@ -549,9 +549,27 @@ export function createPublishedControls({
       }
     } catch (_) {}
 
-    for (let pos = 0; pos < order.length; pos++) {
-      const idx = order[pos];
-      const e = entries[idx];
+    let pos = 0;
+    const total = order.length;
+    const useChunking = total > 250 && typeof requestAnimationFrame === 'function';
+    const finalize = () => {
+      refreshNodesChecks();
+      refreshPageTabsInternal();
+      syncDetailTarget();
+      try {
+        if (Array.isArray(order)) {
+          order.forEach((idx, pos) => {
+            const entry = entries[idx];
+            if (entry) entry.sortIndex = pos;
+          });
+        }
+      } catch (_) {}
+    };
+    const runChunk = () => {
+      const start = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      while (pos < total) {
+        const idx = order[pos];
+        const e = entries[idx];
       if (e && e.locked) continue;
       const filterPage = activePage;
       if (filterPage && getEntryPage(e) !== filterPage) continue;
@@ -843,22 +861,23 @@ export function createPublishedControls({
       addDragHandlers(li, entries, order);
       controlsList.appendChild(li);
 
-      let skip = 0;
-      if (e.isLabel && e.labelCount > 0 && collapsed.has(idx)) skip += e.labelCount;
-      if (cgBlk && cgBlk.firstIndex === idx && cgBlk.count >= 2 && e.sourceOp && Number.isFinite(e.controlGroup) && collapsedCG.has(getCgKey(e))) skip += (cgBlk.count - 1);
-      if (skip > 0) pos += skip;
-    }
-    refreshNodesChecks();
-    refreshPageTabsInternal();
-    syncDetailTarget();
-    try {
-      if (Array.isArray(order)) {
-        order.forEach((idx, pos) => {
-          const entry = entries[idx];
-          if (entry) entry.sortIndex = pos;
-        });
+        let skip = 0;
+        if (e.isLabel && e.labelCount > 0 && collapsed.has(idx)) skip += e.labelCount;
+        if (cgBlk && cgBlk.firstIndex === idx && cgBlk.count >= 2 && e.sourceOp && Number.isFinite(e.controlGroup) && collapsedCG.has(getCgKey(e))) skip += (cgBlk.count - 1);
+        if (skip > 0) pos += skip;
+        pos += 1;
+        if (useChunking) {
+          const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+          if (now - start > 12) break;
+        }
       }
-    } catch (_) {}
+      if (useChunking && pos < total) {
+        requestAnimationFrame(runChunk);
+      } else {
+        finalize();
+      }
+    };
+    runChunk();
     if (notifyRenderList) {
       try { notifyRenderList(); } catch (_) {}
     }
