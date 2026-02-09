@@ -6969,6 +6969,17 @@ async function handleFile(file) {
     ].join('\n');
   }
 
+  function isUpdateDataButtonEntry(entry) {
+    try {
+      if (!entry) return false;
+      const display = String(entry.name || entry.displayName || '').trim().toLowerCase();
+      if (display === 'update data') return true;
+      const source = String(entry.source || '').trim().toLowerCase();
+      if (source === 'update_data' || source.startsWith('update_data')) return true;
+      return false;
+    } catch (_) { return false; }
+  }
+
   async function insertUpdateDataButton() {
     if (!state.parseResult || !state.originalText) {
       error('Load a macro before inserting the Update Data button.');
@@ -9193,22 +9204,23 @@ async function handleFile(file) {
       const grp = locateMacroGroupBounds(text, result);
       if (!grp) return text;
       const keep = new Set();
-      if (result.insertClickedKeys instanceof Set) {
-        result.insertClickedKeys.forEach((key) => keep.add(key));
-      }
-      if (result.buttonExactInsert instanceof Set) {
-        result.buttonExactInsert.forEach((key) => keep.add(key));
-      }
+        if (result.insertClickedKeys instanceof Set) {
+          result.insertClickedKeys.forEach((key) => keep.add(key));
+        }
+        if (result.buttonExactInsert instanceof Set) {
+          result.buttonExactInsert.forEach((key) => keep.add(key));
+        }
       let out = text;
       for (const e of (result.entries || [])) {
         if (!e || !e.sourceOp || !e.source) continue;
         // Only manage published ButtonControls and skip YouTubeButton template
-        try {
-          if (String(e.source) === 'YouTubeButton') continue;
-          if (!isButtonControl(out, grp.groupOpenIndex, grp.groupCloseIndex, e.sourceOp, e.source)) continue;
-          const key = `${e.sourceOp}.${e.source}`;
-          if (keep.has(key)) continue; // preserve for explicit inserts
-          // tool-level
+          try {
+            if (String(e.source) === 'YouTubeButton') continue;
+            if (!isButtonControl(out, grp.groupOpenIndex, grp.groupCloseIndex, e.sourceOp, e.source)) continue;
+            const key = `${e.sourceOp}.${e.source}`;
+            if (isUpdateDataButtonEntry(e)) keep.add(key);
+            if (keep.has(key)) continue; // preserve for explicit inserts
+            // tool-level
           const tb = findToolBlockInGroup(out, grp.groupOpenIndex, grp.groupCloseIndex, e.sourceOp);
           let uc = tb ? findUserControlsInTool(out, tb.open, tb.close) : null;
           if (!uc) uc = findUserControlsInGroup(out, grp.groupOpenIndex, grp.groupCloseIndex);
