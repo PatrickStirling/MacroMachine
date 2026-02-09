@@ -302,6 +302,9 @@ export function createPublishedControls({
     if (name === 'pin') {
       return `<svg xmlns="${ns}" width="${w}" height="${h}" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M9 1 6 4l2 2-3 4-2 1 1-2 4-3-2-2 3-3 2 2 1-1 1 1-1 1 2 2-1 1-2-2-3 3 2 2-1 1-2-2-3 2 2-3-2-2 1-1 2 2 3-3z"/></svg>`;
     }
+    if (name === 'link') {
+      return `<svg xmlns="${ns}" width="${w}" height="${h}" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M6.9 4.3 5.5 5.7l-1-1L6.2 3c1.2-1.2 3.1-1.2 4.2 0l2.1 2.1c1.2 1.2 1.2 3.1 0 4.2l-1.7 1.7-1-1 1.7-1.7c.7-.7.7-1.8 0-2.5L9.4 3.6c-.7-.7-1.8-.7-2.5 0Zm2.2 7.4-1.4 1.4c-1.2 1.2-3.1 1.2-4.2 0L1.4 11c-1.2-1.2-1.2-3.1 0-4.2l1.7-1.7 1 1-1.7 1.7c-.7.7-.7 1.8 0 2.5l2.1 2.1c.7.7 1.8.7 2.5 0l1.4-1.4 1 1Zm-4.3-1.1 6-6 1 1-6 6-1-1Z"/></svg>`;
+    }
     if (name === 'eye-open') {
       return `<svg xmlns="${ns}" width="${w}" height="${h}" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 3.5c3.1 0 5.7 2 7 4.5-1.3 2.5-3.9 4.5-7 4.5s-5.7-2-7-4.5c1.3-2.5 3.9-4.5 7-4.5Zm0 1.4c-2.2 0-4.2 1.4-5.2 3.1 1 1.7 3 3.1 5.2 3.1s4.2-1.4 5.2-3.1c-1-1.7-3-3.1-5.2-3.1Zm0 1.1a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5Zm0 1.2a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6Z"/></svg>`;
     }
@@ -778,8 +781,8 @@ export function createPublishedControls({
       buttons.className = 'row-buttons';
       const goBtn = document.createElement('button');
       goBtn.type = 'button';
-      goBtn.innerHTML = createIcon('chevron-right');
-      goBtn.title = 'Jump to node';
+      goBtn.innerHTML = createIcon('link');
+      goBtn.title = 'Locate in Nodes';
       goBtn.addEventListener('click', (ev) => {
         ev.stopPropagation();
         if (e && e.sourceOp && e.source) { try { clearHighlights(); highlightHandler(e.sourceOp, e.source); } catch (_) {} }

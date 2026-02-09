@@ -2120,45 +2120,49 @@ function hideDetailDrawer() {
       if (!text) return { names, types };
       const bounds = locateMacroGroupBounds(text, result);
       if (!bounds) return { names, types };
-      const toolsPos = text.indexOf('Tools = ordered()', bounds.groupOpenIndex);
-      if (toolsPos < 0 || toolsPos > bounds.groupCloseIndex) return { names, types };
-      const open = text.indexOf('{', toolsPos);
-      if (open < 0) return { names, types };
-      const close = findMatchingBrace(text, open);
-      if (close < 0 || close > bounds.groupCloseIndex) return { names, types };
-      const inner = text.slice(open + 1, close);
-      let i = 0;
-      let depth = 0;
-      let inStr = false;
-      while (i < inner.length) {
-        const ch = inner[i];
-        if (inStr) { if (ch === '"' && !isQuoteEscaped(inner, i)) inStr = false; i++; continue; }
-        if (ch === '"') { inStr = true; i++; continue; }
-        if (ch === '{') { depth++; i++; continue; }
-        if (ch === '}') { depth--; i++; continue; }
-        if (depth === 0 && isIdentStart(ch)) {
-          const nameStart = i; i++;
-          while (i < inner.length && isIdentPart(inner[i])) i++;
-          const toolName = inner.slice(nameStart, i).trim();
-          if (isLuaIdentifier(toolName)) names.add(toolName);
-          while (i < inner.length && isSpace(inner[i])) i++;
-          if (inner[i] !== '=') { i++; continue; }
+      const blocks = ['Tools', 'Modifiers'];
+      const scanBlock = (blockName) => {
+        const blockPos = text.indexOf(`${blockName} = ordered()`, bounds.groupOpenIndex);
+        if (blockPos < 0 || blockPos > bounds.groupCloseIndex) return;
+        const open = text.indexOf('{', blockPos);
+        if (open < 0) return;
+        const close = findMatchingBrace(text, open);
+        if (close < 0 || close > bounds.groupCloseIndex) return;
+        const inner = text.slice(open + 1, close);
+        let i = 0;
+        let depth = 0;
+        let inStr = false;
+        while (i < inner.length) {
+          const ch = inner[i];
+          if (inStr) { if (ch === '"' && !isQuoteEscaped(inner, i)) inStr = false; i++; continue; }
+          if (ch === '"') { inStr = true; i++; continue; }
+          if (ch === '{') { depth++; i++; continue; }
+          if (ch === '}') { depth--; i++; continue; }
+          if (depth === 0 && isIdentStart(ch)) {
+            const nameStart = i; i++;
+            while (i < inner.length && isIdentPart(inner[i])) i++;
+            const toolName = inner.slice(nameStart, i).trim();
+            if (isLuaIdentifier(toolName)) names.add(toolName);
+            while (i < inner.length && isSpace(inner[i])) i++;
+            if (inner[i] !== '=') { i++; continue; }
+            i++;
+            while (i < inner.length && isSpace(inner[i])) i++;
+            const typeStart = i;
+            while (i < inner.length && isIdentPart(inner[i])) i++;
+            const toolType = inner.slice(typeStart, i).trim();
+            if (toolName && toolType) types.set(toolName, toolType);
+            while (i < inner.length && isSpace(inner[i])) i++;
+            if (inner[i] !== '{') { i++; continue; }
+            const tOpen = i;
+            const tClose = findMatchingBrace(inner, tOpen);
+            if (tClose < 0) break;
+            i = tClose + 1;
+            continue;
+          }
           i++;
-          while (i < inner.length && isSpace(inner[i])) i++;
-          const typeStart = i;
-          while (i < inner.length && isIdentPart(inner[i])) i++;
-          const toolType = inner.slice(typeStart, i).trim();
-          if (toolName && toolType) types.set(toolName, toolType);
-          while (i < inner.length && isSpace(inner[i])) i++;
-          if (inner[i] !== '{') { i++; continue; }
-          const tOpen = i;
-          const tClose = findMatchingBrace(inner, tOpen);
-          if (tClose < 0) break;
-          i = tClose + 1;
-          continue;
         }
-        i++;
-      }
+      };
+      blocks.forEach(scanBlock);
       return { names, types };
     } catch (_) {
       return { names, types };
@@ -3019,6 +3023,7 @@ function hideDetailDrawer() {
     activeDetailEntryIndex = index;
     drawerMode = DRAWER_MODE.CONTROL;
     const entry = state.parseResult.entries[index];
+    hydrateTextControlMeta(entry);
     applyDrawerState(true);
     detailDrawerTitle.textContent = entry.displayName || entry.name || entry.source || 'Control';
     detailDrawerTitle.contentEditable = 'true';
@@ -3530,6 +3535,32 @@ function hideDetailDrawer() {
       currentRow.appendChild(currentGroup);
       refreshCurrent();
       defaultsField.appendChild(currentRow);
+      if (isTextControl(entry)) {
+        const linesRow = document.createElement('div');
+        linesRow.className = 'detail-default-row';
+        const linesItem = document.createElement('div');
+        linesItem.className = 'detail-default-item';
+        const linesLabel = document.createElement('span');
+        linesLabel.textContent = 'Lines';
+        const linesInput = document.createElement('input');
+        linesInput.type = 'number';
+        linesInput.min = '1';
+        linesInput.max = '20';
+        const metaLines = entry?.controlMeta?.textLines ?? entry?.controlMetaOriginal?.textLines;
+        const parsed = metaLines != null ? Number(String(metaLines).replace(/"/g, '').trim()) : NaN;
+        const initial = Number.isFinite(parsed) ? parsed : 8;
+        linesInput.value = String(initial);
+        linesInput.addEventListener('change', () => {
+          setEntryTextLines(index, linesInput.value);
+        });
+        linesInput.addEventListener('blur', () => {
+          setEntryTextLines(index, linesInput.value);
+        });
+        linesItem.appendChild(linesLabel);
+        linesItem.appendChild(linesInput);
+        linesRow.appendChild(linesItem);
+        defaultsField.appendChild(linesRow);
+      }
       if (!isTextControl(entry)) {
         const defaultRow = document.createElement('div');
         defaultRow.className = 'detail-default-row';
@@ -3841,6 +3872,44 @@ function hideDetailDrawer() {
     if (defaultStr.toLowerCase().includes('styledtext')) return true;
     if (defaultStr.startsWith('"') && defaultStr.endsWith('"')) return true;
     return false;
+  }
+
+  function hydrateTextControlMeta(entry) {
+    try {
+      if (!entry || !state.parseResult || !state.originalText) return;
+      if (!isTextControl(entry)) return;
+      const hasLines = entry?.controlMeta?.textLines != null || entry?.controlMetaOriginal?.textLines != null;
+      const hasInput = entry?.controlMeta?.inputControl != null || entry?.controlMetaOriginal?.inputControl != null;
+      if (hasLines && hasInput) return;
+      const bounds = locateMacroGroupBounds(state.originalText, state.parseResult) || {
+        groupOpenIndex: 0,
+        groupCloseIndex: state.originalText.length
+      };
+      let toolBlock = findToolBlockInGroup(state.originalText, bounds.groupOpenIndex, bounds.groupCloseIndex, entry.sourceOp);
+      if (!toolBlock) toolBlock = findToolBlockAnywhere(state.originalText, entry.sourceOp);
+      if (!toolBlock) return;
+      let controlBlock = findControlBlockInTool(state.originalText, toolBlock.open, toolBlock.close, entry.source);
+      if (!controlBlock) {
+        const toolUc = findUserControlsInTool(state.originalText, toolBlock.open, toolBlock.close);
+        if (toolUc) controlBlock = findControlBlockInUc(state.originalText, toolUc.open, toolUc.close, entry.source);
+      }
+      if (!controlBlock) return;
+      const body = state.originalText.slice(controlBlock.open + 1, controlBlock.close);
+      const meta = entry.controlMeta || {};
+      const metaOrig = entry.controlMetaOriginal || {};
+      const inputControl = extractControlPropValue(body, 'INPID_InputControl');
+      const textLines = extractControlPropValue(body, 'TEC_Lines');
+      if (inputControl != null) {
+        meta.inputControl = meta.inputControl || inputControl;
+        metaOrig.inputControl = metaOrig.inputControl || inputControl;
+      }
+      if (textLines != null) {
+        meta.textLines = meta.textLines || textLines;
+        metaOrig.textLines = metaOrig.textLines || textLines;
+      }
+      entry.controlMeta = meta;
+      entry.controlMetaOriginal = metaOrig;
+    } catch (_) {}
   }
 
   function isCheckboxControl(entry) {
@@ -5033,6 +5102,56 @@ function hideDetailDrawer() {
     pushHistory('edit control range');
     entry.controlMeta[key] = next;
     entry.controlMetaDirty = true;
+    renderDetailDrawer(index);
+    markContentDirty();
+  }
+
+  function setEntryTextLines(index, value) {
+    if (!state.parseResult || !Array.isArray(state.parseResult.entries)) return;
+    const entry = state.parseResult.entries[index];
+    if (!entry) return;
+    if (!isTextControl(entry)) return;
+    const inputControl = normalizeInputControlValue(
+      entry?.controlMeta?.inputControl || entry?.controlMetaOriginal?.inputControl
+    );
+    if (inputControl && !/texteditcontrol/i.test(inputControl)) return;
+    const num = Number(String(value || '').trim());
+    if (!Number.isFinite(num)) return;
+    const nextVal = Math.max(1, Math.min(20, Math.round(num)));
+    const currentRaw = entry.controlMeta?.textLines ?? entry.controlMetaOriginal?.textLines ?? null;
+    const current = currentRaw != null ? Number(String(currentRaw).replace(/"/g, '').trim()) : null;
+    if (Number.isFinite(current) && current === nextVal) return;
+    pushHistory('edit text lines');
+    entry.controlMeta = entry.controlMeta || {};
+    entry.controlMetaOriginal = entry.controlMetaOriginal || {};
+    entry.controlMeta.textLines = String(nextVal);
+    entry.controlMetaDirty = true;
+
+    const bounds = locateMacroGroupBounds(state.originalText, state.parseResult);
+    if (!bounds) return;
+    let toolBlock = null;
+    if (entry.sourceOp) {
+      toolBlock = findToolBlockInGroup(state.originalText, bounds.groupOpenIndex, bounds.groupCloseIndex, entry.sourceOp);
+      if (!toolBlock) toolBlock = findToolBlockAnywhere(state.originalText, entry.sourceOp);
+    }
+    let cb = null;
+    if (toolBlock) {
+      cb = findControlBlockInTool(state.originalText, toolBlock.open, toolBlock.close, entry.source);
+    }
+    if (!cb && toolBlock) {
+      const uc = findUserControlsInTool(state.originalText, toolBlock.open, toolBlock.close);
+      if (uc) cb = findControlBlockInUc(state.originalText, uc.open, uc.close, entry.source);
+    }
+    if (!cb) {
+      const uc = findUserControlsInGroup(state.originalText, bounds.groupOpenIndex, bounds.groupCloseIndex);
+      if (uc) cb = findControlBlockInUc(state.originalText, uc.open, uc.close, entry.source);
+    }
+    if (!cb) return;
+    const indent = (getLineIndent(state.originalText, cb.open) || '') + '\t';
+    let body = state.originalText.slice(cb.open + 1, cb.close);
+    body = upsertControlProp(body, 'TEC_Lines', String(nextVal), indent, state.newline || '\n');
+    state.originalText = state.originalText.slice(0, cb.open + 1) + body + state.originalText.slice(cb.close);
+    updateCodeView(state.originalText || '');
     renderDetailDrawer(index);
     markContentDirty();
   }
@@ -6425,12 +6544,21 @@ async function handleFile(file) {
     list.style.display = 'flex';
     list.style.flexDirection = 'column';
     list.style.gap = '6px';
-    results.forEach((r) => {
+    const maxItems = 30;
+    const shown = results.slice(0, maxItems);
+    shown.forEach((r) => {
       const line = document.createElement('div');
       line.textContent = r.ok ? r.name : `${r.name} (failed)`;
       if (!r.ok) line.style.color = 'var(--danger)';
       list.appendChild(line);
     });
+    if (results.length > maxItems) {
+      const remaining = results.length - maxItems;
+      const more = document.createElement('div');
+      more.textContent = `+ ${remaining} more...`;
+      more.style.color = 'var(--muted)';
+      list.appendChild(more);
+    }
     body.appendChild(summaryEl);
     body.appendChild(list);
     const actions = document.createElement('footer');
@@ -6438,6 +6566,28 @@ async function handleFile(file) {
     okBtn.type = 'submit';
     okBtn.className = 'primary';
     okBtn.textContent = 'OK';
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'secondary';
+    copyBtn.textContent = 'Copy List';
+    copyBtn.addEventListener('click', async () => {
+      try {
+        const lines = results.map(r => (r.ok ? r.name : `${r.name} (failed)`)).join('\n');
+        if (navigator?.clipboard?.writeText) {
+          await navigator.clipboard.writeText(lines);
+        } else {
+          const ta = document.createElement('textarea');
+          ta.value = lines;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          ta.remove();
+        }
+        info('Copied export list to clipboard.');
+      } catch (_) {
+        error('Unable to copy export list.');
+      }
+    });
     const close = () => {
       try { overlay.remove(); } catch (_) {}
     };
@@ -6449,6 +6599,7 @@ async function handleFile(file) {
     overlay.addEventListener('click', (ev) => {
       if (ev.target === overlay) close();
     });
+    if (results.length) actions.appendChild(copyBtn);
     actions.appendChild(okBtn);
     modal.appendChild(header);
     modal.appendChild(body);
@@ -9588,6 +9739,21 @@ async function handleFile(file) {
     } catch(_) { return null; }
   }
 
+  function findToolBlockAnywhere(text, toolName) {
+    try {
+      if (!text || !toolName) return null;
+      const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp('(^|\\n)\\s*' + esc(String(toolName)) + '\\s*=\\s*[A-Za-z_][A-Za-z0-9_]*\\s*\\{', 'm');
+      const m = re.exec(text);
+      if (!m) return null;
+      const relOpen = m.index + m[0].lastIndexOf('{');
+      const absOpen = relOpen;
+      const absClose = findMatchingBrace(text, absOpen);
+      if (absClose < 0) return null;
+      return { open: absOpen, close: absClose };
+    } catch (_) { return null; }
+  }
+
   function findUserControlsInGroup(text, groupOpen, groupClose) {
     try {
       let i = groupOpen + 1;
@@ -10487,6 +10653,7 @@ async function handleFile(file) {
           const plain = extractStyledTextPlainText(value.trim());
           if (plain != null) value = plain;
         }
+        value = stripDefaultQuotes(value);
       }
       const sourceOp = extractControlPropValue(body, 'SourceOp');
       const source = extractControlPropValue(body, 'Source');
@@ -10551,31 +10718,32 @@ async function handleFile(file) {
     }
   }
 
-  function hydrateControlMetadata(text, result) {
-    try {
-      if (!text || !result || !Array.isArray(result.entries)) return;
-      const bounds = locateMacroGroupBounds(text, result);
-      if (!bounds) return;
-      const cache = new Map();
-      const getUcForTool = (toolName) => {
-        if (!toolName) return null;
-        if (cache.has(toolName)) return cache.get(toolName);
-        const tb = findToolBlockInGroup(text, bounds.groupOpenIndex, bounds.groupCloseIndex, toolName);
-        const uc = tb ? findUserControlsInTool(text, tb.open, tb.close) : null;
-        cache.set(toolName, uc || null);
-        return uc;
-      };
+    function hydrateControlMetadata(text, result) {
+      try {
+        if (!text || !result || !Array.isArray(result.entries)) return;
+        const bounds = locateMacroGroupBounds(text, result) || { groupOpenIndex: 0, groupCloseIndex: text.length };
+        const cache = new Map();
+        const getUcForTool = (toolName) => {
+          if (!toolName) return null;
+          if (cache.has(toolName)) return cache.get(toolName);
+          let tb = findToolBlockInGroup(text, bounds.groupOpenIndex, bounds.groupCloseIndex, toolName);
+          if (!tb) tb = findToolBlockAnywhere(text, toolName);
+          const uc = tb ? findUserControlsInTool(text, tb.open, tb.close) : null;
+          cache.set(toolName, uc || null);
+          return uc;
+        };
       for (const entry of result.entries) {
         if (!entry || !entry.sourceOp || !entry.source) continue;
         const meta = {};
-        const uc = getUcForTool(entry.sourceOp);
-        if (uc) {
-          const block = findControlBlockInUc(text, uc.open, uc.close, entry.source);
-          if (block) {
-            const body = text.slice(block.open + 1, block.close);
+          const uc = getUcForTool(entry.sourceOp);
+          if (uc) {
+            const block = findControlBlockInUc(text, uc.open, uc.close, entry.source);
+            if (block) {
+              const body = text.slice(block.open + 1, block.close);
               meta.inputControl = extractControlPropValue(body, 'INPID_InputControl');
               meta.dataType = extractControlPropValue(body, 'LINKID_DataType');
               meta.defaultValue = extractControlPropValue(body, 'INP_Default');
+              meta.textLines = extractControlPropValue(body, 'TEC_Lines');
               meta.integer = extractControlPropValue(body, 'INP_Integer');
               meta.minAllowed = extractControlPropValue(body, 'INP_MinAllowed');
               meta.maxAllowed = extractControlPropValue(body, 'INP_MaxAllowed');
@@ -10588,6 +10756,61 @@ async function handleFile(file) {
               if (last > first) {
                 const luaEsc = execLine.slice(first + 1, last);
                 entry.buttonExecute = unescapeSettingString(luaEsc);
+              }
+            }
+          }
+            if (!meta.inputControl) {
+              let tb = findToolBlockInGroup(text, bounds.groupOpenIndex, bounds.groupCloseIndex, entry.sourceOp);
+              if (!tb) tb = findToolBlockAnywhere(text, entry.sourceOp);
+              if (tb) {
+                const tBlock = findControlBlockInTool(text, tb.open, tb.close, entry.source);
+                if (tBlock) {
+                  const body = text.slice(tBlock.open + 1, tBlock.close);
+                  meta.inputControl = meta.inputControl || extractControlPropValue(body, 'INPID_InputControl');
+                  meta.dataType = meta.dataType || extractControlPropValue(body, 'LINKID_DataType');
+                  meta.defaultValue = meta.defaultValue || extractControlPropValue(body, 'INP_Default');
+                  meta.textLines = meta.textLines || extractControlPropValue(body, 'TEC_Lines');
+                  meta.integer = meta.integer || extractControlPropValue(body, 'INP_Integer');
+                  meta.minAllowed = meta.minAllowed || extractControlPropValue(body, 'INP_MinAllowed');
+                  meta.maxAllowed = meta.maxAllowed || extractControlPropValue(body, 'INP_MaxAllowed');
+                  meta.minScale = meta.minScale || extractControlPropValue(body, 'INP_MinScale');
+                  meta.maxScale = meta.maxScale || extractControlPropValue(body, 'INP_MaxScale');
+                }
+                if (!meta.inputControl) {
+                  const toolUc = findUserControlsInTool(text, tb.open, tb.close);
+                  if (toolUc) {
+                    const uBlock = findControlBlockInUc(text, toolUc.open, toolUc.close, entry.source);
+                    if (uBlock) {
+                      const body = text.slice(uBlock.open + 1, uBlock.close);
+                      meta.inputControl = meta.inputControl || extractControlPropValue(body, 'INPID_InputControl');
+                      meta.dataType = meta.dataType || extractControlPropValue(body, 'LINKID_DataType');
+                      meta.defaultValue = meta.defaultValue || extractControlPropValue(body, 'INP_Default');
+                      meta.textLines = meta.textLines || extractControlPropValue(body, 'TEC_Lines');
+                      meta.integer = meta.integer || extractControlPropValue(body, 'INP_Integer');
+                      meta.minAllowed = meta.minAllowed || extractControlPropValue(body, 'INP_MinAllowed');
+                      meta.maxAllowed = meta.maxAllowed || extractControlPropValue(body, 'INP_MaxAllowed');
+                      meta.minScale = meta.minScale || extractControlPropValue(body, 'INP_MinScale');
+                      meta.maxScale = meta.maxScale || extractControlPropValue(body, 'INP_MaxScale');
+                    }
+                  }
+                }
+              }
+            }
+          if (!meta.inputControl) {
+            const groupUc = findUserControlsInGroup(text, bounds.groupOpenIndex, bounds.groupCloseIndex);
+            if (groupUc) {
+              const gBlock = findControlBlockInUc(text, groupUc.open, groupUc.close, entry.source);
+              if (gBlock) {
+                const body = text.slice(gBlock.open + 1, gBlock.close);
+                meta.inputControl = meta.inputControl || extractControlPropValue(body, 'INPID_InputControl');
+                meta.dataType = meta.dataType || extractControlPropValue(body, 'LINKID_DataType');
+                meta.defaultValue = meta.defaultValue || extractControlPropValue(body, 'INP_Default');
+                meta.textLines = meta.textLines || extractControlPropValue(body, 'TEC_Lines');
+                meta.integer = meta.integer || extractControlPropValue(body, 'INP_Integer');
+                meta.minAllowed = meta.minAllowed || extractControlPropValue(body, 'INP_MinAllowed');
+                meta.maxAllowed = meta.maxAllowed || extractControlPropValue(body, 'INP_MaxAllowed');
+                meta.minScale = meta.minScale || extractControlPropValue(body, 'INP_MinScale');
+                meta.maxScale = meta.maxScale || extractControlPropValue(body, 'INP_MaxScale');
               }
             }
           }
@@ -12767,6 +12990,27 @@ function applyBlendCheckboxesToTool(text, bounds, toolName, controls, eol, resul
           };
         } catch (_) { return null; }
       },
+      findTextLinesInfo: (idx) => {
+        try {
+          const entry = state.parseResult?.entries?.[idx];
+          if (!entry || !state.originalText) return null;
+          const bounds = locateMacroGroupBounds(state.originalText, state.parseResult) || { groupOpenIndex: 0, groupCloseIndex: state.originalText.length };
+          let toolBlock = findToolBlockInGroup(state.originalText, bounds.groupOpenIndex, bounds.groupCloseIndex, entry.sourceOp);
+          if (!toolBlock) toolBlock = findToolBlockAnywhere(state.originalText, entry.sourceOp);
+          if (!toolBlock) return { toolBlock: false };
+          const toolSegment = state.originalText.slice(toolBlock.open, toolBlock.close);
+          let controlBlock = findControlBlockInTool(state.originalText, toolBlock.open, toolBlock.close, entry.source);
+          if (!controlBlock) return { toolBlock: true, controlBlock: false, toolSegmentStart: toolSegment.slice(0, 200) };
+          const body = state.originalText.slice(controlBlock.open + 1, controlBlock.close);
+          return {
+            toolBlock: true,
+            controlBlock: true,
+            hasTextEdit: /TextEditControl/i.test(body),
+            tecLines: extractControlPropValue(body, 'TEC_Lines'),
+            bodyStart: body.slice(0, 200),
+          };
+        } catch (err) { return { error: err?.message || String(err) }; }
+      },
 
       version: 'anchor-debug-1',
       setDiag: (on) => { try { setDiagnosticsEnabled(!!on); } catch(_) {} },
@@ -13031,6 +13275,40 @@ end
       }
     } catch (_) {}
     return runValidationNow(context);
+  }
+
+  function findControlBlockInTool(text, toolOpen, toolClose, controlId) {
+    try {
+      let i = toolOpen + 1, depth = 0, inStr = false;
+      while (i < toolClose) {
+        const ch = text[i];
+        if (inStr) { if (ch === '"' && text[i - 1] !== '\\') inStr = false; i++; continue; }
+        if (ch === '"') { inStr = true; i++; continue; }
+        if (ch === '{') { depth++; i++; continue; }
+        if (ch === '}') { depth--; i++; continue; }
+        if (depth === 0 && isIdentStart(ch)) {
+          const idStart = i;
+          i++;
+          while (i < toolClose && isIdentPart(text[i])) i++;
+          const idStr = text.slice(idStart, i);
+          while (i < toolClose && isSpace(text[i])) i++;
+          if (text[i] !== '=') { i++; continue; }
+          i++;
+          while (i < toolClose && isSpace(text[i])) i++;
+          if (text[i] !== '{') { i++; continue; }
+          const cOpen = i;
+          const cClose = findMatchingBrace(text, cOpen);
+          if (cClose < 0) break;
+          if (String(idStr) === String(controlId)) {
+            return { open: cOpen, close: cClose };
+          }
+          i = cClose + 1;
+          continue;
+        }
+        i++;
+      }
+      return null;
+    } catch (_) { return null; }
   }
 
   function runValidationNow(context) {
