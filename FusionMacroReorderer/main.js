@@ -136,6 +136,7 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
       const body = document.createElement('div');
       body.className = 'form-body';
       const p = document.createElement('p');
+      p.style.whiteSpace = 'pre-line';
       p.textContent = message || 'Are you sure?';
       body.appendChild(p);
 
@@ -7324,14 +7325,21 @@ async function handleFile(file) {
         state.originalFilePath = pathValue;
         state.lastExportPath = pathValue;
         setExportFolderFromFilePath(pathValue, { silent: true });
-        await reloadDataLinkForCurrentMacro();
+        const summary = await reloadDataLinkForCurrentMacro({ summary: true, maxLines: 4 });
         const updated = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, {
           includeDataLink: true,
           fileMetaPath: pathValue,
         });
+        let message = 'Overwrite the source file with these changes?';
+        if (summary && summary.lines && summary.lines.length) {
+          const more = summary.total > summary.lines.length ? summary.total - summary.lines.length : 0;
+          message = `Changes:\n${summary.lines.map(line => `- ${line}`).join('\n')}`;
+          if (more > 0) message += `\n...and ${more} more.`;
+          message += '\n\nOverwrite the source file with these changes?';
+        }
         const confirmSave = await openConfirmModal({
           title: 'Data updated',
-          message: 'Overwrite the source file with these changes?',
+          message,
           confirmText: 'Overwrite',
           cancelText: 'Not now',
         });
@@ -7490,11 +7498,22 @@ async function handleFile(file) {
 
   async function reloadDataLinkForCurrentMacro() {
     if (!state.parseResult) return;
+    const options = arguments && arguments[0] ? arguments[0] : {};
+    const wantSummary = !!options.summary;
+    const summaryMaxLines = Number.isFinite(options.maxLines) ? Math.max(1, options.maxLines) : 4;
     const priorMappings = new Map();
+    const beforeValues = new Map();
     (state.parseResult.entries || []).forEach((entry) => {
       if (!entry || !entry.sourceOp || !entry.source) return;
       if (!entry.csvLink || !entry.csvLink.column) return;
       priorMappings.set(`${entry.sourceOp}.${entry.source}`, entry.csvLink.column);
+      if (wantSummary) {
+        const key = `${entry.sourceOp}.${entry.source}`;
+        const info = getCurrentInputInfo(entry) || {};
+        const name = String(entry.displayName || entry.name || entry.label || key).trim();
+        const value = info.value != null ? String(info.value) : '';
+        beforeValues.set(key, { name, value });
+      }
     });
     const link = ensureDataLink(state.parseResult);
     const source = String(link?.source || '').trim();
@@ -7542,7 +7561,38 @@ async function handleFile(file) {
           }
         }
       }
+      let summary = null;
+      if (wantSummary && state.parseResult) {
+        const afterValues = new Map();
+        (state.parseResult.entries || []).forEach((entry) => {
+          if (!entry || !entry.sourceOp || !entry.source) return;
+          if (!entry.csvLink || !entry.csvLink.column) return;
+          const key = `${entry.sourceOp}.${entry.source}`;
+          const info = getCurrentInputInfo(entry) || {};
+          const name = String(entry.displayName || entry.name || entry.label || key).trim();
+          const value = info.value != null ? String(info.value) : '';
+          afterValues.set(key, { name, value });
+        });
+        let total = 0;
+        const lines = [];
+        const truncate = (value) => {
+          const str = String(value ?? '');
+          if (str.length <= 60) return str;
+          return `${str.slice(0, 57)}...`;
+        };
+        beforeValues.forEach((before, key) => {
+          const after = afterValues.get(key);
+          if (!after) return;
+          if (String(before.value) === String(after.value)) return;
+          total += 1;
+          if (lines.length < summaryMaxLines) {
+            lines.push(`${before.name}: "${truncate(before.value)}" → "${truncate(after.value)}"`);
+          }
+        });
+        summary = { lines, total };
+      }
       info('Data reloaded for current macro.');
+      return summary;
     } catch (err) {
       error(err?.message || err || 'Failed to reload data.');
     }
