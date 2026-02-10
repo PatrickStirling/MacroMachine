@@ -806,19 +806,48 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
     document.body.appendChild(overlay);
   }
 
+  function resolveReloadPath() {
+    return (
+      state.parseResult?.fileMeta?.exportPath ||
+      state.originalFilePath ||
+      state.lastExportPath ||
+      ''
+    );
+  }
+
+  function updateDataLinkStatus() {
+    if (!dataLinkStatus) return;
+    if (!state.parseResult) {
+      dataLinkStatus.hidden = true;
+      return;
+    }
+    const path = resolveReloadPath();
+    if (!path) {
+      dataLinkStatus.textContent = 'Reload path: Not set';
+      dataLinkStatus.title = 'Reload path: Not set';
+    } else {
+      dataLinkStatus.textContent = `Reload path: ${path}`;
+      dataLinkStatus.title = path;
+    }
+    dataLinkStatus.hidden = false;
+  }
+
   function syncDataLinkPanel() {
     if (!dataLinkPanel) return;
     if (!state.parseResult) {
       dataLinkPanel.hidden = true;
+      if (dataLinkStatus) dataLinkStatus.hidden = true;
       return;
     }
     const hasCsv = !!(state.csvData && Array.isArray(state.csvData.headers) && state.csvData.headers.length);
     const hasLinkSource = !!(state.parseResult && state.parseResult.dataLink && state.parseResult.dataLink.source);
     if (!hasCsv && !hasLinkSource) {
       dataLinkPanel.hidden = true;
+      if (dataLinkStatus) dataLinkStatus.hidden = true;
       return;
     }
     dataLinkPanel.hidden = false;
+    updateDataLinkStatus();
   }
 
   function getSelectedCsvBatch() {
@@ -1791,9 +1820,11 @@ function updateDocExportPathDisplay() {
   const dataLinkPanel = document.getElementById('dataLinkPanel');
   const dataLinkConfigure = document.getElementById('dataLinkConfigure');
   const dataLinkReload = document.getElementById('dataLinkReload');
+  const dataLinkStatus = document.getElementById('dataLinkStatus');
   const operatorTypeSelect = document.getElementById('operatorType');
 
   if (dataLinkPanel) dataLinkPanel.hidden = true;
+  if (dataLinkStatus) dataLinkStatus.hidden = true;
 
   dataLinkConfigure?.addEventListener('click', () => openDataLinkConfigModal());
   dataLinkReload?.addEventListener('click', () => reloadDataLinkForCurrentMacro());
@@ -5460,6 +5491,7 @@ function hideDetailDrawer() {
       state.drfxLink = null;
       const doc = getActiveDocument();
       if (doc) storeDocumentSnapshot(doc);
+      updateDataLinkStatus();
       return;
     }
     try {
@@ -5475,11 +5507,13 @@ function hideDetailDrawer() {
       if (exportBtn) {
         setExportButtonLabel(link.linked ? DRFX_EXPORT_LABEL : DEFAULT_EXPORT_LABEL);
       }
+      updateDataLinkStatus();
     } catch (_) {
       if (exportBtn) setExportButtonLabel(DEFAULT_EXPORT_LABEL);
       state.drfxLink = null;
       const doc = getActiveDocument();
       if (doc) storeDocumentSnapshot(doc);
+      updateDataLinkStatus();
     }
   }
   if (nativeBridge && nativeBridge.ipcRenderer) {
@@ -5849,6 +5883,18 @@ function hideDetailDrawer() {
     return destPath;
   }
 
+  function buildExportPath(folderPath, fileName) {
+    if (!folderPath) return '';
+    try {
+      // eslint-disable-next-line global-require
+      const path = require('path');
+      return path.join(folderPath, fileName);
+    } catch (_) {
+      const sep = folderPath.endsWith('/') || folderPath.endsWith('\\') ? '' : '/';
+      return `${folderPath}${sep}${fileName}`;
+    }
+  }
+
 
 
   async function loadMacroFromText(sourceName, rawText, options = {}) {
@@ -5941,6 +5987,13 @@ function hideDetailDrawer() {
       }
       if (state.parseResult.dataLink) {
         applyFmrDataLinkToEntries(state.parseResult);
+      }
+      const hiddenFileMeta = extractHiddenFileMeta(state.originalText, state.parseResult);
+      if (hiddenFileMeta) {
+        state.parseResult.fileMeta = hiddenFileMeta;
+        if (!state.originalFilePath && hiddenFileMeta.exportPath) {
+          state.originalFilePath = hiddenFileMeta.exportPath;
+        }
       }
       updateDataMenuState();
       syncDataLinkPanel();
@@ -6341,27 +6394,31 @@ async function handleFile(file) {
   async function exportToFile() {
     if (!state.parseResult) return;
     try {
-      const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, { includeDataLink: true });
       const macroName = (state.parseResult.macroName || '').trim();
       const baseName = macroName ? `${macroName}.setting` : state.originalFileName;
       const outName = suggestOutputName(baseName);
       const defaultPath = buildExportDefaultPath(outName);
       const native = getNativeApi();
-      if (native && typeof native.saveSettingFile === 'function') {
+      if (native && typeof native.pickSavePath === 'function' && typeof native.writeSettingFile === 'function') {
         try {
-          const res = await native.saveSettingFile({ defaultPath, content: newContent });
-        if (res && res.filePath) {
-          state.lastExportPath = res.filePath;
-          const doc = getActiveDocument();
-          if (doc) storeDocumentSnapshot(doc);
-          updateDocExportPathDisplay();
-        }
+          const res = await native.pickSavePath({ defaultPath });
+          if (!res || !res.filePath) return;
+          const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, { includeDataLink: true, fileMetaPath: res.filePath });
+          const writeRes = await native.writeSettingFile({ filePath: res.filePath, content: newContent });
+          if (writeRes && writeRes.filePath) {
+            state.lastExportPath = writeRes.filePath;
+            state.originalFilePath = writeRes.filePath;
+            const doc = getActiveDocument();
+            if (doc) storeDocumentSnapshot(doc);
+            updateDocExportPathDisplay();
+          }
           info('Saved reordered .setting via native dialog');
           markActiveDocumentClean();
         } catch (err2) {
           error('Native save failed: ' + (err2?.message || err2));
         }
       } else {
+        const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, { includeDataLink: true });
         triggerDownload(outName, newContent);
         info('Exported reordered .setting');
         markActiveDocumentClean();
@@ -6411,15 +6468,16 @@ async function handleFile(file) {
         targetDocs.forEach((doc) => {
           try {
             const snap = doc.snapshot;
-            const newContent = snap.parseResult
-              ? rebuildContentWithNewOrder(snap.originalText || '', snap.parseResult, snap.newline || '\n', { includeDataLink: true })
-              : (snap.originalText || '');
             const outName = buildMacroExportNameForSnapshot(snap);
             const targetFolder = snap.exportFolder || state.exportFolder || resolveExportFolder();
-            const destPath = writeSettingToFolder(targetFolder, outName, newContent);
-            snap.lastExportPath = destPath;
+            const destPath = buildExportPath(targetFolder, outName);
+            const newContent = snap.parseResult
+              ? rebuildContentWithNewOrder(snap.originalText || '', snap.parseResult, snap.newline || '\n', { includeDataLink: true, fileMetaPath: destPath })
+              : (snap.originalText || '');
+            const finalPath = writeSettingToFolder(targetFolder, outName, newContent);
+            snap.lastExportPath = finalPath;
             doc.isDirty = false;
-            results.push({ name: outName, path: destPath, ok: true });
+            results.push({ name: outName, path: finalPath, ok: true });
             saved += 1;
           } catch (_) {
             results.push({ name: doc?.name || doc?.fileName || 'Untitled', path: '', ok: false });
@@ -6442,18 +6500,20 @@ async function handleFile(file) {
         error(msg);
         return;
       }
-      const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, { includeDataLink: true });
       const outName = buildMacroExportName();
       if (!IS_ELECTRON) {
+        const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, { includeDataLink: true });
         triggerDownload(outName, newContent);
         info('Exported reordered .setting');
         markActiveDocumentClean();
         return;
       }
       const targetFolder = resolveExportFolder();
-      const destPath = writeSettingToFolder(targetFolder, outName, newContent);
-      info(`Exported to ${destPath}`);
-      state.lastExportPath = destPath;
+      const destPath = buildExportPath(targetFolder, outName);
+      const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, { includeDataLink: true, fileMetaPath: destPath });
+      const finalPath = writeSettingToFolder(targetFolder, outName, newContent);
+      info(`Exported to ${finalPath}`);
+      state.lastExportPath = finalPath;
       const doc = getActiveDocument();
       if (doc) storeDocumentSnapshot(doc);
       updateDocExportPathDisplay();
@@ -7101,6 +7161,14 @@ async function handleFile(file) {
 
   const UPDATE_DATA_PROTOCOL = 'macromachine://reload';
 
+  function buildUpdateDataUrl(filePath) {
+    const base = UPDATE_DATA_PROTOCOL;
+    const pathValue = String(filePath || '').trim();
+    if (!pathValue) return base;
+    const encoded = encodeURIComponent(pathValue);
+    return `${base}?path=${encoded}`;
+  }
+
   function buildLauncherLuaForUrl(url) {
     const safeUrl = String(url || '');
     return [
@@ -7168,20 +7236,82 @@ async function handleFile(file) {
       error('Unable to locate the newly created Update Data button.');
       return;
     }
-    const lua = buildLauncherLuaForUrl(UPDATE_DATA_PROTOCOL);
-    updateEntryButtonExecute(idx, lua, { silent: true, skipHistory: true });
-    renderActiveList({ safe: true });
-    renderDetailDrawer(idx);
+      const pathHint = state.originalFilePath || state.lastExportPath || state.parseResult?.fileMeta?.exportPath || '';
+      const lua = buildLauncherLuaForUrl(buildUpdateDataUrl(pathHint));
+      updateEntryButtonExecute(idx, lua, { silent: true, skipHistory: true });
+      renderActiveList({ safe: true });
+      renderDetailDrawer(idx);
     info('Inserted Update Data button. Use it in Fusion to open Macro Machine.');
   }
 
-  function handleProtocolUrl(url) {
-    const raw = String(url || '').trim();
-    if (!raw) return;
-    if (raw.toLowerCase().startsWith(UPDATE_DATA_PROTOCOL)) {
+    function parseUpdateProtocolUrl(raw) {
+      const text = String(raw || '').trim();
+      if (!text) return null;
+      if (!text.toLowerCase().startsWith(UPDATE_DATA_PROTOCOL)) return null;
+      try {
+        const u = new URL(text);
+        const path = u.searchParams.get('path') || '';
+        return { path: path ? decodeURIComponent(path) : '' };
+      } catch (_) {
+        const q = text.indexOf('?');
+        if (q < 0) return { path: '' };
+        const query = text.slice(q + 1);
+        const params = new URLSearchParams(query);
+        const path = params.get('path') || '';
+        return { path: path ? decodeURIComponent(path) : '' };
+      }
+    }
+
+    async function updateFromProtocolPath(filePath) {
+      const pathValue = String(filePath || '').trim();
+      if (!pathValue) return false;
+      const native = getNativeApi();
+      if (!native || typeof native.readSettingFile !== 'function') {
+        error('Native file access unavailable for Update Data.');
+        return false;
+      }
+      try {
+        const res = await native.readSettingFile({ filePath: pathValue });
+        if (!res || !res.ok || !res.content) {
+          error(res?.error || 'Failed to read the macro file.');
+          return false;
+        }
+        const name = res.baseName || pathValue.split(/[\\/]/).pop() || 'Imported.setting';
+        await loadMacroFromText(name, res.content, { preserveFilePath: true, preserveFileInfo: false });
+        state.originalFilePath = pathValue;
+        state.lastExportPath = pathValue;
+        setExportFolderFromFilePath(pathValue, { silent: true });
+        await reloadDataLinkForCurrentMacro();
+        const updated = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, {
+          includeDataLink: true,
+          fileMetaPath: pathValue,
+        });
+        const writeRes = await native.writeSettingFile({ filePath: pathValue, content: updated });
+        if (writeRes && writeRes.filePath) {
+          info('Updated macro from data link.');
+          return true;
+        }
+        error(writeRes?.error || 'Failed to write the updated macro.');
+        return false;
+      } catch (err) {
+        error(err?.message || err || 'Failed to update macro from data.');
+        return false;
+      }
+    }
+
+    function handleProtocolUrl(url) {
+      const raw = String(url || '').trim();
+      if (!raw) return;
+      if (!raw.toLowerCase().startsWith(UPDATE_DATA_PROTOCOL)) return;
+      const parsed = parseUpdateProtocolUrl(raw);
+      if (parsed && parsed.path) {
+        updateFromProtocolPath(parsed.path).then((ok) => {
+          if (!ok) openUpdateFromMacroModal();
+        });
+        return;
+      }
       openUpdateFromMacroModal();
     }
-  }
 
   function openUpdateFromMacroModal() {
     if (!document || !document.body) return;
@@ -7659,7 +7789,7 @@ async function handleFile(file) {
         content = workingText;
         if (linkPayload) {
           content = stripFmrDataLinkBlock(content);
-          content += buildFmrDataLinkBlock(linkPayload, eol);
+          content = upsertHiddenDataLinkControl(content, tmpResult, linkPayload, eol);
         }
       } else {
         const resultClone = cloneParseResultForCsv(result);
@@ -8717,6 +8847,7 @@ async function handleFile(file) {
   }
 
   const FMR_DATA_LINK_CONTROL = 'FMR_DataLink';
+  const FMR_FILE_META_CONTROL = 'FMR_FileMeta';
 
   function extractHiddenDataLink(text, result) {
     try {
@@ -8762,6 +8893,69 @@ async function handleFile(file) {
       return JSON.parse(json);
     } catch (_) {
       return null;
+    }
+  }
+
+  function extractHiddenFileMeta(text, result) {
+    try {
+      if (!text) return null;
+      const bounds = locateMacroGroupBounds(text, result);
+      if (!bounds) return null;
+      const uc = findGroupUserControlsBlock(text, bounds.groupOpenIndex, bounds.groupCloseIndex);
+      if (!uc) return null;
+      const block = findControlBlockInUc(text, uc.openIndex, uc.closeIndex, FMR_FILE_META_CONTROL);
+      if (!block) return null;
+      const body = text.slice(block.open + 1, block.close);
+      const raw = extractControlPropValue(body, 'INP_Default');
+      if (!raw) return null;
+      let json = raw.trim();
+      if (json.startsWith('"') && json.endsWith('"')) {
+        json = unescapeSettingString(json.slice(1, -1));
+      }
+      json = (json || '').trim();
+      if (!json) return null;
+      return JSON.parse(json);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function upsertHiddenFileMetaControl(text, result, meta, eol) {
+    try {
+      if (!text) return text;
+      const bounds = locateMacroGroupBounds(text, result);
+      if (!bounds) return text;
+      const ensured = ensureGroupUserControlsBlockExists(text, bounds, eol || '\n', result);
+      let updated = ensured.text;
+      const uc = ensured.block || findGroupUserControlsBlock(updated, bounds.groupOpenIndex, bounds.groupCloseIndex);
+      if (!uc) return updated;
+      let block = findControlBlockInUc(updated, uc.openIndex, uc.closeIndex, FMR_FILE_META_CONTROL);
+      if (!block) {
+        const defaultJson = meta ? JSON.stringify(meta) : '';
+        const safeJson = `"${escapeSettingString(defaultJson)}"`;
+        const lines = [
+          `LINKS_Name = "FMR File Meta",`,
+          `INPID_InputControl = "TextEditControl",`,
+          `ICS_ControlPage = "Controls",`,
+          `IC_Visible = false,`,
+          `INP_Default = ${safeJson},`,
+        ];
+        updated = insertUserControlBlock(updated, { open: uc.openIndex, close: uc.closeIndex }, FMR_FILE_META_CONTROL, lines, eol || '\n');
+        block = findControlBlockInUc(updated, uc.openIndex, uc.closeIndex, FMR_FILE_META_CONTROL);
+        if (!block) return updated;
+      }
+      const indent = (getLineIndent(updated, block.open) || '') + '\t';
+      let body = updated.slice(block.open + 1, block.close);
+      body = upsertControlProp(body, 'IC_Visible', 'false', indent, eol || '\n');
+      if (meta) {
+        const safeJson = `"${escapeSettingString(JSON.stringify(meta))}"`;
+        body = upsertControlProp(body, 'INP_Default', safeJson, indent, eol || '\n');
+      } else {
+        body = removeControlProp(body, 'INP_Default');
+      }
+      return updated.slice(0, block.open + 1) + body + updated.slice(block.close);
+    } catch (_) {
+      return text;
     }
   }
 
@@ -8995,19 +9189,34 @@ async function handleFile(file) {
     // Prefer rebuilding into the GroupOperator-level Inputs block (or inserting one)
     const baseText = applyToolRenameMap(original, result);
     let updated = baseText;
-    const dataLink = (options.includeDataLink !== false) ? buildFmrDataLinkPayload(result) : null;
-    const safeEditExport = options.safeEditExport === true;
-    if (!safeEditExport) {
-      updated = applyLabelCountEdits(updated, result, eol);
-      updated = applyLabelVisibilityEdits(updated, result, eol);
-      updated = applyLabelDefaultStateEdits(updated, result, eol);
-      updated = applyUserControlPages(updated, result, eol, options);
-      // Safety: strip BTNCS_Execute from managed buttons unless explicitly clicked
-      updated = stripUnclickedBtncs(updated, result, eol);
-      // Insert exact launcher only for explicitly clicked controls
-      updated = ensureExactLauncherInserted(updated, result, eol);
-      updated = stripLegacyLauncherArtifacts(updated);
-    }
+      const dataLink = (options.includeDataLink !== false) ? buildFmrDataLinkPayload(result) : null;
+      const fileMetaPath = options.fileMetaPath || result?.fileMeta?.exportPath || state.originalFilePath || '';
+      const fileMeta = fileMetaPath ? { exportPath: fileMetaPath } : null;
+      if (fileMetaPath && result && Array.isArray(result.entries)) {
+        const overrides = result.buttonOverrides instanceof Map
+          ? new Map(result.buttonOverrides)
+          : (result.buttonOverrides ? new Map(result.buttonOverrides) : new Map());
+        const url = buildUpdateDataUrl(fileMetaPath);
+        result.entries.forEach((entry) => {
+          if (!entry || !entry.sourceOp || !entry.source) return;
+          if (!isUpdateDataButtonEntry(entry)) return;
+          overrides.set(`${entry.sourceOp}.${entry.source}`, url);
+        });
+        if (overrides.size) result.buttonOverrides = overrides;
+      }
+      const safeEditExport = options.safeEditExport === true;
+      if (!safeEditExport) {
+        updated = applyLabelCountEdits(updated, result, eol);
+        updated = applyLabelVisibilityEdits(updated, result, eol);
+        updated = applyLabelDefaultStateEdits(updated, result, eol);
+        updated = applyUserControlPages(updated, result, eol, options);
+        // Safety: strip BTNCS_Execute from managed buttons unless explicitly clicked
+        updated = stripUnclickedBtncs(updated, result, eol);
+        // Insert exact launcher only for explicitly clicked controls
+        updated = ensureExactLauncherInserted(updated, result, eol);
+        updated = stripLegacyLauncherArtifacts(updated);
+        updated = applyCanonicalLaunchSnippets(updated, result, eol);
+      }
       updated = applyMacroNameRename(updated, result);
       updated = ensureGroupInputsBlock(updated, result, eol);
       updated = rewritePrimaryInputsBlock(updated, result, eol);
@@ -9015,6 +9224,9 @@ async function handleFile(file) {
       if (options.includeDataLink !== false) {
         updated = stripFmrDataLinkBlock(updated);
         updated = upsertHiddenDataLinkControl(updated, result, dataLink, eol);
+      }
+      if (fileMeta) {
+        updated = upsertHiddenFileMetaControl(updated, result, fileMeta, eol);
       }
       return updated;
     }

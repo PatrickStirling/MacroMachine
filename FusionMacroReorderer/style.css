@@ -166,6 +166,18 @@ main { padding: 0 var(--space-xl) var(--space-xl); }
 .data-link-panel button {
   font-size: var(--font-small);
 }
+.data-link-status {
+  font-size: 11px;
+  color: var(--muted);
+  margin-left: 8px;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.data-link-status[hidden] {
+  display: none;
+}
 .doc-tab.selected {
   border-color: var(--label-accent);
   box-shadow: 0 0 0 1px rgba(59, 208, 109, 0.5);

@@ -643,6 +643,46 @@ ipcMain.handle('save-setting-file', async (event, payload = {}) => {
   }
 });
 
+// IPC: pick a save path without writing content
+ipcMain.handle('pick-save-path', async (event, payload = {}) => {
+  const browserWindow = BrowserWindow.getFocusedWindow();
+  const defaultPath = payload.defaultPath || 'macro.setting';
+  const result = await dialog.showSaveDialog(browserWindow, {
+    defaultPath,
+    filters: [
+      { name: 'Fusion Setting', extensions: ['setting', 'txt'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+  });
+  if (result.canceled || !result.filePath) return { canceled: true };
+  return { canceled: false, filePath: result.filePath };
+});
+
+// IPC: write a .setting file to a specific path
+ipcMain.handle('write-setting-file', async (event, payload = {}) => {
+  const filePath = payload.filePath;
+  const content = String(payload.content || '');
+  if (!filePath) return { canceled: false, error: 'No file path provided.' };
+  try {
+    fs.writeFileSync(filePath, content, 'utf8');
+    return { canceled: false, filePath };
+  } catch (err) {
+    return { canceled: false, filePath, error: String(err && err.message || err) };
+  }
+});
+
+// IPC: read a .setting file from a specific path
+ipcMain.handle('read-setting-file', async (event, payload = {}) => {
+  const filePath = payload.filePath;
+  if (!filePath) return { ok: false, error: 'No file path provided.' };
+  try {
+    const content = fs.readFileSync(filePath, 'utf8');
+    return { ok: true, filePath, baseName: path.basename(filePath), content };
+  } catch (err) {
+    return { ok: false, filePath, error: String(err && err.message || err) };
+  }
+});
+
 // IPC: open a .setting file via native dialog
 ipcMain.handle('open-setting-file', async () => {
   const browserWindow = BrowserWindow.getFocusedWindow();

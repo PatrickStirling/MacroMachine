@@ -37,6 +37,9 @@ export function setupNativeBridge({
     window.FusionMacroReordererNative = {
       isElectron: true,
       saveSettingFile: (payload) => ipcRenderer.invoke('save-setting-file', payload || {}),
+      pickSavePath: (payload) => ipcRenderer.invoke('pick-save-path', payload || {}),
+      writeSettingFile: (payload) => ipcRenderer.invoke('write-setting-file', payload || {}),
+      readSettingFile: (payload) => ipcRenderer.invoke('read-setting-file', payload || {}),
       saveDrfxPreset: (payload) => ipcRenderer.invoke('drfx-save-preset', payload || {}),
       openSettingFile: () => ipcRenderer.invoke('open-setting-file'),
       readClipboard: () => {
