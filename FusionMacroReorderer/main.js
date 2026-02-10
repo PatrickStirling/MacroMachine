@@ -5544,6 +5544,10 @@ function hideDetailDrawer() {
             doc.snapshot.exportFolderSelected = true;
           }
         });
+        state.exportFolder = folderPath;
+        state.exportFolderSelected = true;
+        updateDocExportPathDisplay();
+        updateDataLinkStatus();
         info(`Export folder set for ${selectedDocs.length} selected tab(s).`);
       } else {
         setExportFolder(folderPath, { selected: true });
