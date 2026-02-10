@@ -5770,6 +5770,7 @@ function hideDetailDrawer() {
     const doc = getActiveDocument();
     if (doc) storeDocumentSnapshot(doc);
     updateDocExportPathDisplay();
+    updateDataLinkStatus();
   }
 
   function setExportFolderFromFilePath(filePath, options = {}) {
