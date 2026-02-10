@@ -6483,12 +6483,26 @@ async function handleFile(file) {
             const outName = buildMacroExportNameForSnapshot(snap);
             const targetFolder = snap.exportFolder || state.exportFolder || resolveExportFolder();
             const destPath = buildExportPath(targetFolder, outName);
-            if (snap && snap.parseResult && !snap.parseResult.fileMeta) {
-              snap.parseResult.fileMeta = { exportPath: destPath };
+            const baseText = snap.originalText || '';
+            let parsed = snap.parseResult || null;
+            if (!parsed && baseText) {
+              try {
+                parsed = parseSetting(baseText);
+                const hiddenLink = extractHiddenDataLink(baseText, parsed) || extractHiddenDataLinkFallback(baseText);
+                if (hiddenLink) {
+                  parsed.dataLink = hiddenLink;
+                  applyFmrDataLinkToEntries(parsed);
+                }
+              } catch (_) {
+                parsed = null;
+              }
             }
-            const newContent = snap.parseResult
-              ? rebuildContentWithNewOrder(snap.originalText || '', snap.parseResult, snap.newline || '\n', { includeDataLink: true, fileMetaPath: destPath })
-              : (snap.originalText || '');
+            if (parsed && !parsed.fileMeta) {
+              parsed.fileMeta = { exportPath: destPath };
+            }
+            const newContent = parsed
+              ? rebuildContentWithNewOrder(baseText, parsed, snap.newline || '\n', { includeDataLink: true, fileMetaPath: destPath })
+              : baseText;
             const finalPath = writeSettingToFolder(targetFolder, outName, newContent);
             snap.lastExportPath = finalPath;
             doc.isDirty = false;
