@@ -7201,6 +7201,17 @@ async function handleFile(file) {
     return `${base}?path=${encoded}`;
   }
 
+  function rewriteUpdateDataProtocolPaths(text, filePath) {
+    try {
+      const url = buildUpdateDataUrl(filePath);
+      if (!url || url === UPDATE_DATA_PROTOCOL) return text;
+      const re = new RegExp(`${UPDATE_DATA_PROTOCOL}(?!\\?path=)`, 'g');
+      return String(text || '').replace(re, url);
+    } catch (_) {
+      return text;
+    }
+  }
+
   function buildLauncherLuaForUrl(url) {
     const safeUrl = String(url || '');
     return [
@@ -7318,6 +7329,16 @@ async function handleFile(file) {
           includeDataLink: true,
           fileMetaPath: pathValue,
         });
+        const confirmSave = await openConfirmModal({
+          title: 'Data updated',
+          message: 'Overwrite the source file with these changes?',
+          confirmText: 'Overwrite',
+          cancelText: 'Not now',
+        });
+        if (!confirmSave) {
+          info('Data updated. Source file not overwritten.');
+          return true;
+        }
         const writeRes = await native.writeSettingFile({ filePath: pathValue, content: updated });
         if (writeRes && writeRes.filePath) {
           info('Updated macro from data link.');
@@ -9249,9 +9270,10 @@ async function handleFile(file) {
         updated = stripUnclickedBtncs(updated, result, eol);
         // Insert exact launcher only for explicitly clicked controls
         updated = ensureExactLauncherInserted(updated, result, eol);
-        updated = stripLegacyLauncherArtifacts(updated);
-        updated = applyCanonicalLaunchSnippets(updated, result, eol);
-      }
+      updated = stripLegacyLauncherArtifacts(updated);
+      updated = applyCanonicalLaunchSnippets(updated, result, eol);
+      updated = rewriteUpdateDataProtocolPaths(updated, fileMetaPath);
+    }
       updated = applyMacroNameRename(updated, result);
       updated = ensureGroupInputsBlock(updated, result, eol);
       updated = rewritePrimaryInputsBlock(updated, result, eol);
