@@ -807,12 +807,16 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
   }
 
   function resolveReloadPath() {
-    return (
+    const direct =
       state.parseResult?.fileMeta?.exportPath ||
       state.originalFilePath ||
       state.lastExportPath ||
-      ''
-    );
+      '';
+    if (direct) return direct;
+    const folder = state.exportFolder || '';
+    if (!folder || !state.parseResult) return '';
+    const fileName = buildMacroExportName();
+    return buildExportPath(folder, fileName);
   }
 
   function updateDataLinkStatus() {
@@ -826,7 +830,10 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
       dataLinkStatus.textContent = 'Reload path: Not set';
       dataLinkStatus.title = 'Reload path: Not set';
     } else {
-      dataLinkStatus.textContent = `Reload path: ${path}`;
+      const label = path.startsWith(state.exportFolder || '')
+        ? 'Will export to'
+        : 'Reload path';
+      dataLinkStatus.textContent = `${label}: ${path}`;
       dataLinkStatus.title = path;
     }
     dataLinkStatus.hidden = false;
@@ -6471,6 +6478,9 @@ async function handleFile(file) {
             const outName = buildMacroExportNameForSnapshot(snap);
             const targetFolder = snap.exportFolder || state.exportFolder || resolveExportFolder();
             const destPath = buildExportPath(targetFolder, outName);
+            if (snap && snap.parseResult && !snap.parseResult.fileMeta) {
+              snap.parseResult.fileMeta = { exportPath: destPath };
+            }
             const newContent = snap.parseResult
               ? rebuildContentWithNewOrder(snap.originalText || '', snap.parseResult, snap.newline || '\n', { includeDataLink: true, fileMetaPath: destPath })
               : (snap.originalText || '');
@@ -6510,6 +6520,9 @@ async function handleFile(file) {
       }
       const targetFolder = resolveExportFolder();
       const destPath = buildExportPath(targetFolder, outName);
+      if (state.parseResult && !state.parseResult.fileMeta) {
+        state.parseResult.fileMeta = { exportPath: destPath };
+      }
       const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, { includeDataLink: true, fileMetaPath: destPath });
       const finalPath = writeSettingToFolder(targetFolder, outName, newContent);
       info(`Exported to ${finalPath}`);
@@ -9190,7 +9203,10 @@ async function handleFile(file) {
     const baseText = applyToolRenameMap(original, result);
     let updated = baseText;
       const dataLink = (options.includeDataLink !== false) ? buildFmrDataLinkPayload(result) : null;
-      const fileMetaPath = options.fileMetaPath || result?.fileMeta?.exportPath || state.originalFilePath || '';
+    const fileMetaPath = options.fileMetaPath
+      || result?.fileMeta?.exportPath
+      || state.originalFilePath
+      || (state.exportFolder ? buildExportPath(state.exportFolder, buildMacroExportName()) : '');
       const fileMeta = fileMetaPath ? { exportPath: fileMetaPath } : null;
       if (fileMetaPath && result && Array.isArray(result.entries)) {
         const overrides = result.buttonOverrides instanceof Map

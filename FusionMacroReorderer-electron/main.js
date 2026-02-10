@@ -10,14 +10,34 @@ const crypto = require('crypto');
 
   const PROTOCOL_NAME = 'macromachine';
 
+  let protocolQueue = [];
+  let rendererReady = false;
+
+  function flushProtocolQueue() {
+    if (!mainWindow || mainWindow.isDestroyed() || !rendererReady) return;
+    const queued = protocolQueue.slice();
+    protocolQueue = [];
+    queued.forEach((url) => {
+      try {
+        mainWindow.webContents.send('fmr-protocol', { url });
+      } catch (_) {}
+    });
+  }
+
   function handleProtocolUrl(url) {
     if (!url) return;
     try {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        if (mainWindow.isMinimized()) mainWindow.restore();
-        mainWindow.focus();
-        mainWindow.webContents.send('fmr-protocol', { url });
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        protocolQueue.push(url);
+        return;
       }
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+      if (!rendererReady) {
+        protocolQueue.push(url);
+        return;
+      }
+      mainWindow.webContents.send('fmr-protocol', { url });
     } catch (_) {}
   }
 
@@ -161,6 +181,13 @@ function createMainWindow() {
   const prodIndexPath = path.join(__dirname, 'FusionMacroReorderer', 'index.html');
   const indexPath = fs.existsSync(devIndexPath) ? devIndexPath : prodIndexPath;
   win.loadFile(indexPath);
+  win.webContents.on('did-finish-load', () => {
+    rendererReady = true;
+    flushProtocolQueue();
+  });
+  win.on('closed', () => {
+    rendererReady = false;
+  });
   mainWindow = win;
 }
 
