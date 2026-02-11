@@ -858,6 +858,43 @@ body.nodes-hidden .controls .pane-left {
   border-radius: 6px;
   padding: 4px 8px;
 }
+.header-image-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.header-image-input {
+  min-width: 260px;
+  max-width: 420px;
+  background: #222739;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: var(--font-label);
+}
+.header-image-input:disabled {
+  opacity: 0.65;
+}
+.header-image-clear,
+.header-image-browse {
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.header-image-status {
+  color: var(--muted);
+  font-size: 12px;
+  max-width: 260px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.header-image-meta.invalid .header-image-input {
+  border-color: #f4a646;
+}
+.header-image-meta.invalid .header-image-status {
+  color: #f4a646;
+}
 .actions {
   display: flex;
   flex-direction: column;

@@ -104,6 +104,7 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
   let pendingDocRenderTimer = null;
   let draggingDocId = null;
   let activeCsvBatchId = null;
+  const FMR_HEADER_LABEL_CONTROL = 'FMR_HeaderVisual';
   let exportMenuController = null;
   let docTabContextMenu = null;
   let pendingReloadAfterImport = false;
@@ -4989,8 +4990,673 @@ function hideDetailDrawer() {
     entry.labelStyleDirty = !labelStyleEquals(original, next);
     entry.labelStyleEdited = true;
     renderActiveList();
-    renderDetailDrawer(index);
+    if (activeDetailEntryIndex === index) renderDetailDrawer(index);
     markContentDirty();
+  }
+
+  function normalizeLabelImagePathInput(value) {
+    let raw = String(value || '').trim();
+    if (!raw) return null;
+    if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
+      raw = raw.slice(1, -1).trim();
+    }
+    return raw || null;
+  }
+
+  function extractImageSrcFromLabelMarkup(value) {
+    const raw = normalizeLabelImagePathInput(value);
+    if (!raw) return null;
+    if (isSupportedLabelImageDataUri(raw)) return raw;
+    let match = String(raw).match(/<\s*img\b[^>]*\bsrc\s*=\s*(['"])(.*?)\1/i);
+    if (!match) {
+      match = String(raw).match(/<\s*img\b[^>]*\bsrc\s*=\s*([^'"\s>]+)/i);
+    }
+    if (!match) {
+      // Resolve header-image labels are often exported as a truncated tag:
+      // <center><img src='data:image/...base64,AAAA
+      // with no trailing quote or angle bracket. Accept that form.
+      match = String(raw).match(/<\s*img\b[^>]*\bsrc\s*=\s*['"]([^'"]+)$/i);
+    }
+    if (!match) return null;
+    let candidate = normalizeLabelImagePathInput(match[2] != null ? match[2] : match[1]);
+    if (!candidate) return null;
+    // Imported Resolve header payloads can carry trailing tag residue.
+    candidate = String(candidate).trim().replace(/[>'"]+$/g, '');
+    return isSupportedLabelImageDataUri(candidate) ? candidate : null;
+  }
+
+  function buildHeaderCarrierImageMarkup(value) {
+    const src = extractImageSrcFromLabelMarkup(value);
+    if (!src) return '';
+    const compact = String(src).replace(/\s+/g, '');
+    // Resolve header-image labels are sensitive to this legacy formatting:
+    // padded leading spaces, no closing quote, and trailing '> '.
+    return `        <center><img src='${compact}> `;
+  }
+
+  function isSupportedLabelImageDataUri(value) {
+    const raw = normalizeLabelImagePathInput(value);
+    if (!raw) return false;
+    const lower = raw.toLowerCase();
+    return lower.startsWith('data:image/png;base64,')
+      || lower.startsWith('data:image/jpeg;base64,')
+      || lower.startsWith('data:image/jpg;base64,');
+  }
+
+  function isSupportedLabelImageFilePath(value) {
+    const raw = normalizeLabelImagePathInput(value);
+    if (!raw) return false;
+    const lower = raw.toLowerCase();
+    if (lower.startsWith('data:')) return false;
+    if (lower.startsWith('javascript:')) return false;
+    const stem = raw.split(/[?#]/, 1)[0] || raw;
+    return /\.(png|jpe?g)$/i.test(stem);
+  }
+
+  function isSupportedLabelImagePath(value) {
+    return isSupportedLabelImageDataUri(value) || isSupportedLabelImageFilePath(value);
+  }
+
+  function findHeaderLabelCarrierTargets(result = state.parseResult) {
+    const out = [];
+    if (!result || !Array.isArray(result.entries) || !result.entries.length) return out;
+    for (let i = 0; i < result.entries.length; i++) {
+      const entry = result.entries[i];
+      if (!entry || entry.source !== FMR_HEADER_LABEL_CONTROL) continue;
+      out.push({ index: i, entry });
+    }
+    return out;
+  }
+
+  function findHeaderLabelCarrierTarget(result = state.parseResult, preferredSourceOp = '') {
+    const all = findHeaderLabelCarrierTargets(result);
+    if (!all.length) return null;
+    const preferred = String(preferredSourceOp || '').trim();
+    if (preferred) {
+      const match = all.find((item) => String(item.entry?.sourceOp || '') === preferred);
+      if (match) return match;
+    }
+    const macroName = result?.macroName || result?.macroNameOriginal || '';
+    if (!macroName) return all[0];
+    const exact = all.find((item) => item.entry?.sourceOp === macroName);
+    return exact || all[0];
+  }
+
+  function findHeaderCarrierControlBlockInText(text = state.originalText, result = state.parseResult, preferredSourceOp = '') {
+    try {
+      if (!text || !result) return null;
+      const bounds = locateMacroGroupBounds(text, result);
+      if (!bounds) return null;
+      const groupUc = findGroupUserControlsBlock(text, bounds.groupOpenIndex, bounds.groupCloseIndex);
+      if (groupUc) {
+        const groupBlock = findControlBlockInUc(text, groupUc.openIndex, groupUc.closeIndex, FMR_HEADER_LABEL_CONTROL);
+        if (groupBlock) {
+          return {
+            sourceOp: String(result.macroName || result.macroNameOriginal || '').trim(),
+            open: groupBlock.open,
+            close: groupBlock.close,
+          };
+        }
+      }
+      const candidates = [];
+      const seen = new Set();
+      const addCandidate = (name) => {
+        const toolName = String(name || '').trim();
+        if (!toolName || seen.has(toolName)) return;
+        seen.add(toolName);
+        candidates.push(toolName);
+      };
+      addCandidate(preferredSourceOp);
+      addCandidate(pickPrimaryToolNameForHeader(text, result));
+      const toolsBlock = findOrderedBlock(text, bounds.groupOpenIndex, bounds.groupCloseIndex, 'Tools');
+      if (toolsBlock) {
+        const toolEntries = parseOrderedBlockEntries(text, toolsBlock.open, toolsBlock.close);
+        toolEntries.forEach((item) => addCandidate(item?.name));
+      }
+      for (const toolName of candidates) {
+        const toolBlock = findToolBlockInGroup(text, bounds.groupOpenIndex, bounds.groupCloseIndex, toolName);
+        if (!toolBlock) continue;
+        const uc = findUserControlsInTool(text, toolBlock.open, toolBlock.close);
+        if (!uc) continue;
+        const block = findControlBlockInUc(text, uc.open, uc.close, FMR_HEADER_LABEL_CONTROL);
+        if (block) return { sourceOp: toolName, open: block.open, close: block.close };
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function parseHeaderCarrierStyleFromTextBlock(text, block) {
+    try {
+      if (!text || !block) return normalizeLabelStyle(null);
+      const body = text.slice(block.open + 1, block.close);
+      const raw = normalizeMetaValue(
+        extractControlPropValue(body, 'LINKS_Name')
+        || extractControlPropValue(body, 'INP_Default')
+      ) || '';
+      const parsed = parseLabelMarkup(raw);
+      return normalizeLabelStyle(parsed?.style || null);
+    } catch (_) {
+      return normalizeLabelStyle(null);
+    }
+  }
+
+  function ensureHeaderLabelCarrierEntry(result = state.parseResult, preferredSourceOp = '') {
+    try {
+      if (!result || !Array.isArray(result.entries)) return null;
+      const existing = findHeaderLabelCarrierTarget(result, preferredSourceOp);
+      if (existing && existing.entry) return existing;
+      const block = findHeaderCarrierControlBlockInText(state.originalText, result, preferredSourceOp);
+      if (!block) return null;
+      const sourceOp = String(
+        block.sourceOp
+        || preferredSourceOp
+        || result.macroName
+        || result.macroNameOriginal
+        || 'Macro'
+      ).trim();
+      const key = makeUniqueKey(`${sourceOp}_${FMR_HEADER_LABEL_CONTROL}`);
+      const style = parseHeaderCarrierStyleFromTextBlock(state.originalText, block);
+      const entry = {
+        key,
+        name: null,
+        page: null,
+        sourceOp,
+        source: FMR_HEADER_LABEL_CONTROL,
+        displayName: '',
+        displayNameOriginal: '',
+        raw: buildInstanceInputRaw(key, sourceOp, FMR_HEADER_LABEL_CONTROL, '', 'Controls', null),
+        controlGroup: null,
+        onChange: '',
+        buttonExecute: '',
+        isLabel: true,
+        labelCount: 0,
+        labelStyle: style,
+        labelStyleOriginal: { ...style },
+        labelStyleDirty: false,
+        labelStyleEdited: false,
+        headerCarrierSynthetic: true,
+      };
+      markHeaderCarrierEntryInternal(entry);
+      result.entries.push(entry);
+      return { index: result.entries.length - 1, entry };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function removeHeaderCarrierInstanceInputs(text, result = state.parseResult) {
+    try {
+      if (!text || !result || !result.inputs) return text;
+      let open = result.inputs.openIndex;
+      if (!Number.isFinite(open) || open < 0 || open >= text.length || text[open] !== '{') return text;
+      let updated = text;
+      while (true) {
+        const close = findMatchingBrace(updated, open);
+        if (!Number.isFinite(close) || close <= open) break;
+        const entries = parseOrderedBlockEntries(updated, open, close);
+        let targetName = null;
+        for (const item of entries) {
+          const body = updated.slice(item.blockOpen + 1, item.blockClose);
+          const src = normalizeMetaValue(extractControlPropValue(body, 'Source'));
+          if (String(src || '') === FMR_HEADER_LABEL_CONTROL) {
+            targetName = item.name;
+            break;
+          }
+        }
+        if (!targetName) break;
+        const next = removeControlBlockFromUcById(updated, { open, close }, targetName);
+        if (next === updated) break;
+        updated = next;
+      }
+      return updated;
+    } catch (_) {
+      return text;
+    }
+  }
+
+  function pickPrimaryToolNameForHeader(text = state.originalText, result = state.parseResult) {
+    try {
+      if (!text || !result) return '';
+      const bounds = locateMacroGroupBounds(text, result);
+      if (!bounds) return '';
+      const toolsBlock = findOrderedBlock(text, bounds.groupOpenIndex, bounds.groupCloseIndex, 'Tools');
+      if (!toolsBlock) return '';
+      const entries = parseOrderedBlockEntries(text, toolsBlock.open, toolsBlock.close);
+      return entries && entries.length ? String(entries[0].name || '') : '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function removeControlBlockFromUcById(text, ucRange, controlId) {
+    try {
+      if (!text || !ucRange) return text;
+      const ucOpen = ucRange.open != null ? ucRange.open : ucRange.openIndex;
+      const ucClose = ucRange.close != null ? ucRange.close : ucRange.closeIndex;
+      if (ucOpen == null || ucClose == null) return text;
+      const entries = parseOrderedBlockEntries(text, ucOpen, ucClose);
+      const target = entries.find((item) => String(item.name || '') === String(controlId || ''));
+      if (!target) return text;
+      let delStart = target.nameStart;
+      while (delStart > ucOpen + 1 && /[ \t]/.test(text[delStart - 1])) delStart--;
+      if (delStart > ucOpen + 1 && text[delStart - 1] === '\r') delStart--;
+      if (delStart > ucOpen + 1 && text[delStart - 1] === '\n') delStart--;
+      let delEnd = target.blockClose + 1;
+      while (delEnd < text.length && /[ \t]/.test(text[delEnd])) delEnd++;
+      if (text[delEnd] === ',') delEnd++;
+      while (delEnd < text.length && /[ \t]/.test(text[delEnd])) delEnd++;
+      if (text[delEnd] === '\r') delEnd++;
+      if (text[delEnd] === '\n') delEnd++;
+      return text.slice(0, delStart) + text.slice(delEnd);
+    } catch (_) {
+      return text;
+    }
+  }
+
+  function removeHeaderCarrierFromGroup(text, result) {
+    try {
+      let out = text;
+      while (true) {
+        const bounds = locateMacroGroupBounds(out, result);
+        if (!bounds) break;
+        const groupUc = findGroupUserControlsBlock(out, bounds.groupOpenIndex, bounds.groupCloseIndex);
+        if (!groupUc) break;
+        const next = removeControlBlockFromUcById(
+          out,
+          { open: groupUc.openIndex, close: groupUc.closeIndex },
+          FMR_HEADER_LABEL_CONTROL
+        );
+        if (next === out) break;
+        out = next;
+      }
+      return out;
+    } catch (_) {
+      return text;
+    }
+  }
+
+  function removeHeaderCarrierFromOtherTools(text, result, keepToolName = '') {
+    try {
+      let out = text;
+      const keep = String(keepToolName || '').trim();
+      while (true) {
+        const bounds = locateMacroGroupBounds(out, result);
+        if (!bounds) break;
+        const toolsBlock = findOrderedBlock(out, bounds.groupOpenIndex, bounds.groupCloseIndex, 'Tools');
+        if (!toolsBlock) break;
+        const tools = parseOrderedBlockEntries(out, toolsBlock.open, toolsBlock.close);
+        let removed = false;
+        for (const item of tools) {
+          const toolName = String(item?.name || '').trim();
+          if (!toolName) continue;
+          if (keep && toolName === keep) continue;
+          const tb = findToolBlockInGroup(out, bounds.groupOpenIndex, bounds.groupCloseIndex, toolName);
+          if (!tb) continue;
+          const uc = findUserControlsInTool(out, tb.open, tb.close);
+          if (!uc) continue;
+          const next = removeControlBlockFromUcById(out, uc, FMR_HEADER_LABEL_CONTROL);
+          if (next !== out) {
+            out = next;
+            removed = true;
+            break;
+          }
+        }
+        if (!removed) break;
+      }
+      return out;
+    } catch (_) {
+      return text;
+    }
+  }
+
+  function normalizeHeaderCarrierControlInUc(text, ucRange, eol) {
+    try {
+      if (!text || !ucRange) return text;
+      const newline = eol || '\n';
+      const ucOpen = ucRange.open != null ? ucRange.open : ucRange.openIndex;
+      const ucClose = ucRange.close != null ? ucRange.close : ucRange.closeIndex;
+      if (ucOpen == null || ucClose == null) return text;
+      const block = findControlBlockInUc(text, ucOpen, ucClose, FMR_HEADER_LABEL_CONTROL);
+      if (!block) return text;
+      const body = text.slice(block.open + 1, block.close);
+      const indent = (getLineIndent(text, block.open) || '') + '\t';
+      let next = body;
+      next = upsertControlProp(next, 'LINKS_Name', '""', indent, newline);
+      next = upsertControlProp(next, 'INP_Integer', 'false', indent, newline);
+      next = upsertControlProp(next, 'INPID_InputControl', '"LabelControl"', indent, newline);
+      next = upsertControlProp(next, 'LBLC_MultiLine', 'true', indent, newline);
+      next = upsertControlProp(next, 'INP_External', 'false', indent, newline);
+      next = upsertControlProp(next, 'LINKID_DataType', '"Number"', indent, newline);
+      next = upsertControlProp(next, 'IC_NoReset', 'true', indent, newline);
+      next = upsertControlProp(next, 'INP_Passive', 'true', indent, newline);
+      next = upsertControlProp(next, 'IC_NoLabel', 'true', indent, newline);
+      next = upsertControlProp(next, 'IC_ControlPage', '-1', indent, newline);
+      next = removeControlProp(next, 'INP_Default');
+      next = removeControlProp(next, 'INP_SplineType');
+      next = removeControlProp(next, 'LBLC_NumInputs');
+      next = removeControlProp(next, 'LBLC_DropDownButton');
+      next = removeControlProp(next, 'IC_Visible');
+      next = removeControlProp(next, 'ICS_ControlPage');
+      if (next === body) return text;
+      return text.slice(0, block.open + 1) + next + text.slice(block.close);
+    } catch (_) {
+      return text;
+    }
+  }
+
+  function markHeaderCarrierEntryInternal(entry) {
+    try {
+      if (!entry) return;
+      entry.locked = true;
+      entry.isLabel = true;
+      if (!Number.isFinite(entry.labelCount)) entry.labelCount = 0;
+      entry.sortIndex = -1000000;
+      entry.displayName = '';
+      entry.displayNameOriginal = '';
+      entry.displayNameDirty = true;
+    } catch (_) {}
+  }
+
+  function hideHeaderCarrierEntriesFromPublishedOrder(result = state.parseResult) {
+    try {
+      if (!result || !Array.isArray(result.entries)) return;
+      const targets = findHeaderLabelCarrierTargets(result);
+      if (!targets.length) return;
+      const hidden = new Set(targets.map((item) => item.index));
+      if (Array.isArray(result.order)) {
+        result.order = result.order.filter((index) => !hidden.has(index));
+      }
+      if (Array.isArray(result.originalOrder)) {
+        result.originalOrder = result.originalOrder.filter((index) => !hidden.has(index));
+      }
+      if (result.selected && typeof result.selected.delete === 'function') {
+        hidden.forEach((index) => result.selected.delete(index));
+      }
+      if (typeof activeDetailEntryIndex === 'number' && hidden.has(activeDetailEntryIndex)) {
+        activeDetailEntryIndex = null;
+      }
+    } catch (_) {}
+  }
+
+  async function ensureHeaderLabelCarrier() {
+    try {
+      if (!state.parseResult || !state.originalText) return null;
+      pushHistory('add header image carrier');
+      const newline = state.newline || detectNewline(state.originalText) || '\n';
+      const macroName = state.parseResult.macroName || state.parseResult.macroNameOriginal || 'Macro';
+      const preferredSourceOp = macroName;
+
+      let workingText = state.originalText;
+      workingText = removeHeaderCarrierInstanceInputs(workingText, state.parseResult);
+      let bounds = locateMacroGroupBounds(workingText, state.parseResult);
+      if (!bounds) return null;
+      const ensured = ensureGroupUserControlsBlockExists(workingText, bounds, newline, state.parseResult);
+      workingText = ensured.text || workingText;
+      const ucRange = ensured.block && ensured.block.open != null
+        ? ensured.block
+        : (ensured.block && ensured.block.openIndex != null
+          ? { open: ensured.block.openIndex, close: ensured.block.closeIndex }
+          : null);
+      if (!ucRange || ucRange.open == null || ucRange.close == null) return null;
+      while (true) {
+        const next = removeControlBlockFromUcById(workingText, ucRange, FMR_HEADER_LABEL_CONTROL);
+        if (next === workingText) break;
+        workingText = next;
+      }
+      const lines = buildControlDefinitionLines('label', {
+        name: '',
+        page: 'Controls',
+        labelCount: 0,
+        labelDefault: 'open',
+      });
+      workingText = insertUserControlBlock(workingText, ucRange, FMR_HEADER_LABEL_CONTROL, lines, newline);
+      workingText = normalizeHeaderCarrierControlInUc(workingText, ucRange, newline);
+      workingText = removeHeaderCarrierFromOtherTools(workingText, state.parseResult, '');
+      const meta = {
+        kind: 'label',
+        labelCount: 0,
+        defaultValue: '1',
+        inputControl: 'LabelControl',
+        page: 'Controls',
+        locked: true,
+      };
+      rememberPendingControlMeta(macroName, FMR_HEADER_LABEL_CONTROL, meta);
+
+      const persisted = rebuildContentWithNewOrder(workingText, state.parseResult, newline);
+      if (persisted !== state.originalText) {
+        state.originalText = persisted;
+        await reloadMacroFromCurrentText({ skipClear: true });
+      }
+      const refreshed = ensureHeaderLabelCarrierEntry(state.parseResult, preferredSourceOp);
+      if (refreshed && refreshed.entry) {
+        markHeaderCarrierEntryInternal(refreshed.entry);
+      }
+      hideHeaderCarrierEntriesFromPublishedOrder(state.parseResult);
+      return refreshed;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function getHeaderLabelTarget() {
+    const preferred = state.parseResult?.macroName
+      || state.parseResult?.macroNameOriginal
+      || '';
+    const target = ensureHeaderLabelCarrierEntry(state.parseResult, preferred);
+    if (!target || !preferred) return target;
+    if (String(target.entry?.sourceOp || '') !== String(preferred)) return null;
+    return target;
+  }
+
+  async function applyHeaderImageValue(rawInput) {
+    let target = getHeaderLabelTarget();
+    const raw = normalizeLabelImagePathInput(rawInput);
+    if (!target && raw) {
+      target = await ensureHeaderLabelCarrier();
+    }
+    if (!target && !raw) {
+      return { ok: true, cleared: false, noop: true };
+    }
+    if (!target) {
+      return { ok: false, error: 'Unable to create header image carrier label.' };
+    }
+    if (!raw) {
+      setEntryLabelStyle(target.index, { imagePath: null });
+      return { ok: true, cleared: true };
+    }
+    if (!isSupportedLabelImagePath(raw)) {
+      return { ok: false, error: 'Use PNG/JPG or a PNG/JPG base64 data URI.' };
+    }
+    let finalImagePath = raw;
+    let embedded = false;
+    if (!isSupportedLabelImageDataUri(raw)) {
+      const api = getNativeApi();
+      if (!api || typeof api.readImageDataUri !== 'function') {
+        return { ok: false, error: 'Native image embedding unavailable.' };
+      }
+      let encoded = null;
+      try {
+        encoded = await api.readImageDataUri({ filePath: raw });
+      } catch (err) {
+        const msg = String((err && err.message) || err || '');
+        if (/No handler registered/i.test(msg)) {
+          return { ok: false, error: 'App restart/update required (image embed handler missing).' };
+        }
+        return { ok: false, error: 'Unable to embed image.' };
+      }
+      if (!encoded || encoded.ok !== true || !encoded.dataUri) {
+        return { ok: false, error: String((encoded && encoded.error) || 'Unable to embed image.') };
+      }
+      if (!isSupportedLabelImageDataUri(encoded.dataUri)) {
+        return { ok: false, error: 'Unsupported embedded image format.' };
+      }
+      finalImagePath = encoded.dataUri;
+      embedded = true;
+    }
+    setEntryLabelStyle(target.index, { imagePath: finalImagePath });
+    return { ok: true, embedded };
+  }
+
+  function openHeaderImagePickerModal({ initialValue, statusText } = {}) {
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'add-control-modal';
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+
+      const form = document.createElement('form');
+      form.className = 'add-control-form';
+
+      const header = document.createElement('header');
+      const headerWrap = document.createElement('div');
+      const titleEl = document.createElement('h3');
+      titleEl.textContent = 'Header Image';
+      headerWrap.appendChild(titleEl);
+
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.textContent = 'x';
+      closeBtn.setAttribute('aria-label', 'Close');
+      header.appendChild(headerWrap);
+      header.appendChild(closeBtn);
+
+      const body = document.createElement('div');
+      body.className = 'form-body';
+
+      const field = document.createElement('label');
+      field.textContent = 'Image path or data URI';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'header-image-input';
+      input.placeholder = 'Path (.png/.jpg/.jpeg) or data:image/...;base64,...';
+      input.spellcheck = false;
+      input.value = initialValue || '';
+      field.appendChild(input);
+      body.appendChild(field);
+
+      const status = document.createElement('p');
+      status.className = 'header-image-status';
+      status.style.margin = '0';
+      status.style.whiteSpace = 'pre-line';
+      status.textContent = statusText || 'Target: internal header label';
+      body.appendChild(status);
+
+      const actions = document.createElement('div');
+      actions.className = 'modal-actions';
+
+      const browseBtn = document.createElement('button');
+      browseBtn.type = 'button';
+      browseBtn.textContent = 'Browse...';
+
+      const clearBtn = document.createElement('button');
+      clearBtn.type = 'button';
+      clearBtn.textContent = 'Clear';
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.textContent = 'Cancel';
+
+      const applyBtn = document.createElement('button');
+      applyBtn.type = 'submit';
+      applyBtn.textContent = 'Apply';
+
+      actions.appendChild(browseBtn);
+      actions.appendChild(clearBtn);
+      actions.appendChild(cancelBtn);
+      actions.appendChild(applyBtn);
+
+      form.appendChild(header);
+      form.appendChild(body);
+      form.appendChild(actions);
+      overlay.appendChild(form);
+      document.body.appendChild(overlay);
+
+      let done = false;
+      const finish = (result) => {
+        if (done) return;
+        done = true;
+        try { overlay.remove(); } catch (_) {}
+        document.removeEventListener('keydown', onKeyDown);
+        resolve(result);
+      };
+
+      const onCancel = () => finish(null);
+      const onSubmit = (ev) => {
+        ev.preventDefault();
+        finish({ action: 'apply', value: input.value });
+      };
+      const onOverlayClick = (ev) => {
+        if (ev.target === overlay) onCancel();
+      };
+      const onKeyDown = (ev) => {
+        if (ev.key === 'Escape') {
+          ev.preventDefault();
+          onCancel();
+        }
+      };
+
+      browseBtn.addEventListener('click', async () => {
+        try {
+          const api = getNativeApi();
+          if (!api || typeof api.pickImageFile !== 'function') {
+            status.textContent = 'Native image picker unavailable. Paste path or data URI manually.';
+            return;
+          }
+          const currentInput = normalizeLabelImagePathInput(input.value);
+          const res = await api.pickImageFile({
+            defaultPath: currentInput && !isSupportedLabelImageDataUri(currentInput) ? currentInput : '',
+          });
+          if (!res || res.canceled || !res.filePath) return;
+          input.value = String(res.filePath || '');
+          status.textContent = 'Selected file path. Click Apply to embed/set.';
+        } catch (_) {
+          status.textContent = 'Unable to open image picker.';
+        }
+      });
+      clearBtn.addEventListener('click', () => finish({ action: 'clear', value: '' }));
+      cancelBtn.addEventListener('click', onCancel);
+      closeBtn.addEventListener('click', onCancel);
+      form.addEventListener('submit', onSubmit);
+      overlay.addEventListener('click', onOverlayClick);
+      document.addEventListener('keydown', onKeyDown);
+
+      input.focus();
+      input.select();
+    });
+  }
+
+  async function openHeaderImageDialog() {
+    if (!state.parseResult || !state.originalText) {
+      error('Load a macro before setting a header image.');
+      return;
+    }
+    const target = getHeaderLabelTarget();
+    const style = normalizeLabelStyle(target?.entry?.labelStyle);
+    const currentRaw = extractImageSrcFromLabelMarkup(style.imagePath)
+      || normalizeLabelImagePathInput(style.imagePath)
+      || '';
+    const currentIsEmbedded = isSupportedLabelImageDataUri(currentRaw);
+    const initialValue = currentIsEmbedded ? '' : currentRaw;
+    const statusText = target
+      ? (currentIsEmbedded
+        ? 'Embedded PNG/JPG currently set on internal header label.'
+        : 'Target: internal header label')
+      : 'Will create internal header label on first set';
+    const modalResult = await openHeaderImagePickerModal({ initialValue, statusText });
+    if (!modalResult) return;
+    const nextValue = modalResult.action === 'clear' ? '' : modalResult.value;
+    const applied = await applyHeaderImageValue(nextValue);
+    if (!applied.ok) {
+      error(applied.error || 'Unable to set header image.');
+      return;
+    }
+    if (applied.cleared) {
+      info('Header image cleared.');
+      return;
+    }
+    info(applied.embedded ? 'Header image applied (embedded PNG/JPG).' : 'Header image applied.');
   }
 
   async function reloadMacroFromCurrentText(options = {}) {
@@ -5589,6 +6255,7 @@ function hideDetailDrawer() {
       onReloadCsv: () => reloadCsvSource(),
       onGenerateFromCsv: () => generateSettingsFromCsv(),
       onInsertUpdateDataButton: () => insertUpdateDataButton(),
+      onHeaderImageDialog: () => openHeaderImageDialog(),
       onProtocolUrl: (url) => handleProtocolUrl(url),
     });
 
@@ -6105,6 +6772,10 @@ function hideDetailDrawer() {
       if (state.parseResult.dataLink) {
         applyFmrDataLinkToEntries(state.parseResult);
       }
+      const headerTargetsOnLoad = findHeaderLabelCarrierTargets(state.parseResult);
+      headerTargetsOnLoad.forEach((item) => markHeaderCarrierEntryInternal(item.entry));
+      ensureHeaderLabelCarrierEntry(state.parseResult);
+      hideHeaderCarrierEntriesFromPublishedOrder(state.parseResult);
       const hiddenFileMeta = extractHiddenFileMeta(state.originalText, state.parseResult);
       if (hiddenFileMeta) {
         state.parseResult.fileMeta = hiddenFileMeta;
@@ -12085,11 +12756,15 @@ async function handleFile(file) {
       for (const entry of result.entries) {
         if (!entry || !entry.sourceOp || !entry.source) continue;
         if (entry.isLabel) {
-          const nameText = entry.displayName || entry.displayNameOriginal || entry.name || entry.source || `${entry.sourceOp}.${entry.source}`;
+          const isHeaderCarrier = entry.source === FMR_HEADER_LABEL_CONTROL;
+          const fallbackText = entry.displayName || entry.displayNameOriginal || entry.name || entry.source || `${entry.sourceOp}.${entry.source}`;
+          const nameText = isHeaderCarrier ? '' : fallbackText;
           const style = normalizeLabelStyle(entry.labelStyle);
           const originalStyle = entry.labelStyleOriginal ? normalizeLabelStyle(entry.labelStyleOriginal) : style;
           const styleChanged = !!entry.labelStyleEdited || !!entry.labelStyleDirty || !labelStyleEquals(style, originalStyle);
-          const nameChanged = !!entry.displayNameDirty;
+          const nameChanged = isHeaderCarrier
+            ? String(fallbackText || '').trim().length > 0 || !!entry.displayNameDirty
+            : !!entry.displayNameDirty;
           if (!styleChanged && !nameChanged) {
             if (commitChanges) {
               entry.displayNameDirty = false;
@@ -12099,7 +12774,16 @@ async function handleFile(file) {
             continue;
           }
           const desiredMarkup = buildLabelMarkup(nameText, style);
-          const res = rewriteToolControlDisplayName(updated, currentBounds, entry.sourceOp, entry.source, desiredMarkup, eol || '\n', resultRef);
+          const res = rewriteToolControlDisplayName(
+            updated,
+            currentBounds,
+            entry.sourceOp,
+            entry.source,
+            desiredMarkup,
+            eol || '\n',
+            resultRef,
+            { headerCarrier: isHeaderCarrier }
+          );
           updated = res.text;
           currentBounds = res.bounds || currentBounds;
           if (!res.applied) continue;
@@ -12135,10 +12819,39 @@ async function handleFile(file) {
     }
   }
 
-  function rewriteToolControlDisplayName(text, bounds, toolName, controlName, label, eol, resultRef) {
+  function rewriteToolControlDisplayName(text, bounds, toolName, controlName, label, eol, resultRef, options = {}) {
     try {
       let currentBounds = bounds || locateMacroGroupBounds(text, resultRef);
       if (!currentBounds) return { text, bounds, applied: false };
+      const isHeaderCarrier = !!options.headerCarrier || String(controlName || '') === FMR_HEADER_LABEL_CONTROL;
+      if (isHeaderCarrier) {
+        const carrierBlock = findHeaderCarrierControlBlockInText(text, resultRef, toolName);
+        if (!carrierBlock) return { text, bounds: currentBounds, applied: false };
+        const indent = (getLineIndent(text, carrierBlock.open) || '') + '\t';
+        const newline = eol || '\n';
+        let body = text.slice(carrierBlock.open + 1, carrierBlock.close);
+        const markup = buildHeaderCarrierImageMarkup(label);
+        const markupValue = markup ? `"${escapeQuotes(markup)}"` : null;
+        body = upsertControlProp(body, 'LINKS_Name', markupValue || '""', indent, newline);
+        body = upsertControlProp(body, 'INP_Integer', 'false', indent, newline);
+        body = upsertControlProp(body, 'INPID_InputControl', '"LabelControl"', indent, newline);
+        body = upsertControlProp(body, 'LBLC_MultiLine', 'true', indent, newline);
+        body = upsertControlProp(body, 'INP_External', 'false', indent, newline);
+        body = upsertControlProp(body, 'LINKID_DataType', '"Number"', indent, newline);
+        body = upsertControlProp(body, 'IC_NoReset', 'true', indent, newline);
+        body = upsertControlProp(body, 'INP_Passive', 'true', indent, newline);
+        body = upsertControlProp(body, 'IC_NoLabel', 'true', indent, newline);
+        body = upsertControlProp(body, 'IC_ControlPage', '-1', indent, newline);
+        body = removeControlProp(body, 'INP_Default');
+        body = removeControlProp(body, 'INP_SplineType');
+        body = removeControlProp(body, 'LBLC_NumInputs');
+        body = removeControlProp(body, 'LBLC_DropDownButton');
+        body = removeControlProp(body, 'IC_Visible');
+        body = removeControlProp(body, 'ICS_ControlPage');
+        const updated = text.slice(0, carrierBlock.open + 1) + body + text.slice(carrierBlock.close);
+        const newBounds = locateMacroGroupBounds(updated, resultRef) || currentBounds;
+        return { text: updated, bounds: newBounds, applied: true };
+      }
       const tb = findToolBlockInGroup(text, currentBounds.groupOpenIndex, currentBounds.groupCloseIndex, toolName);
       if (!tb) return { text, bounds: currentBounds, applied: false };
       let uc = findUserControlsInTool(text, tb.open, tb.close);
@@ -13054,6 +13767,9 @@ function applyBlendCheckboxesToTool(text, bounds, toolName, controls, eol, resul
         entry.controlMetaOriginal = entry.controlMetaOriginal || {};
         entry.controlMeta.defaultValue = meta.defaultValue;
         if (!entry.controlMetaOriginal.defaultValue) entry.controlMetaOriginal.defaultValue = meta.defaultValue;
+      }
+      if (meta.locked === true) {
+        entry.locked = true;
       }
     } catch (_) {}
   }

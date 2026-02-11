@@ -62,7 +62,7 @@ export function parseSetting(text) {
   const labelMap = chosen.groupOpen != null ? parseLabelsInGroup(text, chosen.groupOpen, chosen.groupClose) : new Map();
   const displayMap = chosen.groupOpen != null ? parseControlDisplayNamesInGroup(text, chosen.groupOpen, chosen.groupClose) : new Map();
   for (const e of entries) {
-    if (isStructuralEntryName(e.key)) e.locked = true;
+    if (isStructuralEntryName(e.key) || isStructuralControlSource(e.source)) e.locked = true;
     if (!e.sourceOp || !e.source) continue;
     const key = `${e.sourceOp}.${e.source}`;
     const meta = labelMap.get(key);
@@ -73,7 +73,13 @@ export function parseSetting(text) {
       if (!labelRaw && e.name && /<[^>]+>/.test(e.name)) labelRaw = e.name;
       if (labelRaw) {
         const parsed = parseLabelMarkup(labelRaw);
-        e.displayName = parsed.text || labelRaw;
+        if (parsed.text) {
+          e.displayName = parsed.text;
+        } else if (parsed.style && parsed.style.imagePath) {
+          e.displayName = e.name || humanizeName(e.source) || 'Label';
+        } else {
+          e.displayName = labelRaw;
+        }
         e.labelStyle = normalizeLabelStyle(parsed.style);
         e.labelStyleOriginal = { ...e.labelStyle };
       } else if (!e.displayName) {
@@ -376,7 +382,7 @@ function parseLabelsInGroup(text, groupOpen, groupClose) {
               const cBody = uc.slice(cOpen + 1, cClose);
               if (/INPID_InputControl\s*=\s*"LabelControl"/.test(cBody)) {
                 const num = extractNumericProp(cBody, 'LBLC_NumInputs');
-                const disp = extractQuotedProp(cBody, 'LINKS_Name');
+                const disp = extractQuotedProp(cBody, 'LINKS_Name') || extractQuotedProp(cBody, 'INP_Default');
                 map.set(`${toolName}.${controlName}`, { numInputs: num || 0, name: disp || controlName });
               }
               j = cClose + 1;
@@ -451,7 +457,7 @@ function parseControlDisplayNamesInGroup(text, groupOpen, groupClose) {
               const cClose = findMatchingBrace(uc, cOpen);
               if (cClose < 0) break;
               const cBody = uc.slice(cOpen + 1, cClose);
-              const disp = extractQuotedProp(cBody, 'LINKS_Name');
+              const disp = extractQuotedProp(cBody, 'LINKS_Name') || extractQuotedProp(cBody, 'INP_Default');
               if (disp) map.set(`${toolName}.${controlName}`, disp);
               j = cClose + 1;
               continue;
@@ -525,4 +531,10 @@ function isStructuralEntryName(key) {
   if (!key) return false;
   const k = String(key).toLowerCase();
   return /^maininput\d+$/.test(k) || /^main\d+input$/.test(k);
+}
+
+function isStructuralControlSource(source) {
+  if (!source) return false;
+  const s = String(source).toLowerCase();
+  return s === 'fmr_headervisual' || s === 'fmr_datalink' || s === 'fmr_filemeta';
 }

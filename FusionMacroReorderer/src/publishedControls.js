@@ -573,52 +573,61 @@ export function createPublishedControls({
       while (pos < total) {
         const idx = order[pos];
         const e = entries[idx];
-      if (e && e.locked) continue;
-      const filterPage = activePage;
-      if (filterPage && getEntryPage(e) !== filterPage) continue;
-      if (filter) {
-        const t = (e.displayName || '').toLowerCase();
-        const s = (e.source || '').toLowerCase();
-        const op = (e.sourceOp || '').toLowerCase();
-        if (!(t.includes(filter) || s.includes(filter) || op.includes(filter))) continue;
-      }
-
-      const li = document.createElement('li');
-      li.draggable = true;
-      li.dataset.index = String(idx);
-      li.setAttribute('aria-grabbed', 'false');
-      if (getSelectedSet().has(idx)) {
-        li.classList.add('selected');
-        insertionAnchorPos = Math.max(insertionAnchorPos ?? -1, pos);
-      }
-      li.addEventListener('click', (ev) => {
-        if (isInteractiveTarget(ev.target)) return;
-        const sel = getSelectedSet();
-        const alreadySelected = li.classList.contains('selected');
-        const hasModifier = ev.shiftKey || ev.metaKey || ev.ctrlKey;
-        if (alreadySelected && !hasModifier) {
-          if (detailTargetIndex === idx) {
-            li.classList.remove('selected');
-            sel.delete(idx);
-            state.parseResult.selected = sel;
-            refreshAnchorFromSelection(order);
-            updateRemoveSelectedState();
-            syncDetailTarget(null);
-          } else {
-            syncDetailTarget(idx);
-          }
-          return;
+        if (e && e.locked) {
+          pos += 1;
+          continue;
         }
-        const willSelect = !alreadySelected;
-        li.classList.toggle('selected', willSelect);
-        if (willSelect) sel.add(idx); else sel.delete(idx);
-        state.parseResult.selected = sel;
-        const p = order.indexOf(idx);
-        if (willSelect) insertionAnchorPos = (insertionAnchorPos == null) ? p : Math.max(insertionAnchorPos, p);
-        else refreshAnchorFromSelection(order);
-        updateRemoveSelectedState();
-        syncDetailTarget(willSelect ? idx : null);
-      });
+        const filterPage = activePage;
+        if (filterPage && getEntryPage(e) !== filterPage) {
+          pos += 1;
+          continue;
+        }
+        if (filter) {
+          const t = (e.displayName || '').toLowerCase();
+          const s = (e.source || '').toLowerCase();
+          const op = (e.sourceOp || '').toLowerCase();
+          if (!(t.includes(filter) || s.includes(filter) || op.includes(filter))) {
+            pos += 1;
+            continue;
+          }
+        }
+
+        const li = document.createElement('li');
+        li.draggable = true;
+        li.dataset.index = String(idx);
+        li.setAttribute('aria-grabbed', 'false');
+        if (getSelectedSet().has(idx)) {
+          li.classList.add('selected');
+          insertionAnchorPos = Math.max(insertionAnchorPos ?? -1, pos);
+        }
+        li.addEventListener('click', (ev) => {
+          if (isInteractiveTarget(ev.target)) return;
+          const sel = getSelectedSet();
+          const alreadySelected = li.classList.contains('selected');
+          const hasModifier = ev.shiftKey || ev.metaKey || ev.ctrlKey;
+          if (alreadySelected && !hasModifier) {
+            if (detailTargetIndex === idx) {
+              li.classList.remove('selected');
+              sel.delete(idx);
+              state.parseResult.selected = sel;
+              refreshAnchorFromSelection(order);
+              updateRemoveSelectedState();
+              syncDetailTarget(null);
+            } else {
+              syncDetailTarget(idx);
+            }
+            return;
+          }
+          const willSelect = !alreadySelected;
+          li.classList.toggle('selected', willSelect);
+          if (willSelect) sel.add(idx); else sel.delete(idx);
+          state.parseResult.selected = sel;
+          const p = order.indexOf(idx);
+          if (willSelect) insertionAnchorPos = (insertionAnchorPos == null) ? p : Math.max(insertionAnchorPos, p);
+          else refreshAnchorFromSelection(order);
+          updateRemoveSelectedState();
+          syncDetailTarget(willSelect ? idx : null);
+        });
 
       if (e.isLabel) li.classList.add('label');
       const labelDepth = labelGroupCounts.get(idx) || 0;

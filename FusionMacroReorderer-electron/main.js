@@ -743,6 +743,43 @@ ipcMain.handle('open-setting-file', async () => {
   }
 });
 
+// IPC: pick an image file via native dialog (used by header image UI)
+ipcMain.handle('pick-image-file', async (_event, payload = {}) => {
+  const browserWindow = BrowserWindow.getFocusedWindow();
+  const startPath = payload.defaultPath || app.getPath('pictures');
+  const result = await dialog.showOpenDialog(browserWindow, {
+    defaultPath: startPath,
+    filters: [
+      { name: 'Images', extensions: ['png', 'jpg', 'jpeg'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+    properties: ['openFile'],
+  });
+
+  if (result.canceled || !result.filePaths || !result.filePaths[0]) {
+    return { canceled: true };
+  }
+  return { canceled: false, filePath: result.filePaths[0] };
+});
+
+// IPC: read an image file and return a data URI for Fusion header labels.
+ipcMain.handle('read-image-data-uri', async (_event, payload = {}) => {
+  try {
+    const filePath = String(payload.filePath || '').trim();
+    if (!filePath) return { ok: false, error: 'Missing image path.' };
+    const ext = path.extname(filePath).toLowerCase();
+    let mime = '';
+    if (ext === '.png') mime = 'image/png';
+    else if (ext === '.jpg' || ext === '.jpeg') mime = 'image/jpeg';
+    else return { ok: false, error: 'Unsupported image format. Use PNG or JPG.' };
+    const bytes = fs.readFileSync(filePath);
+    const base64 = bytes.toString('base64');
+    return { ok: true, dataUri: `data:${mime};base64,${base64}` };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
 // IPC: select a folder via native dialog (used by Macro Explorer)
 ipcMain.handle('select-folder', async (_event, payload = {}) => {
   const browserWindow = BrowserWindow.getFocusedWindow();
@@ -1200,6 +1237,13 @@ ipcMain.handle('set-data-menu-state', async (_event, payload = {}) => {
           click: () => {
             const win = BrowserWindow.getFocusedWindow();
             if (win) win.webContents.send('fmr-menu', { action: 'normalizeLegacy' });
+          },
+        },
+        {
+          label: 'Header Image...',
+          click: () => {
+            const win = BrowserWindow.getFocusedWindow();
+            if (win) win.webContents.send('fmr-menu', { action: 'headerImage' });
           },
         },
         { type: 'separator' },

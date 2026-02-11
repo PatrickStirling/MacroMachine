@@ -71,6 +71,26 @@ function decodeEntities(text) {
     .replace(/&amp;/gi, '&');
 }
 
+function normalizeImagePath(value) {
+  if (!value) return null;
+  let raw = decodeEntities(String(value).trim());
+  if (!raw) return null;
+  if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
+    raw = raw.slice(1, -1).trim();
+  }
+  if (!raw) return null;
+  let lower = raw.toLowerCase();
+  if (lower.startsWith('data:image/png;base64,') || lower.startsWith('data:image/jpeg;base64,') || lower.startsWith('data:image/jpg;base64,')) {
+    // Resolve header payloads can include trailing '>'/quotes without a full tag.
+    raw = raw.replace(/[>'"]+$/g, '');
+    return raw;
+  }
+  if (lower.startsWith('data:')) return null;
+  if (lower.startsWith('javascript:')) return null;
+  raw = raw.replace(/\\/g, '/');
+  return raw;
+}
+
 function escapeHtml(text) {
   return String(text)
     .replace(/&/g, '&amp;')
@@ -88,6 +108,7 @@ export function normalizeLabelStyle(style = {}) {
     underline: !!base.underline,
     center: !!base.center,
     color: normalizeColor(base.color),
+    imagePath: normalizeImagePath(base.imagePath),
   };
 }
 
@@ -98,7 +119,8 @@ export function labelStyleEquals(a, b) {
     && left.italic === right.italic
     && left.underline === right.underline
     && left.center === right.center
-    && left.color === right.color;
+    && left.color === right.color
+    && left.imagePath === right.imagePath;
 }
 
 export function stripLabelMarkup(markup) {
@@ -122,7 +144,22 @@ export function parseLabelMarkup(markup) {
     underline: /<\s*u\b/.test(lower),
     center: /<\s*center\b/.test(lower) || /text-align\s*:\s*center/.test(lower),
     color: null,
+    imagePath: null,
   };
+  let imageMatch = raw.match(/<\s*img\b[^>]*\bsrc\s*=\s*(['"])(.*?)\1/i);
+  if (!imageMatch) {
+    imageMatch = raw.match(/<\s*img\b[^>]*\bsrc\s*=\s*([^'"\s>]+)/i);
+  }
+  if (!imageMatch) {
+    // Resolve header images can be exported as truncated markup with
+    // no closing quote/angle bracket for src.
+    imageMatch = raw.match(/<\s*img\b[^>]*\bsrc\s*=\s*['"]([^'"]+)$/i);
+  }
+  if (imageMatch && imageMatch[2] != null) {
+    style.imagePath = normalizeImagePath(imageMatch[2]);
+  } else if (imageMatch && imageMatch[1] != null) {
+    style.imagePath = normalizeImagePath(imageMatch[1]);
+  }
   let colorMatch = raw.match(/<\s*font\b[^>]*\bcolor\s*=\s*['"]?([^'">\s]+)['"]?/i);
   if (!colorMatch) {
     const styleMatch = raw.match(/style\s*=\s*['"]([^'"]+)['"]/i);
@@ -144,6 +181,9 @@ export function parseLabelMarkup(markup) {
 export function buildLabelMarkup(text, style) {
   const safeText = escapeHtml(text || '');
   const normalized = normalizeLabelStyle(style);
+  const imageMarkup = normalized.imagePath
+    ? `<img src='${escapeHtml(normalized.imagePath)}' />`
+    : '';
   let out = safeText;
   if (normalized.bold) out = `<b>${out}</b>`;
   if (normalized.italic) out = `<i>${out}</i>`;
@@ -152,6 +192,8 @@ export function buildLabelMarkup(text, style) {
     const rgb = hexToRgbString(normalized.color) || normalized.color;
     out = `<p style='color:${rgb};'>${out}</p>`;
   }
-  if (normalized.center) out = `<center>${out}</center>`;
-  return out;
+  let combined = imageMarkup;
+  if (out) combined = combined ? `${combined}<br>${out}` : out;
+  if (normalized.center && combined) combined = `<center>${combined}</center>`;
+  return combined || out;
 }

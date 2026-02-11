@@ -22,6 +22,7 @@ export function setupNativeBridge({
   onReloadCsv,
   onGenerateFromCsv,
   onInsertUpdateDataButton,
+  onHeaderImageDialog,
   onProtocolUrl,
 }) {
   if (!isElectron || typeof window === 'undefined' || window.FusionMacroReordererNative) {
@@ -42,6 +43,8 @@ export function setupNativeBridge({
       readSettingFile: (payload) => ipcRenderer.invoke('read-setting-file', payload || {}),
       saveDrfxPreset: (payload) => ipcRenderer.invoke('drfx-save-preset', payload || {}),
       openSettingFile: () => ipcRenderer.invoke('open-setting-file'),
+      pickImageFile: (payload) => ipcRenderer.invoke('pick-image-file', payload || {}),
+      readImageDataUri: (payload) => ipcRenderer.invoke('read-image-data-uri', payload || {}),
       readClipboard: () => {
         try { return clipboard.readText(); } catch (_) { return ''; }
       },
@@ -78,6 +81,8 @@ export function setupNativeBridge({
             if (typeof onGenerateFromCsv === 'function') onGenerateFromCsv();
           } else if (action === 'insertUpdateData') {
             if (typeof onInsertUpdateDataButton === 'function') onInsertUpdateDataButton();
+          } else if (action === 'headerImage') {
+            if (typeof onHeaderImageDialog === 'function') onHeaderImageDialog();
           }
         } catch (_) {
           /* ignore menu handler errors */
