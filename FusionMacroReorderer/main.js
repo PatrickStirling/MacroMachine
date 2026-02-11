@@ -3472,6 +3472,10 @@ function hideDetailDrawer() {
               if (state.csvData && Array.isArray(state.csvData.rows) && state.csvData.rows.length) {
                 await applyCsvRowsToCurrentMacro(state.csvData.rows, ensureDataLink(state.parseResult), { silent: true });
               }
+              if (state.parseResult && state.parseResult.entries && state.parseResult.entries[index]) {
+                renderDetailDrawer(index);
+                syncDataLinkPanel();
+              }
             };
             overrideSelect.addEventListener('change', async () => {
               syncOverrideVisibility();
@@ -3556,6 +3560,10 @@ function hideDetailDrawer() {
           syncDataLinkMappings(state.parseResult);
           if (state.csvData && Array.isArray(state.csvData.rows) && state.csvData.rows.length) {
             await applyCsvRowsToCurrentMacro(state.csvData.rows, link, { silent: true });
+          }
+          if (state.parseResult && state.parseResult.entries && state.parseResult.entries[index]) {
+            renderDetailDrawer(index);
+            syncDataLinkPanel();
           }
         };
         overrideSelect.addEventListener('change', async () => {
@@ -4192,6 +4200,64 @@ function hideDetailDrawer() {
     }
   }
 
+  function buildToolInputValueLiteral(entry, value) {
+    try {
+      const nextText = String(value == null ? '' : value);
+      const isText = isTextControl(entry);
+      const useStyled = isText && String(entry?.source || '').toLowerCase().includes('styledtext');
+      if (useStyled) {
+        return buildStyledTextBlock(nextText);
+      }
+      if (isText) {
+        return `"${escapeSettingString(nextText)}"`;
+      }
+      const raw = nextText.trim();
+      return raw || '0';
+    } catch (_) {
+      return String(value == null ? '' : value);
+    }
+  }
+
+  function formatToolInputId(id) {
+    try {
+      const raw = String(id == null ? '' : id).trim();
+      if (!raw) return '';
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(raw)) return raw;
+      const normalized = normalizeId(raw);
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(normalized)) return normalized;
+      return `["${escapeSettingString(normalized)}"]`;
+    } catch (_) {
+      return String(id == null ? '' : id);
+    }
+  }
+
+  function insertToolInputBlock(text, inputsOpen, inputsClose, entry, value, eol) {
+    try {
+      if (!text || !entry || !entry.source) return text;
+      const nl = eol || '\n';
+      const itemIndent = (getLineIndent(text, inputsOpen) || '') + '\t';
+      const propIndent = itemIndent + '\t';
+      const inputId = formatToolInputId(entry.source);
+      if (!inputId) return text;
+      const valueLiteral = buildToolInputValueLiteral(entry, value);
+      const block =
+        `${itemIndent}${inputId} = Input {${nl}` +
+        `${propIndent}Value = ${valueLiteral},${nl}` +
+        `${itemIndent}},`;
+      let cursor = Math.max(inputsOpen + 1, inputsClose - 1);
+      while (cursor > inputsOpen && /\s/.test(text[cursor])) cursor -= 1;
+      const prev = text[cursor];
+      const isEmptyInputs = prev === '{';
+      const needsSeparatorComma = !isEmptyInputs && prev !== ',';
+      const needsLeadingNl = text[inputsClose - 1] !== '\n' && text[inputsClose - 1] !== '\r';
+      const prefix = needsLeadingNl ? nl : '';
+      const separator = needsSeparatorComma ? ',' : '';
+      return text.slice(0, inputsClose) + separator + prefix + block + nl + text.slice(inputsClose);
+    } catch (_) {
+      return text;
+    }
+  }
+
   function setInputValueInToolText(text, entry, value, eol, resultRef) {
     try {
       if (!text || !entry || !entry.sourceOp || !entry.source) return text;
@@ -4202,7 +4268,9 @@ function hideDetailDrawer() {
       const inputsBlock = findInputsInTool(text, toolBlock.open, toolBlock.close);
       if (!inputsBlock) return text;
       const inputBlock = findInputBlockInInputs(text, inputsBlock.open, inputsBlock.close, entry.source);
-      if (!inputBlock) return text;
+      if (!inputBlock) {
+        return insertToolInputBlock(text, inputsBlock.open, inputsBlock.close, entry, value, eol);
+      }
       const indent = (getLineIndent(text, inputBlock.open) || '') + '\t';
       let body = text.slice(inputBlock.open + 1, inputBlock.close);
       body = updateToolInputBlockBody(body, entry, value, indent, eol);
@@ -4399,15 +4467,51 @@ function hideDetailDrawer() {
       if (!bounds) return null;
       const inputs = result.inputs;
       const plan = [];
+      const toolBlockCache = new Map();
+      const inputsBlockCache = new Map();
+      const inputBlockCache = new Map();
+      const instanceBlockCache = new Map();
+      const getToolBlockCached = (toolName) => {
+        if (!toolName) return null;
+        if (toolBlockCache.has(toolName)) return toolBlockCache.get(toolName);
+        const block = findToolBlockInGroup(baseText, bounds.groupOpenIndex, bounds.groupCloseIndex, toolName) || null;
+        toolBlockCache.set(toolName, block);
+        return block;
+      };
+      const getInputsBlockCached = (toolName, toolBlock) => {
+        const key = toolName || '';
+        if (inputsBlockCache.has(key)) return inputsBlockCache.get(key);
+        const block = toolBlock ? (findInputsInTool(baseText, toolBlock.open, toolBlock.close) || null) : null;
+        inputsBlockCache.set(key, block);
+        return block;
+      };
+      const getInputBlockCached = (toolName, inputName, inputsBlock) => {
+        const key = `${toolName || ''}::${inputName || ''}`;
+        if (inputBlockCache.has(key)) return inputBlockCache.get(key);
+        const block = inputsBlock
+          ? (findInputBlockInInputs(baseText, inputsBlock.open, inputsBlock.close, inputName) || null)
+          : null;
+        inputBlockCache.set(key, block);
+        return block;
+      };
+      const getInstanceBlockCached = (instanceKey) => {
+        if (!instanceKey) return null;
+        if (instanceBlockCache.has(instanceKey)) return instanceBlockCache.get(instanceKey);
+        const block = (!inputs || typeof inputs.openIndex !== 'number' || typeof inputs.closeIndex !== 'number')
+          ? null
+          : (findInstanceInputBlockInInputs(baseText, inputs.openIndex, inputs.closeIndex, instanceKey) || null);
+        instanceBlockCache.set(instanceKey, block);
+        return block;
+      };
       for (const entry of linkedEntries) {
         if (!entry || !entry.csvLink || !entry.csvLink.column) continue;
         if (isTextControl(entry)) {
           if (!entry.sourceOp || !entry.source) continue;
-          const toolBlock = findToolBlockInGroup(baseText, bounds.groupOpenIndex, bounds.groupCloseIndex, entry.sourceOp);
+          const toolBlock = getToolBlockCached(entry.sourceOp);
           if (!toolBlock) continue;
-          const inputsBlock = findInputsInTool(baseText, toolBlock.open, toolBlock.close);
+          const inputsBlock = getInputsBlockCached(entry.sourceOp, toolBlock);
           if (!inputsBlock) continue;
-          const inputBlock = findInputBlockInInputs(baseText, inputsBlock.open, inputsBlock.close, entry.source);
+          const inputBlock = getInputBlockCached(entry.sourceOp, entry.source, inputsBlock);
           if (!inputBlock) continue;
           const indent = (getLineIndent(baseText, inputBlock.open) || '') + '\t';
           plan.push({ kind: 'tool', entry, start: inputBlock.open, end: inputBlock.close, indent });
@@ -4415,7 +4519,7 @@ function hideDetailDrawer() {
         }
         if (!inputs || typeof inputs.openIndex !== 'number' || typeof inputs.closeIndex !== 'number') continue;
         if (!entry.key) continue;
-        const inst = findInstanceInputBlockInInputs(baseText, inputs.openIndex, inputs.closeIndex, entry.key);
+        const inst = getInstanceBlockCached(entry.key);
         if (!inst) continue;
         const indent = (getLineIndent(baseText, inst.open) || '') + '\t';
         plan.push({ kind: 'instance', entry, start: inst.open, end: inst.close, indent });
@@ -7498,6 +7602,12 @@ async function handleFile(file) {
 
   async function reloadDataLinkForCurrentMacro() {
     if (!state.parseResult) return;
+    const perfStart = Date.now();
+    let fetchMs = 0;
+    let parseMs = 0;
+    let applyMs = 0;
+    let relinkMs = 0;
+    let summaryMs = 0;
     const options = arguments && arguments[0] ? arguments[0] : {};
     const wantSummary = !!options.summary;
     const summaryMaxLines = Number.isFinite(options.maxLines) ? Math.max(1, options.maxLines) : 4;
@@ -7523,13 +7633,17 @@ async function handleFile(file) {
     }
     const url = normalizeCsvUrl(source);
     try {
+      const fetchStart = Date.now();
       const res = await fetch(url);
+      fetchMs = Date.now() - fetchStart;
       if (!res.ok) {
         error(`CSV fetch failed (${res.status}).`);
         return;
       }
+      const parseStart = Date.now();
       const text = await res.text();
       const parsed = parseCsvText(text);
+      parseMs = Date.now() - parseStart;
       if (!parsed.headers.length) {
         error('CSV appears to be empty or invalid.');
         return;
@@ -7541,8 +7655,11 @@ async function handleFile(file) {
         error('No matching row found for this macro.');
         return;
       }
+      const applyStart = Date.now();
       await applyCsvRowsToCurrentMacro(rows, link, { silent: true });
+      applyMs = Date.now() - applyStart;
       if (priorMappings.size && state.parseResult) {
+        const relinkStart = Date.now();
         let applied = 0;
         (state.parseResult.entries || []).forEach((entry) => {
           if (!entry || !entry.sourceOp || !entry.source) return;
@@ -7560,9 +7677,11 @@ async function handleFile(file) {
             updateDataLinkPanelVisibility();
           }
         }
+        relinkMs = Date.now() - relinkStart;
       }
       let summary = null;
       if (wantSummary && state.parseResult) {
+        const summaryStart = Date.now();
         const afterValues = new Map();
         (state.parseResult.entries || []).forEach((entry) => {
           if (!entry || !entry.sourceOp || !entry.source) return;
@@ -7590,16 +7709,29 @@ async function handleFile(file) {
           }
         });
         summary = { lines, total };
+        summaryMs = Date.now() - summaryStart;
       }
+      logDiag(`[CSV reload] rows=${rows.length}, headers=${parsed.headers.length}, fetch=${fetchMs}ms, parse=${parseMs}ms, apply=${applyMs}ms, relink=${relinkMs}ms, summary=${summaryMs}ms, total=${Date.now() - perfStart}ms`);
       info('Data reloaded for current macro.');
       return summary;
     } catch (err) {
+      logDiag(`[CSV reload] failed after ${Date.now() - perfStart}ms: ${err?.message || err}`);
       error(err?.message || err || 'Failed to reload data.');
     }
   }
 
-  async function applyCsvRowsToCurrentMacro(rows, link, options = {}) {
+  async function applyCsvRowsToCurrentMacroNow(rows, link, options = {}) {
     if (!state.parseResult) return;
+    const perfStart = Date.now();
+    const perf = { planMs: 0, patchMs: 0, reloadMs: 0 };
+    const stats = {
+      rowCacheHits: 0,
+      rowCacheMisses: 0,
+      planSize: 0,
+      mixedMode: false,
+      entryPlanCount: 0,
+      editsCount: 0,
+    };
     const priorMappings = new Map();
     const priorHexMappings = new Map();
     (state.parseResult.entries || []).forEach((entry) => {
@@ -7622,7 +7754,30 @@ async function handleFile(file) {
     const hexEntries = (state.parseResult.entries || [])
       .map((entry, idx) => ({ entry, idx }))
       .filter(({ entry }) => entry && entry.csvLinkHex && entry.csvLinkHex.column);
+    const rowCache = new Map();
+    const resolveEntryRowCached = (entry, overrideLink = null) => {
+      if (!entry || !entry.sourceOp || !entry.source) return null;
+      const linkObj = overrideLink || entry.csvLink;
+      if (!linkObj || !linkObj.column) return null;
+      const rowMode = String(linkObj.rowMode || 'default');
+      const rowIndex = Number.isFinite(linkObj.rowIndex) ? Number(linkObj.rowIndex) : '';
+      const rowKey = linkObj.rowKey != null ? String(linkObj.rowKey) : '';
+      const rowValue = linkObj.rowValue != null ? String(linkObj.rowValue) : '';
+      const cacheKey = `${linkObj.column}|${rowMode}|${rowIndex}|${rowKey}|${rowValue}|${overrideLink ? 'hex' : 'csv'}`;
+      if (rowCache.has(cacheKey)) {
+        stats.rowCacheHits += 1;
+        return rowCache.get(cacheKey);
+      }
+      stats.rowCacheMisses += 1;
+      const resolved = resolveRowForEntry(rows, link, entry, overrideLink) || null;
+      rowCache.set(cacheKey, resolved);
+      return resolved;
+    };
+    const planStart = Date.now();
     const plan = buildCsvPatchPlan(workingText, state.parseResult, linkedEntries);
+    perf.planMs = Date.now() - planStart;
+    stats.planSize = Array.isArray(plan) ? plan.length : 0;
+    const patchStart = Date.now();
     if (plan && plan.length) {
       const baseRow = resolveRowFromLink(rows, link);
       if (!baseRow) {
@@ -7632,18 +7787,60 @@ async function handleFile(file) {
       if (linkedEntries.every((entry) => (entry.csvLink?.rowMode || 'default') === 'default')) {
         workingText = applyCsvRowEdits(workingText, plan, baseRow, eol);
       } else {
-        let updated = workingText;
-        linkedEntries.forEach((entry) => {
-          const row = resolveRowForEntry(rows, link, entry);
-          if (!row) return;
-          const entryPlan = plan.filter(p => p.entry === entry);
-          updated = applyCsvRowEdits(updated, entryPlan, row, eol);
-        });
-        workingText = updated;
+        stats.mixedMode = true;
+        const planByEntry = new Map();
+        for (const patch of plan) {
+          if (!patch || !patch.entry) continue;
+          let list = planByEntry.get(patch.entry);
+          if (!list) {
+            list = [];
+            planByEntry.set(patch.entry, list);
+          }
+          list.push(patch);
+        }
+        stats.entryPlanCount = planByEntry.size;
+        const edits = [];
+        for (const entry of linkedEntries) {
+          const row = resolveEntryRowCached(entry);
+          if (!row) continue;
+          const entryPlan = planByEntry.get(entry);
+          if (!entryPlan || !entryPlan.length) continue;
+          for (const patch of entryPlan) {
+            const rawVal = row[entry.csvLink.column] != null ? String(row[entry.csvLink.column]) : '';
+            if (patch.kind === 'tool') {
+              const body = workingText.slice(patch.start + 1, patch.end);
+              const next = updateToolInputBlockBody(body, entry, rawVal, patch.indent, eol);
+              if (next !== body) edits.push({ start: patch.start + 1, end: patch.end, text: next });
+            } else if (patch.kind === 'instance') {
+              const body = workingText.slice(patch.start + 1, patch.end);
+              const formatted = formatDefaultForStorage(entry, rawVal);
+              if (formatted != null) {
+                entry.controlMeta = entry.controlMeta || {};
+                entry.controlMetaOriginal = entry.controlMetaOriginal || {};
+                entry.controlMeta.defaultValue = formatted;
+                entry.controlMetaDirty = true;
+                applyDefaultToEntryRaw(entry, formatted, eol);
+              }
+              let next = body;
+              if (formatted == null) next = removeInstanceInputProp(body, 'Default');
+              else next = setInstanceInputProp(body, 'Default', formatted, patch.indent, eol || '\n');
+              if (next !== body) edits.push({ start: patch.start + 1, end: patch.end, text: next });
+            }
+          }
+        }
+        if (edits.length) {
+          stats.editsCount = edits.length;
+          edits.sort((a, b) => b.start - a.start);
+          let updated = workingText;
+          for (const edit of edits) {
+            updated = updated.slice(0, edit.start) + edit.text + updated.slice(edit.end);
+          }
+          workingText = updated;
+        }
       }
     } else {
       linkedEntries.forEach((entry) => {
-        const row = resolveRowForEntry(rows, link, entry);
+        const row = resolveEntryRowCached(entry);
         if (!row) return;
         const col = entry.csvLink.column;
         const rawVal = row[col] != null ? String(row[col]) : '';
@@ -7661,7 +7858,7 @@ async function handleFile(file) {
     }
     if (hexEntries.length) {
       hexEntries.forEach(({ entry, idx }) => {
-        const row = resolveRowForEntry(rows, link, entry, entry.csvLinkHex);
+        const row = resolveEntryRowCached(entry, entry.csvLinkHex);
         if (!row) return;
         const col = entry.csvLinkHex.column;
         const rawVal = row[col] != null ? String(row[col]) : '';
@@ -7686,38 +7883,88 @@ async function handleFile(file) {
         });
       });
     }
+    perf.patchMs = Date.now() - patchStart;
     syncDataLinkMappings(state.parseResult);
-    const updated = rebuildContentWithNewOrder(workingText, state.parseResult, eol, { includeDataLink: true });
-    await loadMacroFromText(state.originalFileName || 'Imported.setting', updated, {
-      createDoc: false,
-      preserveFileInfo: true,
-      preserveFilePath: true,
-      allowAutoUtility: false,
-      silentAuto: true,
-      skipClear: false,
-    });
-    if (state.parseResult && (priorMappings.size || priorHexMappings.size)) {
-      let applied = 0;
-      (state.parseResult.entries || []).forEach((entry) => {
-        if (!entry || !entry.sourceOp || !entry.source) return;
-        const key = `${entry.sourceOp}.${entry.source}`;
-        if (priorMappings.has(key) && !(entry.csvLink && entry.csvLink.column)) {
-          entry.csvLink = { ...priorMappings.get(key) };
-          applied += 1;
-        }
-        if (priorHexMappings.has(key) && !(entry.csvLinkHex && entry.csvLinkHex.column)) {
-          entry.csvLinkHex = { ...priorHexMappings.get(key) };
-          applied += 1;
-        }
-      });
-      if (applied) {
-        ensureDataLink(state.parseResult);
-        syncDataLinkMappings(state.parseResult);
-        if (activeDetailEntryIndex != null) renderDetailDrawer(activeDetailEntryIndex);
-        syncDataLinkPanel();
+    const beforePersistLen = workingText.length;
+    let updated = workingText;
+    // Keep CSV row-apply lightweight. Hidden metadata is persisted on export/save paths.
+    const persistMarkers = !!options.persistMarkers;
+    if (persistMarkers) {
+      const dataLink = buildFmrDataLinkPayload(state.parseResult);
+      const fileMetaPath = state.originalFilePath
+        || state.lastExportPath
+        || (state.exportFolder ? buildExportPath(state.exportFolder, buildMacroExportName()) : '');
+      if (dataLink) {
+        updated = stripFmrDataLinkBlock(updated);
+        updated = upsertHiddenDataLinkControl(updated, state.parseResult, dataLink, eol);
+      }
+      if (fileMetaPath) {
+        updated = upsertHiddenFileMetaControl(updated, state.parseResult, { exportPath: fileMetaPath }, eol);
+        updated = rewriteUpdateDataProtocolPaths(updated, fileMetaPath);
       }
     }
+    const afterPersistLen = updated.length;
+    const reloadStart = Date.now();
+    const prevGenerated = state.generatedText || '';
+    state.originalText = updated;
+    state.newline = detectNewline(updated);
+    state.lastDiffRange = computeDiffRange(prevGenerated, updated);
+    updateCodeView(updated);
+    applyPendingHighlight();
+    if (activeDetailEntryIndex != null && state.parseResult?.entries?.[activeDetailEntryIndex]) {
+      renderDetailDrawer(activeDetailEntryIndex);
+    }
+    renderActiveList({ safe: true });
+    syncDataLinkPanel();
+    markActiveDocumentDirty();
+    const activeDoc = getActiveDocument();
+    if (activeDoc) storeDocumentSnapshot(activeDoc);
+    perf.reloadMs = Date.now() - reloadStart;
+    logDiag(`[CSV] apply rows: linked=${linkedEntries.length}, hex=${hexEntries.length}, ms=${Date.now() - perfStart}, plan=${perf.planMs}, patch=${perf.patchMs}, reload=${perf.reloadMs}, mixed=${stats.mixedMode ? 1 : 0}, planSize=${stats.planSize}, planEntries=${stats.entryPlanCount}, edits=${stats.editsCount}, rowCache=${rowCache.size}, rowHit=${stats.rowCacheHits}, rowMiss=${stats.rowCacheMisses}, persist=${persistMarkers ? 1 : 0}, len=${beforePersistLen}->${afterPersistLen}`);
     if (!options.silent) info('Data applied from CSV.');
+  }
+
+  let csvApplyQueuedJob = null;
+  let csvApplyRunning = false;
+  let csvApplyWaiters = [];
+
+  async function applyCsvRowsToCurrentMacro(rows, link, options = {}) {
+    return new Promise((resolve, reject) => {
+      const hadPending = !!csvApplyQueuedJob;
+      csvApplyQueuedJob = { rows, link, options };
+      csvApplyWaiters.push({ resolve, reject });
+      if (hadPending) {
+        logDiag(`[CSV queue] coalesced request (waiters=${csvApplyWaiters.length})`);
+      }
+      if (csvApplyRunning) return;
+      const pump = async () => {
+        csvApplyRunning = true;
+        let lastResult;
+        let lastError = null;
+        let jobs = 0;
+        while (csvApplyQueuedJob) {
+          const job = csvApplyQueuedJob;
+          csvApplyQueuedJob = null;
+          jobs += 1;
+          try {
+            lastResult = await applyCsvRowsToCurrentMacroNow(job.rows, job.link, job.options || {});
+            lastError = null;
+          } catch (err) {
+            lastError = err;
+          }
+        }
+        const waiters = csvApplyWaiters.splice(0);
+        csvApplyRunning = false;
+        logDiag(`[CSV queue] drained jobs=${jobs}, resolvedWaiters=${waiters.length}, error=${lastError ? 1 : 0}`);
+        waiters.forEach((w) => {
+          try {
+            if (lastError) w.reject(lastError);
+            else w.resolve(lastResult);
+          } catch (_) {}
+        });
+      };
+      pump();
+    });
   }
 
   async function openCsvUrlPrompt() {
