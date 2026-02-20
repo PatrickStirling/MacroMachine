@@ -639,7 +639,7 @@ export function createPublishedControls({
         li.style.removeProperty('--label-group-depth');
       }
       try {
-        if (Number.isFinite(e.controlGroup) && e.sourceOp) {
+        if (e.sourceOp) {
           const cg = getContiguousColorGroupBlock(idx, entries, order);
           if (cg && cg.count >= 2) {
             li.classList.add('color-group');
@@ -749,7 +749,7 @@ export function createPublishedControls({
         });
         twistyCell.appendChild(twisty);
       }
-      if (cgBlk && cgBlk.firstIndex === idx && cgBlk.count >= 2 && e.sourceOp && Number.isFinite(e.controlGroup)) {
+      if (cgBlk && cgBlk.firstIndex === idx && cgBlk.count >= 2 && e.sourceOp) {
         const key = getCgKey(e);
         const cgTwisty = document.createElement('span');
         cgTwisty.className = 'twisty twisty-group';
@@ -875,7 +875,7 @@ export function createPublishedControls({
 
         let skip = 0;
         if (e.isLabel && e.labelCount > 0 && collapsed.has(idx)) skip += e.labelCount;
-        if (cgBlk && cgBlk.firstIndex === idx && cgBlk.count >= 2 && e.sourceOp && Number.isFinite(e.controlGroup) && collapsedCG.has(getCgKey(e))) skip += (cgBlk.count - 1);
+        if (cgBlk && cgBlk.firstIndex === idx && cgBlk.count >= 2 && e.sourceOp && collapsedCG.has(getCgKey(e))) skip += (cgBlk.count - 1);
         if (skip > 0) pos += skip;
         pos += 1;
         if (useChunking) {
@@ -1339,28 +1339,50 @@ export function createPublishedControls({
     } catch (_) {}
   }
 
+  function normalizeControlNameForGrouping(name) {
+    return String(name || '').trim().toLowerCase();
+  }
+
+  function getFlipPairToken(e) {
+    try {
+      if (!e || !e.sourceOp || !e.source) return null;
+      const src = normalizeControlNameForGrouping(e.source);
+      const match = src.match(/^(.*?)(?:\.|_)?(fliphoriz|flipvert)$/i);
+      if (!match) return null;
+      const prefix = (match[1] || '').replace(/[._]+$/, '');
+      return `${e.sourceOp}::flipPair::${prefix || '__root__'}`;
+    } catch (_) {
+      return null;
+    }
+  }
+
   function getCgKey(e) {
-    return `${e.sourceOp}::${e.controlGroup}`;
+    if (!e || !e.sourceOp) return '';
+    if (Number.isFinite(e.controlGroup)) return `${e.sourceOp}::${e.controlGroup}`;
+    return getFlipPairToken(e) || '';
   }
 
   function getContiguousColorGroupBlock(idx, entries, order) {
     const entry = entries[idx];
-    if (!entry || !entry.sourceOp || !Number.isFinite(entry.controlGroup)) return null;
+    if (!entry || !entry.sourceOp) return null;
     const key = getCgKey(entry);
+    if (!key) return null;
     const startPos = order.indexOf(idx);
     if (startPos < 0) return null;
     let first = startPos;
     let last = startPos;
+    const isGroupedPeer = (candidate) => {
+      if (!candidate || candidate.isLabel || candidate.sourceOp !== entry.sourceOp) return false;
+      return getCgKey(candidate) === key;
+    };
     for (let p = startPos - 1; p >= 0; p--) {
       const e2 = entries[order[p]];
-      if (!e2 || e2.isLabel || !Number.isFinite(e2.controlGroup) || e2.sourceOp !== entry.sourceOp) break;
-      if (getCgKey(e2) !== key) break;
+      if (!isGroupedPeer(e2)) break;
       first = p;
     }
     for (let p = startPos + 1; p < order.length; p++) {
       const e2 = entries[order[p]];
-      if (!e2 || e2.isLabel || !Number.isFinite(e2.controlGroup) || e2.sourceOp !== entry.sourceOp) break;
-      if (getCgKey(e2) !== key) break;
+      if (!isGroupedPeer(e2)) break;
       last = p;
     }
     const indices = order.slice(first, last + 1);

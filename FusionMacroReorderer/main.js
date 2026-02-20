@@ -4681,13 +4681,32 @@ function hideDetailDrawer() {
       const mappings = link.mappings || {};
       const overrides = link.overrides || {};
       const hexMappings = link.hex || {};
+      const normalizeToolNameForLink = (name) => String(name || '').replace(/_\d+$/, '');
+      const buildLinkLookup = (obj) => {
+        const exact = new Map();
+        const normalized = new Map();
+        Object.keys(obj || {}).forEach((key) => {
+          exact.set(key, obj[key]);
+          const dot = key.indexOf('.');
+          if (dot <= 0) return;
+          const tool = key.slice(0, dot);
+          const control = key.slice(dot + 1);
+          const nk = `${normalizeToolNameForLink(tool)}.${control}`;
+          if (!normalized.has(nk)) normalized.set(nk, obj[key]);
+        });
+        return { exact, normalized };
+      };
+      const mappingLookup = buildLinkLookup(mappings);
+      const overridesLookup = buildLinkLookup(overrides);
+      const hexLookup = buildLinkLookup(hexMappings);
       result.entries.forEach((entry) => {
         if (!entry || !entry.sourceOp || !entry.source) return;
         const key = `${entry.sourceOp}.${entry.source}`;
-        const col = mappings[key];
+        const nkey = `${normalizeToolNameForLink(entry.sourceOp)}.${entry.source}`;
+        const col = mappingLookup.exact.get(key) ?? mappingLookup.normalized.get(nkey);
         if (col) {
           entry.csvLink = { column: col };
-          const override = overrides[key];
+          const override = overridesLookup.exact.get(key) ?? overridesLookup.normalized.get(nkey);
           if (override && override.rowMode) {
             entry.csvLink.rowMode = override.rowMode;
             if (Number.isFinite(override.rowIndex)) entry.csvLink.rowIndex = override.rowIndex;
@@ -4695,7 +4714,7 @@ function hideDetailDrawer() {
             if (override.rowValue != null) entry.csvLink.rowValue = override.rowValue;
           }
         }
-        const hex = hexMappings[key];
+        const hex = hexLookup.exact.get(key) ?? hexLookup.normalized.get(nkey);
         if (hex && hex.column) {
           entry.csvLinkHex = { column: hex.column };
           if (hex.rowMode) entry.csvLinkHex.rowMode = hex.rowMode;
@@ -4713,6 +4732,59 @@ function hideDetailDrawer() {
         }
         updateDataMenuState();
       }
+    } catch (_) {}
+  }
+
+  function ensureInstanceInputControlGroup(raw, controlGroup, eol) {
+    try {
+      if (!raw || !Number.isFinite(controlGroup)) return raw;
+      const open = raw.indexOf('{');
+      if (open < 0) return raw;
+      const close = findMatchingBrace(raw, open);
+      if (close < 0) return raw;
+      const indent = (getLineIndent(raw, open) || '') + '\t';
+      let body = raw.slice(open + 1, close);
+      body = setInstanceInputProp(body, 'ControlGroup', String(controlGroup), indent, eol || '\n');
+      return raw.slice(0, open + 1) + body + raw.slice(close);
+    } catch (_) {
+      return raw;
+    }
+  }
+
+  function hydrateFlipPairGroups(result, eol) {
+    try {
+      if (!result || !Array.isArray(result.entries) || !result.entries.length) return;
+      const byTool = new Map();
+      result.entries.forEach((entry, idx) => {
+        if (!entry || !entry.sourceOp || !entry.source || entry.isLabel) return;
+        if (!byTool.has(entry.sourceOp)) byTool.set(entry.sourceOp, []);
+        byTool.get(entry.sourceOp).push({ entry, idx });
+      });
+      const existing = result.entries
+        .map((entry) => (entry && Number.isFinite(entry.controlGroup) ? entry.controlGroup : null))
+        .filter((v) => Number.isFinite(v));
+      let nextGroup = existing.length ? (Math.max(...existing) + 1) : 1;
+      byTool.forEach((items) => {
+        if (!Array.isArray(items) || items.length < 2) return;
+        const horiz = items.find((item) => normalizeId(item.entry.source).toLowerCase() === 'fliphoriz');
+        const vert = items.find((item) => normalizeId(item.entry.source).toLowerCase() === 'flipvert');
+        if (!horiz || !vert) return;
+        const hGroup = Number.isFinite(horiz.entry.controlGroup) ? horiz.entry.controlGroup : null;
+        const vGroup = Number.isFinite(vert.entry.controlGroup) ? vert.entry.controlGroup : null;
+        const group = hGroup != null ? hGroup : (vGroup != null ? vGroup : nextGroup++);
+        if (!Number.isFinite(horiz.entry.controlGroup)) {
+          horiz.entry.controlGroup = group;
+          if (typeof horiz.entry.raw === 'string') {
+            horiz.entry.raw = ensureInstanceInputControlGroup(horiz.entry.raw, group, eol || '\n');
+          }
+        }
+        if (!Number.isFinite(vert.entry.controlGroup)) {
+          vert.entry.controlGroup = group;
+          if (typeof vert.entry.raw === 'string') {
+            vert.entry.raw = ensureInstanceInputControlGroup(vert.entry.raw, group, eol || '\n');
+          }
+        }
+      });
     } catch (_) {}
   }
 
@@ -6763,6 +6835,7 @@ function hideDetailDrawer() {
       hydrateOnChangeScripts(state.originalText, state.parseResult);
       hydrateLabelVisibility(state.originalText, state.parseResult);
       hydrateControlMetadata(state.originalText, state.parseResult);
+      hydrateFlipPairGroups(state.parseResult, state.newline || '\n');
       if (!state.parseResult.operatorType) state.parseResult.operatorType = state.parseResult.operatorTypeOriginal || 'GroupOperator';
       const hiddenLink = extractHiddenDataLink(state.originalText, state.parseResult)
         || extractHiddenDataLinkFallback(state.originalText);
@@ -10196,6 +10269,7 @@ async function handleFile(file) {
 
   function rebuildContentWithNewOrder(original, result, eol, options = {}) {
     const { entries } = result;
+    try { hydrateFlipPairGroups(result, eol || '\n'); } catch (_) {}
     const exportOrder = getOrderedEntryIndices(result);
     try {
       if (typeof logDiag === 'function') {
@@ -12367,13 +12441,20 @@ async function handleFile(file) {
       let uc = ensureRes.ucBlock || findUserControlsInTool(updated, toolBlock.open, toolBlock.close);
       if (!uc) return updated;
       for (const [controlName, pageName] of controlMap.entries()) {
-        const ensuredBlock = ensureControlBlockInUserControls(updated, uc, controlName, newline);
-        updated = ensuredBlock.text;
-        uc = ensuredBlock.uc || uc;
-        let block = ensuredBlock.block;
-        if (!block && uc) block = findControlBlockInUc(updated, uc.open, uc.close, controlName);
+        const normalizedPage = normalizePageNameGlobal(pageName || 'Controls');
+        let block = findControlBlockInUc(updated, uc.open, uc.close, controlName);
+        if (!block) {
+          // Do not create a minimal override for default-page controls.
+          // Built-in controls (e.g. MultiButton icons) can degrade to plain text if overridden.
+          if (normalizedPage === 'Controls') continue;
+          const ensuredBlock = ensureControlBlockInUserControls(updated, uc, controlName, newline);
+          updated = ensuredBlock.text;
+          uc = ensuredBlock.uc || uc;
+          block = ensuredBlock.block;
+          if (!block && uc) block = findControlBlockInUc(updated, uc.open, uc.close, controlName);
+        }
         if (!block) continue;
-        updated = rewriteControlBlockPage(updated, block.open, block.close, pageName, newline);
+        updated = rewriteControlBlockPage(updated, block.open, block.close, normalizedPage, newline);
         currentBounds = locateMacroGroupBounds(updated, resultRef) || currentBounds;
         toolBlock = findToolBlockInGroup(updated, currentBounds.groupOpenIndex, currentBounds.groupCloseIndex, toolName);
         if (!toolBlock) break;
@@ -12524,7 +12605,13 @@ async function handleFile(file) {
           if (text[end] === '\n' || text[end] === '\r') { end++; break; }
           end++;
         }
-        segments.push({ name: normalizeId(rawName), start: leadingStart, end });
+        segments.push({
+          name: normalizeId(rawName),
+          start: leadingStart,
+          end,
+          blockOpen,
+          blockClose,
+        });
         cursor = end;
       }
       return segments;
@@ -12563,15 +12650,13 @@ async function handleFile(file) {
         if (!toolBlock) return;
         const uc = findUserControlsInTool(updated, toolBlock.open, toolBlock.close);
         if (!uc) return;
-        const segments = collectUserControlSegments(updated, uc.open, uc.close);
-        if (!segments.length) return;
-        const removable = [];
-        segments.forEach((seg) => {
-          const block = findControlBlockInUc(updated, uc.open, uc.close, seg.name);
-          if (!block) return;
-          const body = updated.slice(block.open + 1, block.close);
+      const segments = collectUserControlSegments(updated, uc.open, uc.close);
+      if (!segments.length) return;
+      const removable = [];
+      segments.forEach((seg) => {
+          const body = updated.slice(seg.blockOpen + 1, seg.blockClose);
           if (isUserControlBodyRedundant(body)) removable.push(seg);
-        });
+      });
         if (!removable.length) return;
         removable.sort((a, b) => b.start - a.start);
         removable.forEach((seg) => {
@@ -13557,6 +13642,9 @@ function applyBlendCheckboxesToTool(text, bounds, toolName, controls, eol, resul
         }
       }
     } catch (_) {}
+    if (Number.isFinite(entry?.controlGroup)) {
+      out = ensureInstanceInputControlGroup(out, entry.controlGroup, newline);
+    }
     if (isBlendControl) logBlendDebug(entry, 'emit-default', { isToggle, inSet });
     return out;
   }
