@@ -21,6 +21,7 @@ export function setupNativeBridge({
   onImportGoogleSheet,
   onReloadCsv,
   onGenerateFromCsv,
+  onRefreshSession,
   onInsertUpdateDataButton,
   onHeaderImageDialog,
   onProtocolUrl,
@@ -79,6 +80,8 @@ export function setupNativeBridge({
             if (typeof onReloadCsv === 'function') onReloadCsv();
           } else if (action === 'csvGenerate') {
             if (typeof onGenerateFromCsv === 'function') onGenerateFromCsv();
+          } else if (action === 'refreshSession') {
+            if (typeof onRefreshSession === 'function') onRefreshSession();
           } else if (action === 'insertUpdateData') {
             if (typeof onInsertUpdateDataButton === 'function') onInsertUpdateDataButton();
           } else if (action === 'headerImage') {

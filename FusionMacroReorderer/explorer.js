@@ -52,6 +52,7 @@ const textPromptCloseBtn = document.getElementById('textPromptCloseBtn');
 const thumbFileInput = document.getElementById('thumbFileInput');
 const viewParams = new URLSearchParams(window.location.search);
 const isFoldersOnly = viewParams.get('mode') === 'folders';
+const explorerMode = isFoldersOnly ? 'folders' : 'full';
 if (isFoldersOnly && typeof document !== 'undefined') {
   document.body.classList.add('folders-only');
 }
@@ -244,6 +245,18 @@ async function setExportFolder(targetPath) {
 
 function updatePathDisplay() {
   if (currentPathEl) currentPathEl.textContent = currentPath || '';
+}
+
+function notifyParentPathChanged() {
+  if (!currentPath) return;
+  try {
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage(
+        { type: 'fmr-explorer-path-changed', mode: explorerMode, path: currentPath },
+        '*'
+      );
+    }
+  } catch (_) {}
 }
 
 function updateBulkActions() {
@@ -1019,6 +1032,7 @@ function setCurrentPath(newPath, options = {}) {
     updatePathDisplay();
     updateExportFolderButton();
     updatePathNavButtons();
+    notifyParentPathChanged();
     return;
   }
   currentPath = resolved;
@@ -1030,6 +1044,7 @@ function setCurrentPath(newPath, options = {}) {
   clearSelection();
   refreshList();
   updateExportFolderButton();
+  notifyParentPathChanged();
 }
 
 function selectRoot(key) {
@@ -1163,8 +1178,9 @@ function openTextPrompt({ title, label, confirmText, initialValue } = {}) {
   });
 }
 
-async function createFolder() {
+async function createFolder(options = {}) {
   if (!currentPath) return;
+  const autoSelect = !!options.autoSelect;
   const name = await openTextPrompt({
     title: 'Create folder',
     label: 'Folder name',
@@ -1181,8 +1197,14 @@ async function createFolder() {
       return;
     }
     fs.mkdirSync(target, { recursive: true });
-    setStatus('Folder created.');
-    refreshList();
+    if (autoSelect) {
+      setCurrentPath(target);
+      await setExportFolder(target);
+      setStatus('Folder created and selected for exports.');
+    } else {
+      setStatus('Folder created.');
+      refreshList();
+    }
   } catch (err) {
     setStatus(`Failed to create folder: ${err?.message || err}`, true);
   }
@@ -1566,6 +1588,26 @@ pathForwardBtn?.addEventListener('click', () => {
 });
 exportFolderBtn?.addEventListener('click', () => setExportFolder(currentPath));
 createFolderBtn?.addEventListener('click', () => createFolder());
+window.addEventListener('message', (event) => {
+  if (window.parent && window.parent !== window && event?.source !== window.parent) return;
+  const data = event?.data || {};
+  const type = data.type;
+  if (type === 'fmr-mini-create-folder') {
+    createFolder({ autoSelect: true });
+    return;
+  }
+  if (type === 'fmr-explorer-set-path') {
+    const targetMode = data.mode;
+    if (targetMode && targetMode !== explorerMode) return;
+    const nextPath = typeof data.path === 'string' ? data.path.trim() : '';
+    if (!nextPath) return;
+    try {
+      if (fs.existsSync(nextPath)) {
+        setCurrentPath(nextPath);
+      }
+    } catch (_) {}
+  }
+});
 bulkEnableBtn?.addEventListener('click', () => applyBulkToggle(false));
 bulkDisableBtn?.addEventListener('click', () => applyBulkToggle(true));
 bulkImportBtn?.addEventListener('click', () => {

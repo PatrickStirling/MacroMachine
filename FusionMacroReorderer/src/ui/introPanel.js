@@ -6,6 +6,8 @@ export function createIntroPanelController(options = {}) {
     closeExplorerPanelBtn,
     macroExplorerPanel,
     macroExplorerMini,
+    macroExplorerFrame,
+    macroExplorerMiniFrame,
     dropHint,
     isElectron,
     onClearSelections,
@@ -15,10 +17,35 @@ export function createIntroPanelController(options = {}) {
   } = options;
 
   const dropHintDefaultText = dropHint ? dropHint.textContent : '';
+  let lastMiniExplorerPath = '';
 
   if (!isElectron && macroExplorerMini) {
     macroExplorerMini.hidden = true;
   }
+
+  const postFullExplorerPathSync = () => {
+    if (!lastMiniExplorerPath || !macroExplorerFrame || !macroExplorerFrame.contentWindow) return;
+    try {
+      macroExplorerFrame.contentWindow.postMessage(
+        { type: 'fmr-explorer-set-path', path: lastMiniExplorerPath, mode: 'full' },
+        '*'
+      );
+    } catch (_) {}
+  };
+
+  const onExplorerMessage = (event) => {
+    const data = event?.data;
+    if (!data || data.type !== 'fmr-explorer-path-changed') return;
+    if (macroExplorerMiniFrame?.contentWindow && event?.source !== macroExplorerMiniFrame.contentWindow) return;
+    if (data.mode !== 'folders') return;
+    const nextPath = typeof data.path === 'string' ? data.path.trim() : '';
+    if (!nextPath) return;
+    lastMiniExplorerPath = nextPath;
+  };
+  window.addEventListener('message', onExplorerMessage);
+  macroExplorerFrame?.addEventListener('load', () => {
+    postFullExplorerPathSync();
+  });
 
   const setIntroCollapsed = (collapsed) => {
     if (!introPanel) return;
@@ -64,6 +91,8 @@ export function createIntroPanelController(options = {}) {
     if (macroExplorerMini) {
       macroExplorerMini.hidden = true;
     }
+    postFullExplorerPathSync();
+    setTimeout(postFullExplorerPathSync, 120);
   });
 
   closeExplorerPanelBtn?.addEventListener('click', () => {

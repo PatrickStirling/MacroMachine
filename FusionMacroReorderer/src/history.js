@@ -9,6 +9,7 @@ export function createHistoryController({
   doc,
   captureExtraState = () => ({}),
   restoreExtraState = () => {},
+  getHistoryLimit = null,
 }) {
   const targetDoc = doc || (typeof document !== 'undefined' ? document : null);
 
@@ -24,6 +25,7 @@ export function createHistoryController({
       originalOrder: [...(state.parseResult.originalOrder || [])],
       selected: Array.from(state.parseResult.selected || []),
       collapsed: Array.from(state.parseResult.collapsed || []),
+      collapsedLabels: Array.from(state.parseResult.collapsedLabels || []),
       collapsedCG: Array.from(state.parseResult.collapsedCG || []),
       nodesCollapsed: Array.from(state.parseResult.nodesCollapsed || []),
       nodesPublishedOnly: Array.from(state.parseResult.nodesPublishedOnly || []),
@@ -48,6 +50,7 @@ export function createHistoryController({
     state.parseResult.originalOrder = [...snap.originalOrder];
     state.parseResult.selected = new Set(snap.selected || []);
     state.parseResult.collapsed = new Set(snap.collapsed || []);
+    state.parseResult.collapsedLabels = new Set(snap.collapsedLabels || []);
     state.parseResult.collapsedCG = new Set(snap.collapsedCG || []);
     state.parseResult.nodesCollapsed = new Set(snap.nodesCollapsed || []);
     state.parseResult.nodesPublishedOnly = new Set(snap.nodesPublishedOnly || []);
@@ -78,6 +81,28 @@ export function createHistoryController({
     redoBtn.disabled = f === 0;
   }
 
+  function resolveHistoryLimit() {
+    try {
+      if (typeof getHistoryLimit === 'function') {
+        const custom = Number(getHistoryLimit(state));
+        if (Number.isFinite(custom) && custom >= 1) return Math.floor(custom);
+      }
+    } catch (_) {}
+    return 80;
+  }
+
+  function trimHistoryToLimit() {
+    try {
+      if (!state.parseResult || !Array.isArray(state.parseResult.history)) return;
+      const max = resolveHistoryLimit();
+      if (!Number.isFinite(max) || max < 1) return;
+      const over = state.parseResult.history.length - max;
+      if (over > 0) {
+        state.parseResult.history.splice(0, over);
+      }
+    } catch (_) {}
+  }
+
   function pushHistory(label) {
     try {
       if (!state.parseResult) return;
@@ -85,6 +110,7 @@ export function createHistoryController({
       if (!state.parseResult.future) state.parseResult.future = [];
       const snap = snapshotState();
       state.parseResult.history.push(snap);
+      trimHistoryToLimit();
       state.parseResult.future = [];
       updateUndoRedoState();
       if (label) logDiag(`History: ${label}`);
@@ -111,6 +137,15 @@ export function createHistoryController({
     updateUndoRedoState();
   }
 
+  function clearHistory() {
+    try {
+      if (!state.parseResult) return;
+      state.parseResult.history = [];
+      state.parseResult.future = [];
+      updateUndoRedoState();
+    } catch (_) {}
+  }
+
   undoBtn?.addEventListener('click', () => undo());
   redoBtn?.addEventListener('click', () => redo());
 
@@ -129,6 +164,7 @@ export function createHistoryController({
     pushHistory,
     undo,
     redo,
+    clearHistory,
     snapshotState,
     restoreState,
     updateUndoRedoState,

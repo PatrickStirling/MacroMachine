@@ -21,7 +21,10 @@
                 <h2>Template Folders</h2>
                 <p>Select a folder for Export to Edit Page.</p>
               </div>
-              <button id="openExplorerBtn" type="button">Open Macro Explorer</button>
+              <div class="mini-header-actions">
+                <button id="miniCreateFolderBtn" type="button">+ Folder</button>
+                <button id="openExplorerBtn" type="button">Open Macro Explorer</button>
+              </div>
             </header>
             <iframe id="macroExplorerMiniFrame" title="Template folders" src="explorer.html?mode=folders"></iframe>
           </section>
@@ -62,41 +65,9 @@
       <section class="controls" id="controlsSection" hidden>
         <div class="split">
           <div class="pane pane-left">
-            <div class="meta">
-              <div><input id="macroName" class="macro-name" type="text" aria-label="Macro name" /></div>
-              <div><strong>Controls found:</strong> <span id="ctrlCount">0</span></div>
-              <div><strong>Inputs found:</strong> <span id="inputCount">0</span></div>
-              <div class="operator-select">
-                <strong>Operator:</strong>
-                <select id="operatorType">
-                  <option value="GroupOperator">GroupOperator</option>
-                  <option value="MacroOperator">MacroOperator</option>
-                </select>
-              </div>
-            </div>
-
-            <div class="actions">
-              <div class="actions-row">
-                <button id="deselectAllBtn" type="button" disabled>Clear selection</button>
-                <button id="resetOrder" type="button" disabled>Reset to original order</button>
-                <button id="removeSelected" type="button" disabled>Remove selected</button>
-              </div>
-              <div class="actions-row">
-                <button id="removeCommonPageBtn" type="button" disabled>Remove Settings page</button>
-                <div class="export-menu-wrap">
-                  <button id="exportMenuBtn" type="button" disabled>Export as...</button>
-                  <div id="exportMenu" class="export-menu" hidden></div>
-                </div>
-                <div id="dataLinkPanel" class="data-link-panel inline" hidden>
-                  <button id="dataLinkConfigure" type="button">Data Link</button>
-                  <button id="dataLinkReload" type="button">Reload Data</button>
-                </div>
-                <div id="dataLinkStatus" class="data-link-status" hidden></div>
-                <button id="exportClipboardBtn" type="button" disabled hidden>Export to clipboard</button>
-                <button id="exportBtn" type="button" disabled hidden>Export reordered .setting</button>
-                <button id="exportTemplatesBtn" type="button" disabled hidden>Export to Edit Page</button>
-              </div>
-            </div>
+            <button id="exportClipboardBtn" type="button" disabled hidden>Export to clipboard</button>
+            <button id="exportBtn" type="button" disabled hidden>Export reordered .setting</button>
+            <button id="exportTemplatesBtn" type="button" disabled hidden>Export to Edit Page</button>
 
             <div class="list-wrapper">
               <div class="editor-actions">
@@ -105,17 +76,59 @@
               <div id="csvBatchBanner" class="csv-batch-banner" hidden>
                 CSV Batch selected — Export will regenerate files.
               </div>
-              <h2>Published Controls</h2>
-              <div class="nodes-toolbar published-toolbar">
-                <div class="toolbar-left">
-                  <input type="text" id="publishedSearch" class="published-search" placeholder="Search published controls" />
+              <div class="published-header">
+                <div class="published-row published-row-top">
+                  <input id="macroName" class="macro-name" type="text" aria-label="Macro name" />
+                  <div class="export-menu-wrap create-control-split export-split">
+                    <button id="exportMenuBtn" class="priority-btn" type="button" disabled>Export</button>
+                    <button id="exportMenuCaretBtn" type="button" class="split-caret" aria-haspopup="menu" aria-expanded="false" aria-label="More export options" disabled>
+                      &#9662;
+                    </button>
+                    <div id="exportMenu" class="export-menu" hidden></div>
+                  </div>
                 </div>
-                <div class="toolbar-right">
-                  <label class="pane-switch">
-                    <input type="checkbox" id="showCurrentValues" />
-                    <span class="slider" aria-hidden="true"></span>
-                    <span class="label">Show current values</span>
-                  </label>
+
+                <div class="published-row published-row-operator">
+                  <div class="operator-select">
+                    <select id="operatorType">
+                      <option value="GroupOperator">GroupOperator</option>
+                      <option value="MacroOperator">MacroOperator</option>
+                    </select>
+                  </div>
+                  <button id="removeCommonPageBtn" type="button" disabled>Remove Settings page</button>
+                </div>
+
+                <div class="published-row published-row-actions">
+                  <div class="create-control-split">
+                    <button id="addControlGlobalBtn" class="priority-btn" type="button" disabled>Create Control</button>
+                    <button id="addControlQuickBtn" type="button" class="split-caret" aria-haspopup="menu" aria-expanded="false" aria-label="Quick create options" disabled>
+                      &#9662;
+                    </button>
+                    <div id="addControlQuickMenu" class="export-menu quick-create-menu" hidden>
+                      <button type="button" data-quick-type="label">Create Label</button>
+                      <button type="button" data-quick-type="slider">Create Slider</button>
+                      <button type="button" data-quick-type="button">Create Button</button>
+                      <button type="button" data-quick-type="separator">Create Separator</button>
+                    </div>
+                  </div>
+                  <button id="deselectAllBtn" type="button" disabled>Clear selection</button>
+                  <button id="removeSelected" type="button" disabled>Remove selected</button>
+                  <button id="resetOrder" type="button" disabled hidden>Reset to original order</button>
+                </div>
+
+                <div class="published-row published-row-filter">
+                  <input type="text" id="publishedSearch" class="published-search" placeholder="Search published controls" />
+                  <div class="published-filter-tools">
+                    <div id="dataLinkPanel" class="data-link-panel inline" hidden>
+                      <button id="dataLinkConfigure" type="button">Data Link</button>
+                      <button id="dataLinkReload" type="button">Reload Data</button>
+                    </div>
+                    <label class="pane-switch">
+                      <input type="checkbox" id="showCurrentValues" />
+                      <span class="slider" aria-hidden="true"></span>
+                      <span class="label">Show current values</span>
+                    </label>
+                  </div>
                 </div>
               </div>
               <div class="page-tabs" id="pageTabs" hidden></div>
@@ -159,6 +172,10 @@
                   <button type="button" id="addControlCloseBtn" aria-label="Close add control dialog">&times;</button>
                 </header>
                 <div class="form-body">
+                  <label>
+                    Target node
+                    <select id="addControlTarget"></select>
+                  </label>
                   <label>
                     Control name
                     <input type="text" id="addControlName" required placeholder="Enter a label or button name" />

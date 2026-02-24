@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, shell } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
@@ -162,6 +162,32 @@ function runUpdateCheck(source = 'manual') {
     });
 }
 
+function isExternalHttpUrl(raw) {
+  if (!raw || typeof raw !== 'string') return false;
+  try {
+    const u = new URL(raw);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch (_) {
+    return false;
+  }
+}
+
+function attachExternalLinkHandling(win) {
+  if (!win || !win.webContents) return;
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (isExternalHttpUrl(url)) {
+      try { shell.openExternal(url); } catch (_) {}
+      return { action: 'deny' };
+    }
+    return { action: 'allow' };
+  });
+  win.webContents.on('will-navigate', (event, url) => {
+    if (!isExternalHttpUrl(url)) return;
+    event.preventDefault();
+    try { shell.openExternal(url); } catch (_) {}
+  });
+}
+
 function createMainWindow() {
   const win = new BrowserWindow({
     width: 1280,
@@ -180,6 +206,7 @@ function createMainWindow() {
   const devIndexPath = path.join(__dirname, '..', 'FusionMacroReorderer', 'index.html');
   const prodIndexPath = path.join(__dirname, 'FusionMacroReorderer', 'index.html');
   const indexPath = fs.existsSync(devIndexPath) ? devIndexPath : prodIndexPath;
+  attachExternalLinkHandling(win);
   win.loadFile(indexPath);
   win.webContents.on('did-finish-load', () => {
     rendererReady = true;
@@ -207,6 +234,7 @@ function createExplorerWindow() {
   const devPath = path.join(__dirname, '..', 'FusionMacroReorderer', 'explorer.html');
   const prodPath = path.join(__dirname, 'FusionMacroReorderer', 'explorer.html');
   const explorerPath = fs.existsSync(devPath) ? devPath : prodPath;
+  attachExternalLinkHandling(win);
   win.loadFile(explorerPath);
   win.on('closed', () => {
     explorerWindow = null;
@@ -1208,6 +1236,13 @@ ipcMain.handle('set-data-menu-state', async (_event, payload = {}) => {
           click: () => {
             const win = BrowserWindow.getFocusedWindow();
             if (win) win.webContents.send('fmr-menu', { action: 'save' });
+          },
+        },
+        {
+          label: 'Refresh Session',
+          click: () => {
+            const win = BrowserWindow.getFocusedWindow();
+            if (win) win.webContents.send('fmr-menu', { action: 'refreshSession' });
           },
         },
         { type: 'separator' },

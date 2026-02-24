@@ -305,6 +305,9 @@ export function createPublishedControls({
     if (name === 'link') {
       return `<svg xmlns="${ns}" width="${w}" height="${h}" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M6.9 4.3 5.5 5.7l-1-1L6.2 3c1.2-1.2 3.1-1.2 4.2 0l2.1 2.1c1.2 1.2 1.2 3.1 0 4.2l-1.7 1.7-1-1 1.7-1.7c.7-.7.7-1.8 0-2.5L9.4 3.6c-.7-.7-1.8-.7-2.5 0Zm2.2 7.4-1.4 1.4c-1.2 1.2-3.1 1.2-4.2 0L1.4 11c-1.2-1.2-1.2-3.1 0-4.2l1.7-1.7 1 1-1.7 1.7c-.7.7-.7 1.8 0 2.5l2.1 2.1c.7.7 1.8.7 2.5 0l1.4-1.4 1 1Zm-4.3-1.1 6-6 1 1-6 6-1-1Z"/></svg>`;
     }
+    if (name === 'target') {
+      return `<svg xmlns="${ns}" width="${w}" height="${h}" viewBox="0 0 16 16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><circle cx="8" cy="8" r="4.5"/><circle cx="8" cy="8" r="1.5"/><path d="M8 1.5v2.1M8 12.4v2.1M1.5 8h2.1M12.4 8h2.1"/></g></svg>`;
+    }
     if (name === 'eye-open') {
       return `<svg xmlns="${ns}" width="${w}" height="${h}" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 3.5c3.1 0 5.7 2 7 4.5-1.3 2.5-3.9 4.5-7 4.5s-5.7-2-7-4.5c1.3-2.5 3.9-4.5 7-4.5Zm0 1.4c-2.2 0-4.2 1.4-5.2 3.1 1 1.7 3 3.1 5.2 3.1s4.2-1.4 5.2-3.1c-1-1.7-3-3.1-5.2-3.1Zm0 1.1a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5Zm0 1.2a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6Z"/></svg>`;
     }
@@ -536,7 +539,24 @@ export function createPublishedControls({
     insertionAnchorPos = null;
     const filter = publishedFilter.trim().toLowerCase();
     const collapsedCG = state.parseResult?.collapsedCG || new Set();
-    const collapsed = state.parseResult?.collapsed || new Set();
+    const collapsedLegacy = state.parseResult?.collapsed || new Set();
+    let collapsedLabels = state.parseResult?.collapsedLabels;
+    if (!(collapsedLabels instanceof Set)) {
+      collapsedLabels = new Set();
+      try {
+        if (collapsedLegacy && typeof collapsedLegacy.forEach === 'function') {
+          collapsedLegacy.forEach((legacyIdx) => {
+            const legacyEntry = entries[legacyIdx];
+            if (legacyEntry) collapsedLabels.add(getLabelCollapseKey(legacyEntry, legacyIdx));
+          });
+        }
+      } catch (_) {}
+      if (state.parseResult) state.parseResult.collapsedLabels = collapsedLabels;
+    }
+    const isLabelCollapsed = (entry, idx) => {
+      const key = getLabelCollapseKey(entry, idx);
+      return collapsedLabels.has(key) || collapsedLegacy.has(idx);
+    };
     const showCurrentValues = !!(shouldShowCurrentValuesCb && shouldShowCurrentValuesCb());
     const indentMap = computeIndentMap(entries, order);
     const labelGroupCounts = new Map();
@@ -734,12 +754,21 @@ export function createPublishedControls({
       const twisty = document.createElement('span');
       twisty.className = e.isLabel ? 'twisty twisty-label' : 'twisty hidden';
       twisty.title = 'Collapse/expand label group';
-      twisty.innerHTML = (e.isLabel && collapsed.has(idx)) ? createIcon('chevron-right') : createIcon('chevron-down');
+      twisty.innerHTML = (e.isLabel && isLabelCollapsed(e, idx)) ? createIcon('chevron-right') : createIcon('chevron-down');
       if (e.isLabel) {
         const toggle = (ev) => {
           ev.stopPropagation();
-          if (collapsed.has(idx)) collapsed.delete(idx); else collapsed.add(idx);
-          state.parseResult.collapsed = collapsed;
+          const key = getLabelCollapseKey(e, idx);
+          const nextCollapsed = !isLabelCollapsed(e, idx);
+          if (nextCollapsed) {
+            collapsedLabels.add(key);
+            collapsedLegacy.add(idx);
+          } else {
+            collapsedLabels.delete(key);
+            collapsedLegacy.delete(idx);
+          }
+          state.parseResult.collapsed = collapsedLegacy;
+          state.parseResult.collapsedLabels = collapsedLabels;
           renderList(entries, order);
         };
         twisty.addEventListener('click', toggle);
@@ -790,8 +819,10 @@ export function createPublishedControls({
       buttons.className = 'row-buttons';
       const goBtn = document.createElement('button');
       goBtn.type = 'button';
-      goBtn.innerHTML = createIcon('link');
-      goBtn.title = 'Locate in Nodes';
+      goBtn.className = 'source-jump-btn';
+      goBtn.innerHTML = createIcon('target');
+      goBtn.title = 'Locate source control in Nodes';
+      goBtn.setAttribute('aria-label', 'Locate source control in Nodes');
       goBtn.addEventListener('click', (ev) => {
         ev.stopPropagation();
         if (e && e.sourceOp && e.source) { try { clearHighlights(); highlightHandler(e.sourceOp, e.source); } catch (_) {} }
@@ -874,7 +905,7 @@ export function createPublishedControls({
       controlsList.appendChild(li);
 
         let skip = 0;
-        if (e.isLabel && e.labelCount > 0 && collapsed.has(idx)) skip += e.labelCount;
+        if (e.isLabel && e.labelCount > 0 && isLabelCollapsed(e, idx)) skip += e.labelCount;
         if (cgBlk && cgBlk.firstIndex === idx && cgBlk.count >= 2 && e.sourceOp && collapsedCG.has(getCgKey(e))) skip += (cgBlk.count - 1);
         if (skip > 0) pos += skip;
         pos += 1;
@@ -1360,6 +1391,12 @@ export function createPublishedControls({
     if (!e || !e.sourceOp) return '';
     if (Number.isFinite(e.controlGroup)) return `${e.sourceOp}::${e.controlGroup}`;
     return getFlipPairToken(e) || '';
+  }
+
+  function getLabelCollapseKey(entry, index) {
+    if (entry && entry.sourceOp && entry.source) return `${entry.sourceOp}::${entry.source}`;
+    if (entry && entry.key) return `key::${entry.key}`;
+    return `idx::${index}`;
   }
 
   function getContiguousColorGroupBlock(idx, entries, order) {

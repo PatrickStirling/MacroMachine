@@ -1,5 +1,6 @@
 export function createExportMenuController(options = {}) {
-  const { button, menu, getItems } = options;
+  const { button, toggleButton, menu, getItems } = options;
+  const trigger = toggleButton || button;
   let cleanup = null;
 
   const close = () => {
@@ -7,15 +8,17 @@ export function createExportMenuController(options = {}) {
       cleanup();
       cleanup = null;
     }
+    try { trigger?.setAttribute?.('aria-expanded', 'false'); } catch (_) {}
     if (!menu) return;
     menu.hidden = true;
     menu.innerHTML = '';
   };
 
   const open = () => {
-    if (!menu || !button) return;
+    if (!menu || !trigger) return;
     close();
     const items = typeof getItems === 'function' ? getItems() : [];
+    try { trigger?.setAttribute?.('aria-expanded', 'true'); } catch (_) {}
     menu.hidden = false;
     menu.innerHTML = '';
     items.forEach((item) => {
@@ -38,6 +41,7 @@ export function createExportMenuController(options = {}) {
     const onMouseDown = (ev) => {
       if (menu && menu.contains(ev.target)) return;
       if (button && button.contains(ev.target)) return;
+      if (trigger && trigger.contains(ev.target)) return;
       close();
     };
     const onKeyDown = (ev) => {
@@ -57,13 +61,13 @@ export function createExportMenuController(options = {}) {
   };
 
   const setEnabled = (enabled) => {
-    if (!button) return;
-    button.disabled = !enabled;
+    if (button) button.disabled = !enabled;
+    if (trigger && trigger !== button) trigger.disabled = !enabled;
     if (!enabled) close();
   };
 
   const onToggle = (ev) => {
-    if (!menu || !button) return;
+    if (!menu || !trigger) return;
     ev.preventDefault();
     ev.stopPropagation();
     if (!menu.hidden) {
@@ -73,7 +77,7 @@ export function createExportMenuController(options = {}) {
     open();
   };
 
-  button?.addEventListener('click', onToggle);
+  trigger?.addEventListener('click', onToggle);
 
   return {
     open,

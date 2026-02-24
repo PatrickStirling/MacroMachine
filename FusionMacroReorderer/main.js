@@ -45,10 +45,14 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
   const introToggleBar = document.getElementById('introToggleBar');
   const introToggleBtn = document.getElementById('introToggleBtn');
   const openExplorerBtn = document.getElementById('openExplorerBtn');
+  const miniCreateFolderBtn = document.getElementById('miniCreateFolderBtn');
+  const macroExplorerMiniFrame = document.getElementById('macroExplorerMiniFrame');
+  const macroExplorerFrame = document.getElementById('macroExplorerFrame');
   const macroExplorerPanel = document.getElementById('macroExplorerPanel');
   const macroExplorerMini = document.getElementById('macroExplorerMini');
   const closeExplorerPanelBtn = document.getElementById('closeExplorerPanelBtn');
   const exportMenuBtn = document.getElementById('exportMenuBtn');
+  const exportMenuCaretBtn = document.getElementById('exportMenuCaretBtn');
   const exportMenuEl = document.getElementById('exportMenu');
 
   const dropZone = document.getElementById('dropZone');
@@ -86,6 +90,8 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
     closeExplorerPanelBtn,
     macroExplorerPanel,
     macroExplorerMini,
+    macroExplorerFrame,
+    macroExplorerMiniFrame,
     dropHint,
     isElectron: IS_ELECTRON,
     onClearSelections: () => {
@@ -506,7 +512,7 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
       }
       setMacroNameDisplay(state.parseResult.macroName || 'Unknown');
       const entries = state.parseResult.entries || [];
-      ctrlCountEl.textContent = String(entries.length);
+      if (ctrlCountEl) ctrlCountEl.textContent = String(entries.length);
       if (inputCountEl) inputCountEl.textContent = String(countRecognizedInputs(entries));
       controlsSection.hidden = false;
       resetBtn.disabled = false;
@@ -517,6 +523,7 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
       removeCommonPageBtn && (removeCommonPageBtn.disabled = false);
       publishSelectedBtn && (publishSelectedBtn.disabled = true);
       clearNodeSelectionBtn && (clearNodeSelectionBtn.disabled = true);
+      setCreateControlActionsEnabled(true);
       pendingControlMeta.clear();
       pendingOpenNodes.clear();
       updateExportButtonLabelFromPath(state.originalFilePath);
@@ -830,13 +837,10 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
     const path = resolveReloadPath();
     if (!path) {
       dataLinkStatus.textContent = 'Reload path: Not set';
-      dataLinkStatus.title = 'Reload path: Not set';
+      dataLinkStatus.title = '';
     } else {
-      const label = path.startsWith(state.exportFolder || '')
-        ? 'Will export to'
-        : 'Reload path';
-      dataLinkStatus.textContent = `${label}: ${path}`;
-      dataLinkStatus.title = path;
+      dataLinkStatus.textContent = 'Reload path: Set';
+      dataLinkStatus.title = '';
     }
     dataLinkStatus.hidden = false;
   }
@@ -1575,7 +1579,6 @@ function updateDocExportPathDisplay() {
       { id: 'file', label: 'To File', enabled: hasMacro, action: exportToFile },
       { id: 'edit', label: 'To Edit Page', enabled: hasMacro, action: exportToEditPage },
     ];
-    items.push({ type: 'sep' });
     if (activeDrfxLinked || showDrfxMulti || showSourceBulk) items.push({ type: 'sep' });
     if (activeDrfxLinked) {
       items.push({ id: 'source', label: 'To Source DRFX', enabled: hasMacro, action: exportToSourceDrfx });
@@ -1591,9 +1594,24 @@ function updateDocExportPathDisplay() {
 
   exportMenuController = createExportMenuController({
     button: exportMenuBtn,
+    toggleButton: exportMenuCaretBtn,
     menu: exportMenuEl,
     getItems: buildExportMenuItems,
   });
+
+  function requestMiniExplorerCreateFolder() {
+    try {
+      if (!macroExplorerMiniFrame || !macroExplorerMiniFrame.contentWindow) {
+        info('Mini explorer is not ready yet.');
+        return;
+      }
+      macroExplorerMiniFrame.contentWindow.postMessage({ type: 'fmr-mini-create-folder' }, '*');
+    } catch (err) {
+      info(`Unable to trigger folder create: ${err?.message || err}`);
+    }
+  }
+
+  miniCreateFolderBtn?.addEventListener('click', () => requestMiniExplorerCreateFolder());
 
   function updateIntroToggleVisibility() {
     setIntroToggleVisible(!!state.parseResult);
@@ -1656,6 +1674,7 @@ function updateDocExportPathDisplay() {
   const addControlLabelDefaultSelect = document.getElementById('addControlLabelDefault');
   const addControlPageInput = document.getElementById('addControlPage');
   const addControlPageOptions = document.getElementById('addControlPageOptions');
+  const addControlTargetSelect = document.getElementById('addControlTarget');
   const addControlError = document.getElementById('addControlError');
   const addControlCancelBtn = document.getElementById('addControlCancelBtn');
   const addControlCloseBtn = document.getElementById('addControlCloseBtn');
@@ -1804,6 +1823,9 @@ function updateDocExportPathDisplay() {
   const publishSelectedBtn = document.getElementById('publishSelectedBtn');
 
   const clearNodeSelectionBtn = document.getElementById('clearNodeSelectionBtn');
+  const addControlGlobalBtn = document.getElementById('addControlGlobalBtn');
+  const addControlQuickBtn = document.getElementById('addControlQuickBtn');
+  const addControlQuickMenu = document.getElementById('addControlQuickMenu');
 
   const hideReplacedEl = document.getElementById('hideReplaced');
 
@@ -1821,6 +1843,13 @@ function updateDocExportPathDisplay() {
     if (!macroNameEl) return '';
     if ('value' in macroNameEl) return macroNameEl.value || '';
     return macroNameEl.textContent || '';
+  };
+
+  const setCreateControlActionsEnabled = (enabled) => {
+    const on = !!enabled;
+    if (addControlGlobalBtn) addControlGlobalBtn.disabled = !on;
+    if (addControlQuickBtn) addControlQuickBtn.disabled = !on;
+    if (!on) closeAddControlQuickMenu();
   };
 
   const ctrlCountEl = document.getElementById('ctrlCount');
@@ -1909,16 +1938,115 @@ function updateDocExportPathDisplay() {
     addControlLabelDefaultSelect,
     addControlPageInput,
     addControlPageOptions,
+    addControlTargetSelect,
     addControlError,
     addControlCancelBtn,
     addControlCloseBtn,
     addControlSubmitBtn,
     onAddControl: (nodeName, config) => addControlToNode(nodeName, config),
+    getTargetNodes: () => getControlTargetNodeNames(),
   });
+
+  function pickPrimaryToolNameFromCurrentMacro() {
+    try {
+      const bounds = locateMacroGroupBounds(state.originalText, state.parseResult);
+      if (!bounds) return '';
+      const toolsBlock = findOrderedBlock(state.originalText, bounds.groupOpenIndex, bounds.groupCloseIndex, 'Tools');
+      if (!toolsBlock) return '';
+      const entries = parseOrderedBlockEntries(state.originalText, toolsBlock.open, toolsBlock.close);
+      return entries && entries.length ? entries[0].name : '';
+    } catch (_) { return ''; }
+  }
+
+  function getControlTargetNodeNames() {
+    try {
+      const names = nodesPane?.getNodeNames?.() || [];
+      if (Array.isArray(names) && names.length) return names;
+    } catch (_) {}
+    const primary = pickPrimaryToolNameFromCurrentMacro();
+    return primary ? [primary] : [];
+  }
 
   function openAddControlDialog(nodeName) {
     addControlModalController?.open?.(nodeName);
   }
+
+  function closeAddControlQuickMenu() {
+    if (addControlQuickMenu) addControlQuickMenu.hidden = true;
+    if (addControlQuickBtn) addControlQuickBtn.setAttribute('aria-expanded', 'false');
+  }
+
+  function toggleAddControlQuickMenu() {
+    if (!addControlQuickMenu || !addControlQuickBtn || addControlQuickBtn.disabled) return;
+    const willOpen = !!addControlQuickMenu.hidden;
+    addControlQuickMenu.hidden = !willOpen;
+    addControlQuickBtn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+  }
+
+  async function quickCreateControl(type) {
+    const safeType = String(type || '').toLowerCase();
+    if (!['label', 'slider', 'button', 'separator'].includes(safeType)) return;
+    if (!state.parseResult || !state.originalText) {
+      error('Load a macro before creating controls.');
+      return;
+    }
+    const targets = getControlTargetNodeNames();
+    const nodeName = targets && targets.length ? targets[0] : '';
+    if (!nodeName) {
+      error('No target node available for control creation.');
+      return;
+    }
+    const activePage = (state.parseResult && state.parseResult.activePage) ? String(state.parseResult.activePage).trim() : '';
+    const config = {
+      name: safeType === 'label'
+        ? 'Label'
+        : safeType === 'slider'
+          ? 'Slider'
+          : safeType === 'button'
+            ? 'Button'
+            : 'Separator',
+      type: safeType,
+      page: activePage || 'Controls',
+    };
+    if (safeType === 'label') {
+      config.labelCount = 0;
+      config.labelDefault = 'closed';
+    }
+    try {
+      await addControlToNode(nodeName, config);
+    } catch (err) {
+      error(err?.message || 'Unable to create control.');
+    }
+  }
+
+  addControlGlobalBtn?.addEventListener('click', () => {
+    closeAddControlQuickMenu();
+    openAddControlDialog();
+  });
+  addControlQuickBtn?.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    toggleAddControlQuickMenu();
+  });
+  addControlQuickMenu?.addEventListener('click', async (ev) => {
+    const btn = ev.target && ev.target.closest ? ev.target.closest('button[data-quick-type]') : null;
+    if (!btn) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    closeAddControlQuickMenu();
+    await quickCreateControl(btn.dataset.quickType || '');
+  });
+  document.addEventListener('mousedown', (ev) => {
+    if (!addControlQuickMenu || !addControlQuickBtn) return;
+    if (addControlQuickMenu.hidden) return;
+    const target = ev.target;
+    const inMenu = addControlQuickMenu.contains(target);
+    const inBtn = addControlQuickBtn.contains(target);
+    if (!inMenu && !inBtn) closeAddControlQuickMenu();
+  });
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') closeAddControlQuickMenu();
+  });
 
 function hideDetailDrawer() {
     activeDetailEntryIndex = null;
@@ -2109,13 +2237,9 @@ function hideDetailDrawer() {
       detailDrawerBody.appendChild(field);
     };
     const controlsCount = state.parseResult.entries ? String(state.parseResult.entries.length) : '';
-    const filePath = state.originalFilePath || snap?.originalFilePath || '';
-    const exportPath = (snap?.lastExportPath || snap?.exportFolder || state.lastExportPath || state.exportFolder || '');
     addOperatorField();
-    addInfoField('Controls', controlsCount);
-    addInfoField('Inputs', String(countRecognizedInputs(state.parseResult.entries || [])));
-    addInfoField('Source path', filePath);
-    addInfoField('Export path', exportPath);
+    addInfoField('Controls found', controlsCount);
+    addInfoField('Inputs found', String(countRecognizedInputs(state.parseResult.entries || [])));
     const link = state.drfxLink || snap?.drfxLink || null;
     if (link && link.linked) {
       addInfoField('DRFX preset', link.presetName || 'Linked');
@@ -3034,8 +3158,9 @@ function hideDetailDrawer() {
       wrapper.addEventListener('focusout', () => {
         setTimeout(() => {
           const active = document.activeElement;
-          const stillInside = wrapper.contains(active);
-          if (!stillInside) {
+          const stillInsideEditor = wrapper.contains(active);
+          const stillInsidePickControls = row.contains(active);
+          if (!stillInsideEditor && !stillInsidePickControls) {
             hasFocus = false;
             if (liveActive) setLiveActive(false);
           }
@@ -4806,6 +4931,7 @@ function hideDetailDrawer() {
       pageOrder: Array.isArray(result.pageOrder) ? [...result.pageOrder] : [],
       selected: result.selected ? new Set(Array.from(result.selected)) : new Set(),
       collapsed: result.collapsed ? new Set(Array.from(result.collapsed)) : new Set(),
+      collapsedLabels: result.collapsedLabels ? new Set(Array.from(result.collapsedLabels)) : new Set(),
       collapsedCG: result.collapsedCG ? new Set(Array.from(result.collapsedCG)) : new Set(),
       blendToggles: result.blendToggles ? new Set(Array.from(result.blendToggles)) : new Set(),
       buttonExactInsert: result.buttonExactInsert ? new Set(Array.from(result.buttonExactInsert)) : new Set(),
@@ -5734,8 +5860,9 @@ function hideDetailDrawer() {
   async function reloadMacroFromCurrentText(options = {}) {
     try {
       const sourceName = state.originalFileName || 'Imported.setting';
-      const prevHistory = state.parseResult ? state.parseResult.history : null;
-      const prevFuture = state.parseResult ? state.parseResult.future : null;
+      const keepHistory = options.preserveHistory !== false;
+      const prevHistory = keepHistory && state.parseResult ? state.parseResult.history : null;
+      const prevFuture = keepHistory && state.parseResult ? state.parseResult.future : null;
       await loadMacroFromText(sourceName, state.originalText || '', {
         allowAutoUtility: false,
         preserveFileInfo: true,
@@ -5745,8 +5872,13 @@ function hideDetailDrawer() {
         createDoc: false,
       });
       if (state.parseResult) {
-        if (prevHistory) state.parseResult.history = prevHistory;
-        if (prevFuture) state.parseResult.future = prevFuture;
+        if (keepHistory) {
+          if (prevHistory) state.parseResult.history = prevHistory;
+          if (prevFuture) state.parseResult.future = prevFuture;
+        } else {
+          state.parseResult.history = [];
+          state.parseResult.future = [];
+        }
         updateUndoRedoState();
       }
     } catch (_) {
@@ -5880,7 +6012,7 @@ function hideDetailDrawer() {
     rememberPendingControlMeta(nodeName, controlId, pendingMeta);
     autoPublishCreatedControl(nodeName, controlId, trimmedName, normalizedPage, pendingMeta);
     pendingOpenNodes.add(nodeName);
-    const persisted = rebuildContentWithNewOrder(workingText, state.parseResult, newline);
+    const persisted = rebuildContentWithNewOrder(workingText, state.parseResult, newline, { safeEditExport: true });
     state.originalText = persisted;
     await reloadMacroFromCurrentText({ skipClear: true });
     runValidation('add-control');
@@ -5932,7 +6064,7 @@ function hideDetailDrawer() {
     const macroName = state.parseResult.macroName || state.parseResult.macroNameOriginal || 'Macro';
     rememberPendingControlMeta(macroName, controlId, pendingMeta);
     autoPublishCreatedControl(macroName, controlId, trimmedName, normalizedPage, pendingMeta);
-    const persisted = rebuildContentWithNewOrder(workingText, state.parseResult, newline);
+    const persisted = rebuildContentWithNewOrder(workingText, state.parseResult, newline, { safeEditExport: true });
     state.originalText = persisted;
     await reloadMacroFromCurrentText({ skipClear: true });
     runValidation('add-control');
@@ -6265,6 +6397,19 @@ function hideDetailDrawer() {
     renderList(state.parseResult.entries, state.parseResult.order);
   }
 
+  function getAdaptiveHistoryLimit() {
+    try {
+      const textLen = (state.originalText || '').length;
+      const controls = Array.isArray(state.parseResult?.entries) ? state.parseResult.entries.length : 0;
+      if (textLen >= 1_200_000 || controls >= 500) return 20;
+      if (textLen >= 700_000 || controls >= 300) return 35;
+      if (textLen >= 300_000 || controls >= 160) return 50;
+      return 80;
+    } catch (_) {
+      return 80;
+    }
+  }
+
   nodesPane = createNodesPane({
     state,
     nodesList,
@@ -6293,7 +6438,6 @@ function hideDetailDrawer() {
     normalizeId,
     enableNodeDrag: ENABLE_NODE_DRAG,
     requestRenameNode: (nodeName) => promptRenameNode(nodeName),
-    requestAddControl: (nodeName) => openAddControlDialog(nodeName),
     getPendingControlMeta: (op, id) => getPendingControlMeta(op, id),
     consumePendingControlMeta: (op, id) => consumePendingControlMeta(op, id),
   });
@@ -6309,6 +6453,7 @@ function hideDetailDrawer() {
     doc: (typeof document !== 'undefined') ? document : null,
     captureExtraState: () => captureHistoryExtras(),
     restoreExtraState: (extra, context) => restoreHistoryExtras(extra, context),
+    getHistoryLimit: () => getAdaptiveHistoryLimit(),
   });
 
     const nativeBridge = setupNativeBridge({
@@ -6326,14 +6471,18 @@ function hideDetailDrawer() {
       onImportGoogleSheet: () => importGoogleSheetFromUrl(),
       onReloadCsv: () => reloadCsvSource(),
       onGenerateFromCsv: () => generateSettingsFromCsv(),
+      onRefreshSession: () => refreshCurrentSession(),
       onInsertUpdateDataButton: () => insertUpdateDataButton(),
       onHeaderImageDialog: () => openHeaderImageDialog(),
       onProtocolUrl: (url) => handleProtocolUrl(url),
     });
 
   function setExportButtonLabel(label) {
-    if (!exportBtn) return;
-    exportBtn.textContent = label || DEFAULT_EXPORT_LABEL;
+    const next = label || DEFAULT_EXPORT_LABEL;
+    if (exportBtn) exportBtn.textContent = next;
+    if (exportMenuBtn) {
+      exportMenuBtn.textContent = next === DRFX_EXPORT_LABEL ? 'Export to Source' : 'Export to File';
+    }
   }
 
   async function updateExportButtonLabelFromPath(filePath) {
@@ -6871,13 +7020,14 @@ function hideDetailDrawer() {
       state.parseResult.cgNext = existingCG.length ? Math.max(...existingCG) + 1 : 1;
       state.parseResult.cgMap = new Map();
       state.parseResult.collapsed = new Set();
+      state.parseResult.collapsedLabels = new Set();
       state.parseResult.collapsedCG = new Set();
       state.parseResult.selected = new Set();
       if (!state.parseResult.entries.length) {
-        info('No published controls found. Use the Nodes pane to add controls.');
+        info('No published controls found. Use Create New Control in the Published Controls panel to add controls.');
       }
       setMacroNameDisplay(state.parseResult.macroName || 'Unknown');
-      ctrlCountEl.textContent = String(state.parseResult.entries.length);
+      if (ctrlCountEl) ctrlCountEl.textContent = String(state.parseResult.entries.length);
       if (inputCountEl) inputCountEl.textContent = String(countRecognizedInputs(state.parseResult.entries));
       registerLoadedDocument(state.originalFileName || sourceName, { createDoc });
       logDiag(`Parsed ok - macro: ${state.parseResult.macroName || 'Unknown'}, controls: ${state.parseResult.entries.length}`);
@@ -6890,6 +7040,7 @@ function hideDetailDrawer() {
       removeCommonPageBtn && (removeCommonPageBtn.disabled = false);
       publishSelectedBtn && (publishSelectedBtn.disabled = true);
       clearNodeSelectionBtn && (clearNodeSelectionBtn.disabled = true);
+      setCreateControlActionsEnabled(true);
       state.parseResult.history = [];
       state.parseResult.future = [];
       updateUndoRedoState();
@@ -6922,6 +7073,7 @@ function hideDetailDrawer() {
       error(msg);
       logDiag(`Parse error: ${msg}`);
       controlsSection.hidden = true;
+      setCreateControlActionsEnabled(false);
       updateUtilityActionsState();
     } finally {
       suppressDocDirty = prevSuppress;
@@ -7820,7 +7972,29 @@ async function handleFile(file) {
     }
   }
 
-  exportBtn?.addEventListener('click', async () => {
+  async function refreshCurrentSession() {
+    exportMenuController?.close?.();
+    if (!state.parseResult || !state.originalText) {
+      error('Load a macro before refreshing.');
+      return;
+    }
+    const started = Date.now();
+    try {
+      await reloadMacroFromCurrentText({
+        skipClear: false,
+        preserveHistory: false,
+      });
+      try { messages.textContent = ''; } catch (_) {}
+      try { diagnosticsController?.clear?.(); } catch (_) {}
+      historyController?.clearHistory?.();
+      info(`Session refreshed in ${Date.now() - started}ms. Undo history reset.`);
+    } catch (err) {
+      error(err?.message || err || 'Unable to refresh current session.');
+    }
+  }
+
+  const runDefaultExportAction = async () => {
+    exportMenuController?.close?.();
     const activeDoc = getActiveDocument();
     const selectedBatch = getSelectedCsvBatch();
     let batchDoc = (activeDoc && activeDoc.isCsvBatch) ? activeDoc : selectedBatch;
@@ -7843,7 +8017,10 @@ async function handleFile(file) {
     } else {
       exportToFile();
     }
-  });
+  };
+
+  exportBtn?.addEventListener('click', runDefaultExportAction);
+  exportMenuBtn?.addEventListener('click', runDefaultExportAction);
 
   exportTemplatesBtn?.addEventListener('click', exportToEditPage);
 
@@ -8106,17 +8283,7 @@ async function handleFile(file) {
       });
       if (!proceed) return;
     }
-    const pickPrimaryToolName = () => {
-      try {
-        const bounds = locateMacroGroupBounds(state.originalText, state.parseResult);
-        if (!bounds) return '';
-        const toolsBlock = findOrderedBlock(state.originalText, bounds.groupOpenIndex, bounds.groupCloseIndex, 'Tools');
-        if (!toolsBlock) return '';
-        const entries = parseOrderedBlockEntries(state.originalText, toolsBlock.open, toolsBlock.close);
-        return entries && entries.length ? entries[0].name : '';
-      } catch (_) { return ''; }
-    };
-    const primaryTool = pickPrimaryToolName();
+    const primaryTool = pickPrimaryToolNameFromCurrentMacro();
     const useNode = primaryTool && primaryTool !== state.parseResult.macroName;
     const res = useNode
       ? await addControlToNode(primaryTool, { name: 'Update Data', type: 'button', page: 'Controls' })
@@ -9272,6 +9439,7 @@ async function handleFile(file) {
     if (csvBatchBanner) csvBatchBanner.hidden = true;
     removeCommonPageBtn && (removeCommonPageBtn.disabled = true);
     deselectAllBtn && (deselectAllBtn.disabled = true);
+    setCreateControlActionsEnabled(false);
     hideDetailDrawer();
     updateUtilityActionsState();
     updateExportMenuButtonState();
@@ -9490,26 +9658,25 @@ async function handleFile(file) {
 
 
 
-  function info(msg) {
+  const MAX_MESSAGE_LINES = 220;
 
+  function appendMessageLine(text, isError = false) {
+    if (!messages) return;
     const div = document.createElement('div');
-
-    div.textContent = msg;
-
+    if (isError) div.style.color = '#ff9a9a';
+    div.textContent = text;
     messages.appendChild(div);
+    while (messages.childElementCount > MAX_MESSAGE_LINES) {
+      try { messages.removeChild(messages.firstChild); } catch (_) { break; }
+    }
+  }
 
+  function info(msg) {
+    appendMessageLine(msg, false);
   }
 
   function error(msg) {
-
-    const div = document.createElement('div');
-
-    div.style.color = '#ff9a9a';
-
-    div.textContent = `Error: ${msg}`;
-
-    messages.appendChild(div);
-
+    appendMessageLine(`Error: ${msg}`, true);
   }
 
 
@@ -9666,6 +9833,10 @@ async function handleFile(file) {
   function deriveAutoMacroName(sourceName) {
     try {
       const raw = sourceName ? String(sourceName).replace(/\.[^.]+$/, '') : 'ImportedMacro';
+      const lowerRaw = raw.trim().toLowerCase();
+      if (lowerRaw === 'clipboard') {
+        return 'NewMacro';
+      }
       const cleaned = sanitizeIdent(raw || 'ImportedMacro');
       return cleaned || 'ImportedMacro';
     } catch (_) {

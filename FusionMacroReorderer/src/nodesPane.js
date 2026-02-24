@@ -41,6 +41,7 @@ export function createNodesPane(options = {}) {
   let nodeFilter = '';
   let hideReplaced = false;
   let highlightCallback = initialHighlightNode || (() => {});
+  let lastNodeNames = [];
   let nodeContextMenu = null;
   let nodeContextMenuCleanup = null;
 
@@ -336,6 +337,11 @@ export function createNodesPane(options = {}) {
         bindings: modifierBindings.get(n.name) || (n.bindings || []),
         controlledBy: (controlledBy.get(n.name) || n.controlledBy || new Map()),
       }));
+      lastNodeNames = Array.from(new Set(
+        (nodes || [])
+          .filter((n) => n && !n.external && n.name)
+          .map((n) => String(n.name))
+      ));
 
       const macroControls = parseGroupLevelUserControls(
         state.originalText,
@@ -1728,6 +1734,7 @@ export function createNodesPane(options = {}) {
       if (state.parseResult) parseAndRenderNodes();
     },
     getNodeFilter: () => nodeFilter,
+    getNodeNames: () => [...lastNodeNames],
     setNodeCatalog(data) { nodeCatalog = data || null; },
     setModifierCatalog(data) { modifierCatalog = data || null; },
     getNodeCatalog() { return nodeCatalog; },

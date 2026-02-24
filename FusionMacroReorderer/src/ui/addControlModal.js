@@ -11,14 +11,17 @@ export function createAddControlModal(options = {}) {
     addControlLabelDefaultSelect,
     addControlPageInput,
     addControlPageOptions,
+    addControlTargetSelect,
     addControlError,
     addControlCancelBtn,
     addControlCloseBtn,
     addControlSubmitBtn,
     onAddControl,
+    getTargetNodes = null,
   } = options;
 
   let pendingNode = null;
+  let availableNodes = [];
 
   const getKnownPageNames = () => {
     const set = new Set();
@@ -51,6 +54,60 @@ export function createAddControlModal(options = {}) {
     });
   };
 
+  const resolveTargetNodes = () => {
+    try {
+      const nodes = (typeof getTargetNodes === 'function') ? getTargetNodes() : [];
+      if (!Array.isArray(nodes)) return [];
+      const seen = new Set();
+      const out = [];
+      nodes.forEach((name) => {
+        const val = (name && String(name).trim()) ? String(name).trim() : '';
+        if (!val || seen.has(val)) return;
+        seen.add(val);
+        out.push(val);
+      });
+      return out;
+    } catch (_) {
+      return [];
+    }
+  };
+
+  const syncTitleWithTarget = () => {
+    if (!addControlTitle) return;
+    addControlTitle.textContent = pendingNode || 'Node';
+  };
+
+  const updateTargetNodeOptions = (preferredNode = '') => {
+    availableNodes = resolveTargetNodes();
+    let nextTarget = '';
+    if (preferredNode && availableNodes.includes(preferredNode)) {
+      nextTarget = preferredNode;
+    } else if (pendingNode && availableNodes.includes(pendingNode)) {
+      nextTarget = pendingNode;
+    } else if (availableNodes.length) {
+      nextTarget = availableNodes[0];
+    }
+    pendingNode = nextTarget || null;
+    if (addControlTargetSelect) {
+      addControlTargetSelect.innerHTML = '';
+      if (!availableNodes.length) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = 'No nodes available';
+        addControlTargetSelect.appendChild(opt);
+      } else {
+        availableNodes.forEach((nodeName) => {
+          const opt = document.createElement('option');
+          opt.value = nodeName;
+          opt.textContent = nodeName;
+          addControlTargetSelect.appendChild(opt);
+        });
+      }
+      addControlTargetSelect.value = pendingNode || '';
+    }
+    syncTitleWithTarget();
+  };
+
   const getSuggestedAddControlPage = () => {
     const active = (state.parseResult && state.parseResult.activePage)
       ? String(state.parseResult.activePage).trim()
@@ -68,8 +125,8 @@ export function createAddControlModal(options = {}) {
     addLabelOptions.hidden = typeVal !== 'label';
   };
 
-  const resetAddControlFormFields = (nodeName) => {
-    if (addControlTitle) addControlTitle.textContent = nodeName || 'Node';
+  const resetAddControlFormFields = () => {
+    syncTitleWithTarget();
     if (addControlNameInput) addControlNameInput.value = '';
     if (addControlTypeSelect) addControlTypeSelect.value = 'label';
     if (addControlLabelCountInput) addControlLabelCountInput.value = '0';
@@ -82,11 +139,15 @@ export function createAddControlModal(options = {}) {
     updateAddControlTypeVisibility();
   };
 
-  const open = (nodeName) => {
+  const open = (arg) => {
     if (!addControlModal) return;
-    pendingNode = nodeName;
+    const preferredNode = (typeof arg === 'string')
+      ? arg
+      : (arg && typeof arg === 'object' && arg.nodeName ? String(arg.nodeName) : '');
     updateAddControlPageOptionsList();
-    resetAddControlFormFields(nodeName);
+    updateTargetNodeOptions(preferredNode);
+    resetAddControlFormFields();
+    if (!pendingNode && addControlError) addControlError.textContent = 'No target nodes available.';
     addControlModal.hidden = false;
     setTimeout(() => {
       try { addControlNameInput?.focus(); } catch (_) {}
@@ -100,6 +161,14 @@ export function createAddControlModal(options = {}) {
   };
 
   addControlTypeSelect?.addEventListener('change', () => updateAddControlTypeVisibility());
+  addControlTargetSelect?.addEventListener('change', () => {
+    const raw = addControlTargetSelect.value || '';
+    pendingNode = raw ? String(raw) : null;
+    syncTitleWithTarget();
+    if (pendingNode && addControlError && /No target nodes/i.test(addControlError.textContent || '')) {
+      addControlError.textContent = '';
+    }
+  });
   addControlCancelBtn?.addEventListener('click', (ev) => {
     ev.preventDefault();
     close();
@@ -121,7 +190,7 @@ export function createAddControlModal(options = {}) {
       ev.preventDefault();
       try {
         if (!pendingNode) {
-          if (addControlError) addControlError.textContent = 'Select a node before adding controls.';
+          if (addControlError) addControlError.textContent = 'Select a target node before adding controls.';
           return;
         }
         const typeRaw = (addControlTypeSelect?.value || 'label').toLowerCase();
