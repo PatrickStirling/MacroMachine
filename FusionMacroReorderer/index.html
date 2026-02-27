@@ -107,6 +107,7 @@
                     <div id="addControlQuickMenu" class="export-menu quick-create-menu" hidden>
                       <button type="button" data-quick-type="label">Create Label</button>
                       <button type="button" data-quick-type="slider">Create Slider</button>
+                      <button type="button" data-quick-type="combo">Create Combo</button>
                       <button type="button" data-quick-type="button">Create Button</button>
                       <button type="button" data-quick-type="separator">Create Separator</button>
                     </div>
@@ -144,10 +145,27 @@
                 <input type="text" id="nodesSearch" placeholder="Search nodes and controls" />
               </div>
               <div class="toolbar-right">
-                <label style="display:inline-flex;align-items:center;gap:6px;">
-                  <input type="checkbox" id="hideReplaced" />
-                  Hide replaced controls
-                </label>
+                <div class="view-controls-wrap">
+                  <button id="viewControlsBtn" type="button" aria-haspopup="menu" aria-expanded="false">View Controls &#9662;</button>
+                  <div id="viewControlsMenu" class="view-controls-menu" hidden>
+                    <label>
+                      <input type="checkbox" id="hideReplaced" />
+                      Hide replaced controls
+                    </label>
+                    <label>
+                      <input type="checkbox" id="showNodeTypeLabels" checked />
+                      Node-type labels
+                    </label>
+                    <label>
+                      <input type="checkbox" id="showInstancedConnections" checked />
+                      Instanced connections
+                    </label>
+                    <label>
+                      <input type="checkbox" id="showNextNodeLinks" checked />
+                      Next node links
+                    </label>
+                  </div>
+                </div>
               </div>
             </div>
             <div class="nodes-utility-row" hidden>
@@ -187,6 +205,7 @@
                       <option value="separator">Separator</option>
                       <option value="button">Button</option>
                       <option value="slider">Slider</option>
+                      <option value="combo">Combo</option>
                       <option value="screw">Screw</option>
                     </select>
                   </label>
@@ -204,6 +223,13 @@
                         </select>
                       </label>
                     </div>
+                  </div>
+                  <div class="combo-options" id="addComboOptions" hidden>
+                    <label>
+                      Combo options
+                      <textarea id="addControlComboOptions" placeholder="Option 1&#10;Option 2&#10;Option 3"></textarea>
+                    </label>
+                    <p class="form-hint">One option per line. These become the visible dropdown labels (index starts at 0).</p>
                   </div>
                   <label>
                     Page

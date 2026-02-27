@@ -7,8 +7,10 @@ export function createAddControlModal(options = {}) {
     addControlNameInput,
     addControlTypeSelect,
     addLabelOptions,
+    addComboOptions,
     addControlLabelCountInput,
     addControlLabelDefaultSelect,
+    addControlComboOptionsInput,
     addControlPageInput,
     addControlPageOptions,
     addControlTargetSelect,
@@ -120,9 +122,25 @@ export function createAddControlModal(options = {}) {
   };
 
   const updateAddControlTypeVisibility = () => {
-    if (!addLabelOptions) return;
     const typeVal = (addControlTypeSelect?.value || 'label').toLowerCase();
-    addLabelOptions.hidden = typeVal !== 'label';
+    if (addLabelOptions) {
+      const showLabel = typeVal === 'label';
+      addLabelOptions.hidden = !showLabel;
+      addLabelOptions.style.display = showLabel ? '' : 'none';
+    }
+    if (addComboOptions) {
+      const showCombo = typeVal === 'combo';
+      addComboOptions.hidden = !showCombo;
+      addComboOptions.style.display = showCombo ? 'flex' : 'none';
+    }
+  };
+
+  const parseComboOptionsInput = (raw) => {
+    const text = String(raw || '').replace(/\r\n?/g, '\n');
+    const rows = text.includes('\n') ? text.split('\n') : text.split(',');
+    return rows
+      .map((line) => String(line || '').trim().replace(/^"(.*)"$/, '$1'))
+      .filter((line) => line.length > 0);
   };
 
   const resetAddControlFormFields = () => {
@@ -131,6 +149,7 @@ export function createAddControlModal(options = {}) {
     if (addControlTypeSelect) addControlTypeSelect.value = 'label';
     if (addControlLabelCountInput) addControlLabelCountInput.value = '0';
     if (addControlLabelDefaultSelect) addControlLabelDefaultSelect.value = 'closed';
+    if (addControlComboOptionsInput) addControlComboOptionsInput.value = 'Option 1\nOption 2\nOption 3';
     if (addControlPageInput) {
       const suggested = getSuggestedAddControlPage();
       addControlPageInput.value = suggested && suggested !== 'Controls' ? suggested : '';
@@ -161,6 +180,7 @@ export function createAddControlModal(options = {}) {
   };
 
   addControlTypeSelect?.addEventListener('change', () => updateAddControlTypeVisibility());
+  updateAddControlTypeVisibility();
   addControlTargetSelect?.addEventListener('change', () => {
     const raw = addControlTargetSelect.value || '';
     pendingNode = raw ? String(raw) : null;
@@ -194,7 +214,7 @@ export function createAddControlModal(options = {}) {
           return;
         }
         const typeRaw = (addControlTypeSelect?.value || 'label').toLowerCase();
-        const allowedTypes = new Set(['label', 'separator', 'button', 'slider', 'screw']);
+        const allowedTypes = new Set(['label', 'separator', 'button', 'slider', 'combo', 'screw']);
         const type = allowedTypes.has(typeRaw) ? typeRaw : 'label';
         let name = (addControlNameInput?.value || '').trim();
         if (!name) {
@@ -216,6 +236,14 @@ export function createAddControlModal(options = {}) {
           const countVal = parseInt(addControlLabelCountInput?.value || '0', 10);
           config.labelCount = Number.isFinite(countVal) ? countVal : 0;
           config.labelDefault = (addControlLabelDefaultSelect?.value === 'open') ? 'open' : 'closed';
+        } else if (type === 'combo') {
+          const comboOptions = parseComboOptionsInput(addControlComboOptionsInput?.value || '');
+          if (!comboOptions.length) {
+            if (addControlError) addControlError.textContent = 'Combo controls require at least one option.';
+            addControlComboOptionsInput?.focus();
+            return;
+          }
+          config.comboOptions = comboOptions;
         }
         if (addControlError) addControlError.textContent = '';
         if (addControlSubmitBtn) addControlSubmitBtn.disabled = true;

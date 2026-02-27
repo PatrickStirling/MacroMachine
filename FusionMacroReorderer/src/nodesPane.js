@@ -7,6 +7,11 @@ export function createNodesPane(options = {}) {
     nodesList,
     nodesSearch,
     hideReplacedEl,
+    viewControlsBtn = null,
+    viewControlsMenu = null,
+    showNodeTypeLabelsEl = null,
+    showInstancedConnectionsEl = null,
+    showNextNodeLinksEl = null,
     publishSelectedBtn,
     clearNodeSelectionBtn,
     importCatalogBtn,
@@ -16,6 +21,7 @@ export function createNodesPane(options = {}) {
     logDiag = () => {},
     logTag = () => {},
     error = () => {},
+    info = () => {},
     highlightNode: initialHighlightNode = () => {},
     clearHighlights = () => {},
     renderList: renderPublishedList = () => {},
@@ -35,15 +41,594 @@ export function createNodesPane(options = {}) {
     consumePendingControlMeta = () => {},
   } = options;
   const UTILITY_NODE_NAME = 'UTILITY';
+  const QUICK_SET_STORAGE_KEY = 'fmr.nodeQuickSets.v1';
+  const QUICK_SET_OPTIONS_STORAGE_KEY = 'fmr.nodeQuickSetOptions.v1';
+  const VIEW_CONTROLS_STORAGE_KEY = 'fmr.nodesViewControls.v1';
+  const QUICK_SET_FALLBACK_COUNT = 10;
 
   let nodeCatalog = null;
   let modifierCatalog = null;
+  let nodeProfiles = null;
+  let modifierProfiles = null;
+  let modifierBindingContext = new Map();
+  let modifierContextDiagSeen = new Set();
   let nodeFilter = '';
   let hideReplaced = false;
+  let showNodeTypeLabels = true;
+  let showInstancedConnections = true;
+  let showNextNodeLinks = true;
   let highlightCallback = initialHighlightNode || (() => {});
   let lastNodeNames = [];
   let nodeContextMenu = null;
   let nodeContextMenuCleanup = null;
+  let exprInspectorOverlay = null;
+  let exprInspectorCleanup = null;
+  let quickSetStore = loadQuickSetStore();
+  let quickSetOptions = loadQuickSetOptions();
+  const savedViewOptions = loadViewControlOptions();
+  if (savedViewOptions) {
+    hideReplaced = savedViewOptions.hideReplaced === true;
+    showNodeTypeLabels = savedViewOptions.showNodeTypeLabels !== false;
+    showInstancedConnections = savedViewOptions.showInstancedConnections !== false;
+    showNextNodeLinks = savedViewOptions.showNextNodeLinks !== false;
+  }
+
+  function loadQuickSetStore() {
+    try {
+      if (typeof localStorage === 'undefined') return {};
+      const raw = localStorage.getItem(QUICK_SET_STORAGE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function saveQuickSetStore() {
+    try {
+      if (typeof localStorage === 'undefined') return;
+      localStorage.setItem(QUICK_SET_STORAGE_KEY, JSON.stringify(quickSetStore || {}));
+    } catch (_) {}
+  }
+
+  function loadQuickSetOptions() {
+    try {
+      if (typeof localStorage === 'undefined') return { resolveToDrivers: true };
+      const raw = localStorage.getItem(QUICK_SET_OPTIONS_STORAGE_KEY);
+      if (!raw) return { resolveToDrivers: true };
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return { resolveToDrivers: true };
+      return {
+        resolveToDrivers: parsed.resolveToDrivers !== false,
+      };
+    } catch (_) {
+      return { resolveToDrivers: true };
+    }
+  }
+
+  function saveQuickSetOptions() {
+    try {
+      if (typeof localStorage === 'undefined') return;
+      localStorage.setItem(QUICK_SET_OPTIONS_STORAGE_KEY, JSON.stringify(quickSetOptions || { resolveToDrivers: true }));
+    } catch (_) {}
+  }
+
+  function getQuickSetResolveToDrivers() {
+    return quickSetOptions?.resolveToDrivers !== false;
+  }
+
+  function setQuickSetResolveToDrivers(value) {
+    quickSetOptions = {
+      ...(quickSetOptions || {}),
+      resolveToDrivers: value !== false,
+    };
+    saveQuickSetOptions();
+  }
+
+  function loadViewControlOptions() {
+    try {
+      if (typeof localStorage === 'undefined') return null;
+      const raw = localStorage.getItem(VIEW_CONTROLS_STORAGE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return null;
+      return parsed;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function saveViewControlOptions() {
+    try {
+      if (typeof localStorage === 'undefined') return;
+      localStorage.setItem(VIEW_CONTROLS_STORAGE_KEY, JSON.stringify({
+        hideReplaced: !!hideReplaced,
+        showNodeTypeLabels: !!showNodeTypeLabels,
+        showInstancedConnections: !!showInstancedConnections,
+        showNextNodeLinks: !!showNextNodeLinks,
+      }));
+    } catch (_) {}
+  }
+
+  function syncViewControlInputs() {
+    try {
+      if (hideReplacedEl) hideReplacedEl.checked = !!hideReplaced;
+      if (showNodeTypeLabelsEl) showNodeTypeLabelsEl.checked = !!showNodeTypeLabels;
+      if (showInstancedConnectionsEl) showInstancedConnectionsEl.checked = !!showInstancedConnections;
+      if (showNextNodeLinksEl) showNextNodeLinksEl.checked = !!showNextNodeLinks;
+    } catch (_) {}
+  }
+
+  function setViewControlsMenuOpen(open) {
+    try {
+      if (!viewControlsMenu || !viewControlsBtn) return;
+      const next = !!open;
+      viewControlsMenu.hidden = !next;
+      viewControlsBtn.setAttribute('aria-expanded', next ? 'true' : 'false');
+    } catch (_) {}
+  }
+
+  function sanitizeQuickSetKeys(keys, candidatesMap) {
+    const out = [];
+    const seen = new Set();
+    for (const raw of (keys || [])) {
+      const key = String(raw || '').trim();
+      if (!key || seen.has(key)) continue;
+      if (candidatesMap && !candidatesMap.has(key)) continue;
+      seen.add(key);
+      out.push(key);
+    }
+    return out;
+  }
+
+  function getQuickSetForType(type, candidatesMap) {
+    const key = String(type || '').trim();
+    if (!key) return [];
+    const stored = quickSetStore && Array.isArray(quickSetStore[key]) ? quickSetStore[key] : [];
+    return sanitizeQuickSetKeys(stored, candidatesMap);
+  }
+
+  function setQuickSetForType(type, keys) {
+    const key = String(type || '').trim();
+    if (!key) return;
+    const clean = sanitizeQuickSetKeys(keys);
+    if (!clean.length) {
+      delete quickSetStore[key];
+    } else {
+      quickSetStore[key] = clean;
+    }
+    saveQuickSetStore();
+  }
+
+  function isBoilerplateQuickControlId(id) {
+    const text = String(id || '').trim();
+    if (!text) return true;
+    if (/^Global(In|Out)$/i.test(text)) return true;
+    if (/^ProcessMode$/i.test(text)) return true;
+    if (/^UseFrameFormatSettings$/i.test(text)) return true;
+    if (/^Depth$/i.test(text)) return true;
+    if (/^Blank\d+$/i.test(text)) return true;
+    if (/^(Comments|HideInputs|BaseLayerName)$/i.test(text)) return true;
+    if (/^(FrameRenderScript|StartRenderScript|EndRenderScript)$/i.test(text)) return true;
+    if (/^(LayerSpacer|Input_LayerSelect|EffectMask_LayerSelect)$/i.test(text)) return true;
+    if (/^(ProcessLayers|ProcessLayersCustom)$/i.test(text)) return true;
+    if (/^UseGPU$/i.test(text)) return true;
+    return false;
+  }
+
+  function buildQuickSetCandidates(nodeControls, allowSourceControl) {
+    const list = [];
+    const map = new Map();
+    for (const c of (nodeControls || [])) {
+      if (!c) continue;
+      if (isGroupedControl(c)) {
+        const base = String(c.base || c.id || '').trim();
+        if (!base) continue;
+        const key = `group:${base}`;
+        const channels = Array.isArray(c.channels) ? c.channels.map(ch => ({ id: ch.id, name: ch.name || ch.id })) : [];
+        const item = {
+          key,
+          kind: 'group',
+          label: c.groupLabel || humanizeName(base),
+          base,
+          channels,
+          count: channels.length,
+        };
+        list.push(item);
+        map.set(key, item);
+        continue;
+      }
+      const id = String(c.id || '').trim();
+      if (!id) continue;
+      if (id === 'SourceOp') continue;
+      if (id === 'Source' && !allowSourceControl) continue;
+      const key = `control:${id}`;
+      const item = {
+        key,
+        kind: 'control',
+        id,
+        label: c.name || humanizeName(id),
+        control: c,
+      };
+      list.push(item);
+      map.set(key, item);
+    }
+    return { list, map };
+  }
+
+  function buildSuggestedQuickSetKeys(candidates) {
+    const primary = [];
+    for (const cand of (candidates || [])) {
+      if (!cand) continue;
+      if (cand.kind === 'group') {
+        primary.push(cand.key);
+        continue;
+      }
+      if (isBoilerplateQuickControlId(cand.id)) continue;
+      primary.push(cand.key);
+    }
+    const fallback = (candidates || []).map(c => c && c.key).filter(Boolean);
+    const preferred = primary.length ? primary : fallback;
+    return preferred.slice(0, QUICK_SET_FALLBACK_COUNT);
+  }
+
+  function openQuickSetModal(node, nodeControls, allowSourceControl) {
+    if (!node || !Array.isArray(nodeControls)) return;
+    const { list, map } = buildQuickSetCandidates(nodeControls, allowSourceControl);
+    if (!list.length) {
+      info('No eligible controls found for quick set editing on this node.');
+      return;
+    }
+    const suggested = buildSuggestedQuickSetKeys(list);
+    const existing = getQuickSetForType(node.type, map);
+    const initial = existing.length ? existing : suggested;
+    const selected = new Set(initial);
+
+    const overlay = document.createElement('div');
+    overlay.className = 'quick-set-modal';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+
+    const panel = document.createElement('form');
+    panel.className = 'quick-set-panel';
+
+    const header = document.createElement('header');
+    const titleWrap = document.createElement('div');
+    const h3 = document.createElement('h3');
+    h3.textContent = `Quick Set: ${node.type || node.name}`;
+    const note = document.createElement('p');
+    note.textContent = `${node.name} - choose controls for one-click quick publish`;
+    titleWrap.appendChild(h3);
+    titleWrap.appendChild(note);
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.textContent = 'x';
+    closeBtn.setAttribute('aria-label', 'Close');
+    header.appendChild(titleWrap);
+    header.appendChild(closeBtn);
+
+    const body = document.createElement('div');
+    body.className = 'quick-set-body';
+    const toolbar = document.createElement('div');
+    toolbar.className = 'quick-set-toolbar';
+    const useSuggestedBtn = document.createElement('button');
+    useSuggestedBtn.type = 'button';
+    useSuggestedBtn.textContent = 'Use Suggested';
+    const selectAllBtn = document.createElement('button');
+    selectAllBtn.type = 'button';
+    selectAllBtn.textContent = 'Select All';
+    const selectNoneBtn = document.createElement('button');
+    selectNoneBtn.type = 'button';
+    selectNoneBtn.textContent = 'Select None';
+    toolbar.appendChild(useSuggestedBtn);
+    toolbar.appendChild(selectAllBtn);
+    toolbar.appendChild(selectNoneBtn);
+    body.appendChild(toolbar);
+
+    const optionsRow = document.createElement('label');
+    optionsRow.className = 'quick-set-option';
+    const resolveDriversCb = document.createElement('input');
+    resolveDriversCb.type = 'checkbox';
+    resolveDriversCb.checked = getQuickSetResolveToDrivers();
+    const resolveDriversText = document.createElement('span');
+    resolveDriversText.textContent = 'Quick publish: resolve selected driven controls to their driver controls';
+    optionsRow.appendChild(resolveDriversCb);
+    optionsRow.appendChild(resolveDriversText);
+    body.appendChild(optionsRow);
+
+    const listEl = document.createElement('div');
+    listEl.className = 'quick-set-list';
+    const refreshChecks = () => {
+      const checks = listEl.querySelectorAll('input[type="checkbox"][data-key]');
+      checks.forEach((cb) => {
+        const key = cb.dataset.key || '';
+        cb.checked = selected.has(key);
+      });
+    };
+    for (const cand of list) {
+      if (!cand || !cand.key) continue;
+      const row = document.createElement('label');
+      row.className = 'quick-set-item';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.dataset.key = cand.key;
+      cb.checked = selected.has(cand.key);
+      cb.addEventListener('change', () => {
+        if (cb.checked) selected.add(cand.key);
+        else selected.delete(cand.key);
+      });
+      const text = document.createElement('span');
+      text.className = 'quick-set-label';
+      if (cand.kind === 'group') {
+        const count = Number.isFinite(cand.count) ? ` (${cand.count})` : '';
+        text.textContent = `${cand.label}${count}`;
+      } else {
+        text.textContent = cand.label;
+      }
+      row.appendChild(cb);
+      row.appendChild(text);
+      listEl.appendChild(row);
+    }
+    body.appendChild(listEl);
+
+    const footer = document.createElement('footer');
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.textContent = 'Cancel';
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'submit';
+    saveBtn.className = 'primary';
+    saveBtn.textContent = 'Save Set';
+    footer.appendChild(cancelBtn);
+    footer.appendChild(saveBtn);
+
+    panel.appendChild(header);
+    panel.appendChild(body);
+    panel.appendChild(footer);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+
+    const close = () => {
+      try { overlay.remove(); } catch (_) {}
+    };
+    closeBtn.addEventListener('click', close);
+    cancelBtn.addEventListener('click', close);
+    overlay.addEventListener('click', (ev) => {
+      if (ev.target === overlay) close();
+    });
+    useSuggestedBtn.addEventListener('click', () => {
+      selected.clear();
+      suggested.forEach((key) => selected.add(key));
+      refreshChecks();
+    });
+    selectAllBtn.addEventListener('click', () => {
+      selected.clear();
+      list.forEach((cand) => selected.add(cand.key));
+      refreshChecks();
+    });
+    selectNoneBtn.addEventListener('click', () => {
+      selected.clear();
+      refreshChecks();
+    });
+    panel.addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      const keys = sanitizeQuickSetKeys(Array.from(selected), map);
+      setQuickSetResolveToDrivers(!!resolveDriversCb.checked);
+      setQuickSetForType(node.type, keys);
+      info(`Saved quick set for ${node.type || node.name}: ${keys.length} control(s).`);
+      close();
+      if (state.parseResult) parseAndRenderNodes();
+    });
+  }
+
+  function applyQuickSetToNode(node, nodeControls, allowSourceControl) {
+    try {
+      if (!state.parseResult || !node || !Array.isArray(nodeControls)) return;
+      const resolveToDrivers = getQuickSetResolveToDrivers();
+      const { list, map } = buildQuickSetCandidates(nodeControls, allowSourceControl);
+      if (!list.length) {
+        info('No eligible controls to publish from quick set.');
+        return;
+      }
+      let keys = getQuickSetForType(node.type, map);
+      if (!keys.length) {
+        keys = buildSuggestedQuickSetKeys(list);
+        if (keys.length) {
+          setQuickSetForType(node.type, keys);
+        }
+      }
+      if (!keys.length) {
+        info(`No quick-set controls available for ${node.type || node.name}.`);
+        return;
+      }
+      const publishMap = new Map();
+      const modifierAdded = new Set();
+      let missing = 0;
+      let redirected = 0;
+
+      const addPublishItem = (sourceOp, source, displayName, controlDef = null) => {
+        const op = String(sourceOp || '').trim();
+        const src = String(source || '').trim();
+        if (!op || !src) return false;
+        const key = `${op}::${src}`;
+        if (publishMap.has(key)) return false;
+        publishMap.set(key, {
+          sourceOp: op,
+          source: src,
+          displayName: displayName || humanizeName(src) || src,
+          controlDef,
+        });
+        return true;
+      };
+
+      const findControlDefinition = (sourceOp, source) => {
+        try {
+          const tool = findToolByNameAnywhere(state.originalText, sourceOp);
+          if (!tool) return null;
+          const isMod = isModifierType(tool.type || '');
+          const cat = isMod ? (modifierCatalog || nodeCatalog) : nodeCatalog;
+          const profileRef = isMod ? (modifierProfiles || nodeProfiles) : nodeProfiles;
+          const contextBindings = isMod ? (modifierBindingContext.get(tool.name) || []) : [];
+          const controls = deriveControlsForTool(tool, cat, profileRef, contextBindings) || [];
+          const target = controls.find((c) => c && !c.type && String(c.id || '') === String(source));
+          return target || null;
+        } catch (_) {
+          return null;
+        }
+      };
+
+      const addExpressionTargets = (exprRefs) => {
+        let addedAny = false;
+        for (const expr of (exprRefs || [])) {
+          for (const target of (expr?.targets || [])) {
+            if (!target || !target.sourceOp || !target.source) continue;
+            const def = findControlDefinition(target.sourceOp, target.source);
+            const label = (def && (def.name || def.id)) || humanizeName(target.source) || target.source;
+            if (addPublishItem(target.sourceOp, target.source, label, def)) addedAny = true;
+          }
+        }
+        return addedAny;
+      };
+
+      const addDriverControl = (driverName, preferredSource = '') => {
+        const mod = String(driverName || '').trim();
+        if (!mod) return false;
+        const requested = String(preferredSource || '').trim();
+        const tool = findToolByNameAnywhere(state.originalText, mod);
+        if (!tool) return false;
+        const isMod = isModifierType(tool.type || '');
+        const cat = isMod ? (modifierCatalog || nodeCatalog) : nodeCatalog;
+        const profileRef = isMod ? (modifierProfiles || nodeProfiles) : nodeProfiles;
+        const contextBindings = isMod ? (modifierBindingContext.get(tool.name) || []) : [];
+        const controls = deriveControlsForTool(tool, cat, profileRef, contextBindings) || [];
+
+        const addById = (id, fallbackLabel = '') => {
+          const src = String(id || '').trim();
+          if (!src) return false;
+          const driverKey = `${mod}::${src}`;
+          if (modifierAdded.has(driverKey)) return false;
+          modifierAdded.add(driverKey);
+          const def = findControlDefinition(mod, src);
+          const label = (def && (def.name || def.id)) || fallbackLabel || src;
+          return addPublishItem(mod, src, label, def);
+        };
+
+        if (isMod) {
+          const allowSource = /switch/i.test(String(tool.type || tool.name || ''));
+          const quick = buildQuickSetCandidates(controls, allowSource);
+          const savedKeys = getQuickSetForType(tool.type, quick.map);
+          let changed = false;
+          for (const key of (savedKeys || [])) {
+            const cand = quick.map.get(key);
+            if (!cand) continue;
+            if (cand.kind === 'group') {
+              for (const ch of (cand.channels || [])) {
+                if (!ch || !ch.id) continue;
+                changed = addById(ch.id, ch.name || ch.id) || changed;
+              }
+              continue;
+            }
+            changed = addById(cand.id, cand.label || cand.id) || changed;
+          }
+          if (changed) return true;
+        }
+
+        const pickFlatControl = (id) => {
+          const targetId = String(id || '').trim();
+          if (!targetId) return null;
+          return controls.find((c) => c && !c.type && String(c.id || '') === targetId) || null;
+        };
+
+        let chosen = null;
+        if (requested) chosen = pickFlatControl(requested);
+        if (!chosen) chosen = pickFlatControl('Value');
+        if (!chosen) chosen = controls.find((c) => c && !c.type) || null;
+        if (!chosen || !chosen.id) return false;
+        return addById(chosen.id, chosen.name || chosen.id);
+      };
+
+      const resolveAndAddControl = (sourceOp, source, displayName, controlDef) => {
+        const id = String(source || '').trim();
+        let effectiveSourceOp = String(sourceOp || '').trim();
+        if (String(node?.name || '').trim() && effectiveSourceOp === String(node.name).trim()) {
+          effectiveSourceOp = resolvePublishSourceOp(node, controlDef);
+        }
+        if (!resolveToDrivers || !id) {
+          addPublishItem(effectiveSourceOp, id, displayName, controlDef);
+          return;
+        }
+        const mods = [];
+        for (const [modName, refs] of modifierBindingContext.entries()) {
+          for (const ref of (refs || [])) {
+            if (!ref) continue;
+            if (String(ref.tool || '') !== String(effectiveSourceOp || '')) continue;
+            if (String(ref.id || '') !== id) continue;
+            mods.push({ name: modName, source: String(ref.source || '').trim() });
+          }
+        }
+        const exprRefs = (node && String(node.name || '') === String(effectiveSourceOp || '') && node.expressionDriven)
+          ? (typeof node.expressionDriven.get === 'function' ? (node.expressionDriven.get(id) || []) : (node.expressionDriven[id] || []))
+          : [];
+        const hasDrivers = (mods.length > 0) || (exprRefs && exprRefs.length > 0);
+        if (!hasDrivers) {
+          addPublishItem(effectiveSourceOp, id, displayName, controlDef);
+          return;
+        }
+        redirected += 1;
+        let driverAdded = false;
+        if (exprRefs && exprRefs.length > 0) {
+          driverAdded = addExpressionTargets(exprRefs) || driverAdded;
+        }
+        for (const modInfo of mods) {
+          driverAdded = addDriverControl(modInfo?.name, modInfo?.source) || driverAdded;
+        }
+        if (!driverAdded) {
+          addPublishItem(effectiveSourceOp, id, displayName, controlDef);
+        }
+      };
+
+      for (const key of keys) {
+        const cand = map.get(key);
+        if (!cand) {
+          missing += 1;
+          continue;
+        }
+        if (cand.kind === 'group') {
+          for (const ch of (cand.channels || [])) {
+            if (!ch || !ch.id) continue;
+            const chDef = ch.control || findControlDefinition(node.name, ch.id);
+            const label = (chDef && (chDef.name || chDef.id)) || ch.name || ch.id;
+            resolveAndAddControl(node.name, ch.id, label, chDef);
+          }
+          continue;
+        }
+        const def = cand.control || findControlDefinition(node.name, cand.id);
+        const label = cand.label || (def && (def.name || def.id)) || cand.id;
+        resolveAndAddControl(node.name, cand.id, label, def);
+      }
+
+      const idxs = [];
+      let added = 0;
+      let already = 0;
+      for (const item of publishMap.values()) {
+        if (isPublished(item.sourceOp, item.source)) already += 1;
+        else added += 1;
+        const meta = buildControlMetaFromDefinition(item.controlDef);
+        const idx = ensureEntryExists(item.sourceOp, item.source, item.displayName, meta);
+        if (idx != null) idxs.push(idx);
+      }
+      if (idxs.length) {
+        const pos = getInsertionPosUnderSelection();
+        state.parseResult.order = insertIndicesAt(state.parseResult.order, idxs, pos);
+      }
+      renderPublishedList(state.parseResult.entries, state.parseResult.order);
+      refreshNodesChecks();
+      info(`Quick Publish ${node.name}: added ${added}, already published ${already}${redirected ? `, redirected ${redirected}` : ''}${missing ? `, unavailable ${missing}` : ''}.`);
+    } catch (err) {
+      error(`Quick publish failed: ${err?.message || err}`);
+    }
+  }
 
   function buildControlMetaFromDefinition(control) {
     if (!control) return null;
@@ -53,7 +638,14 @@ export function createNodesPane(options = {}) {
     if (Number.isFinite(control.labelCount)) { meta.labelCount = Number(control.labelCount); touched = true; }
     if (control.inputControl) { meta.inputControl = control.inputControl; touched = true; }
     if (control.defaultValue != null) { meta.defaultValue = control.defaultValue; touched = true; }
+    if (control.defaultX != null) { meta.defaultX = control.defaultX; touched = true; }
+    if (control.defaultY != null) { meta.defaultY = control.defaultY; touched = true; }
+    if (Number.isFinite(control.controlGroup) && control.controlGroup > 0) { meta.controlGroup = Number(control.controlGroup); touched = true; }
     return touched ? meta : null;
+  }
+
+  function isGroupedControl(control) {
+    return !!(control && (control.type === 'color-group' || control.type === 'linked-group'));
   }
 
   function getNodeSelection() {
@@ -92,6 +684,136 @@ export function createNodesPane(options = {}) {
       try { nodeContextMenu.remove(); } catch (_) {}
       nodeContextMenu = null;
     }
+  }
+
+  function closeExpressionInspector() {
+    if (exprInspectorCleanup) {
+      exprInspectorCleanup();
+      exprInspectorCleanup = null;
+    }
+    if (exprInspectorOverlay) {
+      try { exprInspectorOverlay.remove(); } catch (_) {}
+      exprInspectorOverlay = null;
+    }
+  }
+
+  function openExpressionInspector(options = {}) {
+    try {
+      closeExpressionInspector();
+      const rawTargets = Array.isArray(options.targets) ? options.targets : [];
+      const targets = [];
+      const seen = new Set();
+      for (const t of rawTargets) {
+        if (!t || !t.sourceOp || !t.source) continue;
+        const key = `${t.sourceOp}::${t.source}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        targets.push({ sourceOp: String(t.sourceOp), source: String(t.source) });
+      }
+
+      const overlay = document.createElement('div');
+      overlay.className = 'expr-inspector-modal';
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+
+      const panel = document.createElement('div');
+      panel.className = 'expr-inspector-panel';
+
+      const header = document.createElement('div');
+      header.className = 'expr-inspector-header';
+      const titleWrap = document.createElement('div');
+      const title = document.createElement('h3');
+      title.textContent = 'Expression Dependencies';
+      const sub = document.createElement('p');
+      const op = String(options.sourceOp || '').trim();
+      const src = String(options.source || '').trim();
+      const displayName = String(options.displayName || '').trim();
+      const idText = op && src ? `${op}.${src}` : (displayName || 'Control');
+      sub.textContent = `Control: ${displayName || idText}`;
+      titleWrap.appendChild(title);
+      titleWrap.appendChild(sub);
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.className = 'expr-inspector-close';
+      closeBtn.textContent = 'x';
+      closeBtn.setAttribute('aria-label', 'Close');
+      header.appendChild(titleWrap);
+      header.appendChild(closeBtn);
+
+      const body = document.createElement('div');
+      body.className = 'expr-inspector-body';
+
+      const exprLabel = document.createElement('div');
+      exprLabel.className = 'expr-inspector-section-label';
+      exprLabel.textContent = 'Expression';
+      body.appendChild(exprLabel);
+
+      const exprBox = document.createElement('pre');
+      exprBox.className = 'expr-inspector-expression';
+      exprBox.textContent = String(options.expression || '').trim() || '(empty)';
+      body.appendChild(exprBox);
+
+      const refsLabel = document.createElement('div');
+      refsLabel.className = 'expr-inspector-section-label';
+      refsLabel.textContent = `References (${targets.length})`;
+      body.appendChild(refsLabel);
+
+      const refsWrap = document.createElement('div');
+      refsWrap.className = 'expr-inspector-refs';
+      if (!targets.length) {
+        const empty = document.createElement('div');
+        empty.className = 'expr-inspector-empty';
+        empty.textContent = 'No references detected in this expression.';
+        refsWrap.appendChild(empty);
+      } else {
+        for (const t of targets) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'expr-inspector-ref';
+          btn.textContent = `${t.sourceOp}.${t.source}`;
+          btn.title = 'Jump to referenced control';
+          btn.addEventListener('click', () => {
+            try {
+              clearHighlights();
+              highlightCallback(t.sourceOp, t.source || null);
+            } catch (_) {}
+            closeExpressionInspector();
+          });
+          refsWrap.appendChild(btn);
+        }
+      }
+      body.appendChild(refsWrap);
+
+      const footer = document.createElement('div');
+      footer.className = 'expr-inspector-footer';
+      const doneBtn = document.createElement('button');
+      doneBtn.type = 'button';
+      doneBtn.textContent = 'Close';
+      doneBtn.addEventListener('click', closeExpressionInspector);
+      footer.appendChild(doneBtn);
+
+      panel.appendChild(header);
+      panel.appendChild(body);
+      panel.appendChild(footer);
+      overlay.appendChild(panel);
+      document.body.appendChild(overlay);
+
+      const onKeyDown = (ev) => {
+        if (ev.key === 'Escape') {
+          ev.preventDefault();
+          closeExpressionInspector();
+        }
+      };
+      overlay.addEventListener('click', (ev) => {
+        if (ev.target === overlay) closeExpressionInspector();
+      });
+      closeBtn.addEventListener('click', closeExpressionInspector);
+      document.addEventListener('keydown', onKeyDown, true);
+      exprInspectorCleanup = () => {
+        document.removeEventListener('keydown', onKeyDown, true);
+      };
+      exprInspectorOverlay = overlay;
+    } catch (_) {}
   }
 
   function openNodeContextMenu(node, x, y) {
@@ -153,10 +875,44 @@ export function createNodesPane(options = {}) {
     if (state.parseResult) parseAndRenderNodes();
   });
 
-  hideReplacedEl?.addEventListener('change', (e) => {
-    hideReplaced = !!e.target.checked;
-    if (state.parseResult) parseAndRenderNodes();
+  syncViewControlInputs();
+  setViewControlsMenuOpen(false);
+
+  const applyViewControlChange = () => {
+    try {
+      hideReplaced = !!(hideReplacedEl && hideReplacedEl.checked);
+      showNodeTypeLabels = !!(showNodeTypeLabelsEl ? showNodeTypeLabelsEl.checked : true);
+      showInstancedConnections = !!(showInstancedConnectionsEl ? showInstancedConnectionsEl.checked : true);
+      showNextNodeLinks = !!(showNextNodeLinksEl ? showNextNodeLinksEl.checked : true);
+      saveViewControlOptions();
+      if (state.parseResult) parseAndRenderNodes();
+    } catch (_) {}
+  };
+
+  hideReplacedEl?.addEventListener('change', applyViewControlChange);
+  showNodeTypeLabelsEl?.addEventListener('change', applyViewControlChange);
+  showInstancedConnectionsEl?.addEventListener('change', applyViewControlChange);
+  showNextNodeLinksEl?.addEventListener('change', applyViewControlChange);
+
+  viewControlsBtn?.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const willOpen = !!viewControlsMenu?.hidden;
+    setViewControlsMenuOpen(willOpen);
   });
+
+  if (viewControlsMenu) {
+    document.addEventListener('mousedown', (ev) => {
+      if (viewControlsMenu.hidden) return;
+      if (viewControlsMenu.contains(ev.target) || viewControlsBtn?.contains(ev.target)) return;
+      setViewControlsMenuOpen(false);
+    });
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key !== 'Escape') return;
+      if (viewControlsMenu.hidden) return;
+      setViewControlsMenuOpen(false);
+    });
+  }
 
   publishSelectedBtn?.addEventListener('click', handlePublishSelected);
   clearNodeSelectionBtn?.addEventListener('click', () => clearNodeSelection());
@@ -212,11 +968,18 @@ export function createNodesPane(options = {}) {
       if (!rows.length) return;
       const items = [];
       for (const row of rows) {
+        const meta = row && row._mmMeta ? row._mmMeta : null;
         const kind = row.dataset.kind;
         const op = row.dataset.sourceOp;
         if (kind === 'group') {
-          const chs = (row.dataset.channels || '').split('|').filter(Boolean);
-          for (const id of chs) items.push({ sourceOp: op, source: id, name: id });
+          const metaChannels = Array.isArray(meta?.channels) ? meta.channels : [];
+          for (const ch of metaChannels) {
+            const chOp = String(ch?.sourceOp || op || '').trim();
+            const chSrc = String(ch?.source || ch?.id || '').trim();
+            if (!chOp || !chSrc) continue;
+            const chMeta = ch && ch.control ? buildControlMetaFromDefinition(ch.control) : null;
+            items.push({ sourceOp: chOp, source: chSrc, name: (ch && ch.name) || chSrc, controlMeta: chMeta });
+          }
         } else if (kind === 'control') {
           const id = row.dataset.source;
           const nm = row.dataset.name || id;
@@ -225,7 +988,7 @@ export function createNodesPane(options = {}) {
           const inputControl = row.dataset.inputControl || '';
           const defaultValue = row.dataset.defaultValue || null;
           items.push({
-            sourceOp: op,
+            sourceOp: String(meta?.sourceOp || op || '').trim(),
             source: id,
             name: nm,
             kind: ctrlKind.toLowerCase(),
@@ -243,6 +1006,9 @@ export function createNodesPane(options = {}) {
           labelCount: it.labelCount,
           inputControl: it.inputControl,
           defaultValue: it.defaultValue,
+          controlGroup: it.controlMeta?.controlGroup,
+          defaultX: it.controlMeta?.defaultX,
+          defaultY: it.controlMeta?.defaultY,
         });
         if (idx != null) idxs.push(idx);
       }
@@ -251,6 +1017,7 @@ export function createNodesPane(options = {}) {
         state.parseResult.order = insertIndicesAt(state.parseResult.order, idxs, pos);
         try { logDiag(`Batch publish count=${idxs.length} at pos ${pos}`); } catch (_) {}
         renderPublishedList(state.parseResult.entries, state.parseResult.order);
+        refreshNodesChecks();
         state.parseResult.nodeSelectionMuted = true;
         rows.forEach((row) => {
           row.classList.remove('selected');
@@ -303,23 +1070,35 @@ export function createNodesPane(options = {}) {
       const modifiers = parseModifiersInGroup(state.originalText, grp.groupOpenIndex, grp.groupCloseIndex);
       const downstream = buildDownstreamMap(tools);
       const modifierBindings = buildModifierBindings(tools);
+      const expressionBindings = buildExpressionBindings(tools);
+      modifierBindingContext = modifierBindings;
+      modifierContextDiagSeen = new Set();
       let nodes = tools.map(t => {
         const typeStr = String(t.type || '');
-        const isMod = !!(modifierCatalog && hasTypeInCatalog(modifierCatalog, typeStr));
+        const isMod = isModifierType(typeStr);
         const catalogRef = isMod ? (modifierCatalog || nodeCatalog) : nodeCatalog;
+        const profileRef = isMod ? (modifierProfiles || nodeProfiles) : nodeProfiles;
+        const contextBindings = isMod ? (modifierBindings.get(t.name) || []) : [];
         return {
           name: t.name,
           type: t.type,
-          controls: deriveControlsForTool(t, catalogRef),
+          controls: deriveControlsForTool(t, catalogRef, profileRef, contextBindings),
           isModifier: isMod,
           external: false,
+          instanceSourceOp: t.instanceSourceOp || null,
         };
       }).concat(modifiers.map(m => ({
         name: m.name,
         type: m.type,
-        controls: deriveControlsForTool(m, (modifierCatalog || nodeCatalog)),
+        controls: deriveControlsForTool(
+          m,
+          (modifierCatalog || nodeCatalog),
+          (modifierProfiles || nodeProfiles),
+          (modifierBindings.get(m.name) || []),
+        ),
         isModifier: true,
         external: false,
+        instanceSourceOp: m.instanceSourceOp || null,
       })));
       const controlledBy = buildControlledByMap(modifierBindings);
       nodes = nodes.map(n => ({
@@ -327,15 +1106,17 @@ export function createNodesPane(options = {}) {
         downstream: downstream.get(n.name) || [],
         bindings: modifierBindings.get(n.name) || [],
         controlledBy: controlledBy.get(n.name) || new Map(),
+        expressionDriven: expressionBindings.get(n.name) || new Map(),
       }));
-      augmentWithReferencedNodes(nodes, tools);
-      augmentWithAllTools(nodes);
+      augmentWithReferencedNodes(nodes, tools, modifierBindings);
+      augmentWithAllTools(nodes, modifierBindings);
       const downstreamAll = buildDownstreamForAll(nodes);
       nodes = nodes.map(n => ({
         ...n,
         downstream: downstreamAll.get(n.name) || [],
         bindings: modifierBindings.get(n.name) || (n.bindings || []),
         controlledBy: (controlledBy.get(n.name) || n.controlledBy || new Map()),
+        expressionDriven: (expressionBindings.get(n.name) || n.expressionDriven || new Map()),
       }));
       lastNodeNames = Array.from(new Set(
         (nodes || [])
@@ -361,6 +1142,8 @@ export function createNodesPane(options = {}) {
           downstreamAll: [],
           bindings: [],
           controlledBy: new Map(),
+          expressionDriven: new Map(),
+          instanceSourceOp: null,
         };
         nodes.unshift(macroNode);
       }
@@ -389,6 +1172,13 @@ export function createNodesPane(options = {}) {
         const src = m[1];
         if (src && map.has(src)) map.get(src).add(b.name);
       }
+      const exprRefs = findExpressionRefsInToolBody(b.body) || [];
+      for (const ref of exprRefs) {
+        for (const target of (ref.targets || [])) {
+          const src = target && target.sourceOp ? target.sourceOp : '';
+          if (src && map.has(src)) map.get(src).add(b.name);
+        }
+      }
     }
     const out = new Map();
     for (const [k, v] of map.entries()) out.set(k, Array.from(v));
@@ -401,8 +1191,29 @@ export function createNodesPane(options = {}) {
       const refs = findModifierRefsInToolBody(t.body) || [];
       for (const r of refs) {
         if (!map.has(r.modifier)) map.set(r.modifier, []);
-        map.get(r.modifier).push({ tool: t.name, id: r.id });
+        map.get(r.modifier).push({ tool: t.name, toolType: t.type, id: r.id, source: r.source || '' });
       }
+    }
+    return map;
+  }
+
+  function buildExpressionBindings(tools) {
+    const map = new Map();
+    for (const t of tools) {
+      const refs = findExpressionRefsInToolBody(t.body) || [];
+      if (!refs.length) continue;
+      map.set(t.name, expressionRefsToMap(refs));
+    }
+    return map;
+  }
+
+  function expressionRefsToMap(refs) {
+    const map = new Map();
+    for (const r of (refs || [])) {
+      if (!r || !r.id) continue;
+      const key = String(r.id);
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(r);
     }
     return map;
   }
@@ -420,7 +1231,7 @@ export function createNodesPane(options = {}) {
     return map;
   }
 
-  function augmentWithReferencedNodes(nodes, tools) {
+  function augmentWithReferencedNodes(nodes, tools, modifierBindings) {
     try {
       const existing = new Set(nodes.map(n => n.name));
       const refs = new Set((state.parseResult && state.parseResult.entries ? state.parseResult.entries : []).map(e => e && e.sourceOp).filter(Boolean));
@@ -432,9 +1243,19 @@ export function createNodesPane(options = {}) {
           const t = findToolByNameAnywhere(state.originalText, op);
           if (t) {
             const typeStr = String(t.type || '');
-            const isMod = !!(modifierCatalog && hasTypeInCatalog(modifierCatalog, typeStr));
+            const isMod = isModifierType(typeStr);
             const cat = isMod ? (modifierCatalog || nodeCatalog) : nodeCatalog;
-            nodes.push({ name: t.name, type: t.type, controls: deriveControlsForTool(t, cat), isModifier: isMod, external: true });
+            const profileRef = isMod ? (modifierProfiles || nodeProfiles) : nodeProfiles;
+            const contextBindings = isMod ? ((modifierBindings && modifierBindings.get(t.name)) || []) : [];
+            nodes.push({
+              name: t.name,
+              type: t.type,
+              controls: deriveControlsForTool(t, cat, profileRef, contextBindings),
+              isModifier: isMod,
+              external: true,
+              expressionDriven: expressionRefsToMap(findExpressionRefsInToolBody(t.body) || []),
+              instanceSourceOp: t.instanceSourceOp || null,
+            });
             existing.add(op);
           }
         }
@@ -442,7 +1263,7 @@ export function createNodesPane(options = {}) {
     } catch (_) {}
   }
 
-  function augmentWithAllTools(nodes) {
+  function augmentWithAllTools(nodes, modifierBindings) {
     try {
       const existingNames = new Set(nodes.map(n => n.name));
       const reAll = /(^|\n)\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*\{/g;
@@ -455,9 +1276,19 @@ export function createNodesPane(options = {}) {
         if (/^(GroupInfo|OperatorInfo)$/i.test(typeStr)) continue;
         const t = findToolByNameAnywhere(state.originalText, name);
         if (!t) continue;
-        const isMod = !!(modifierCatalog && hasTypeInCatalog(modifierCatalog, typeStr));
+        const isMod = isModifierType(typeStr);
         const cat = isMod ? (modifierCatalog || nodeCatalog) : nodeCatalog;
-        nodes.push({ name: t.name, type: t.type, controls: deriveControlsForTool(t, cat), isModifier: isMod, external: true });
+        const profileRef = isMod ? (modifierProfiles || nodeProfiles) : nodeProfiles;
+        const contextBindings = isMod ? ((modifierBindings && modifierBindings.get(t.name)) || []) : [];
+        nodes.push({
+          name: t.name,
+          type: t.type,
+          controls: deriveControlsForTool(t, cat, profileRef, contextBindings),
+          isModifier: isMod,
+          external: true,
+          expressionDriven: expressionRefsToMap(findExpressionRefsInToolBody(t.body) || []),
+          instanceSourceOp: t.instanceSourceOp || null,
+        });
         existingNames.add(name);
       }
     } catch (_) {}
@@ -480,6 +1311,13 @@ export function createNodesPane(options = {}) {
         const src = m[1];
         if (src && mapAll.has(src)) mapAll.get(src).add(d.name);
       }
+      const exprRefs = findExpressionRefsInToolBody(d.body) || [];
+      for (const ref of exprRefs) {
+        for (const target of (ref.targets || [])) {
+          const src = target && target.sourceOp ? target.sourceOp : '';
+          if (src && mapAll.has(src)) mapAll.get(src).add(d.name);
+        }
+      }
     }
     const out = new Map();
     for (const [k, v] of mapAll.entries()) out.set(k, Array.from(v));
@@ -500,21 +1338,94 @@ export function createNodesPane(options = {}) {
     return idStr;
   }
 
+  function resolvePublishSourceOp(node, control) {
+    try {
+      const nodeOp = String(node?.name || '').trim();
+      const instanceOp = String(node?.instanceSourceOp || '').trim();
+      if (!nodeOp) return instanceOp || '';
+      if (!instanceOp) return nodeOp;
+      const state = String(control?.instanceState || '').trim().toLowerCase();
+      if (state === 'instanced' || state === 'instanced-explicit') return instanceOp;
+      return nodeOp;
+    } catch (_) {
+      return String(node?.name || '').trim();
+    }
+  }
+
+  function dedupeControlsByResolvedSource(controls) {
+    try {
+      if (!Array.isArray(controls) || !controls.length) return controls || [];
+      const out = [];
+      const seen = new Set();
+      for (const c of controls) {
+        if (!c) continue;
+        if (isGroupedControl(c)) {
+          const gk = `group:${String(c.base || c.id || '').trim()}`;
+          if (!gk || seen.has(gk)) continue;
+          seen.add(gk);
+          out.push(c);
+          continue;
+        }
+        const src = resolveControlSource(c);
+        const ck = `control:${String(src || '').trim()}`;
+        if (!ck || seen.has(ck)) continue;
+        seen.add(ck);
+        out.push(c);
+      }
+      return out;
+    } catch (_) {
+      return controls || [];
+    }
+  }
+
+  function getNodeTypeMeta(node) {
+    try {
+      if (!node || node.isMacroRoot) return null;
+      if (node.isModifier) return { key: 'modifier', label: 'Modifier' };
+      const type = String(node.type || '').trim();
+      const name = String(node.name || '').trim();
+      const blob = `${type} ${name}`.toLowerCase();
+      const has = (re) => re.test(blob);
+
+      if (has(/\b3d\b|camera3d|renderer3d|light3d|merge3d|transform3d|material|imageplane3d|shape3d/)) {
+        return { key: 'three-d', label: '3D' };
+      }
+      if (has(/mask|rectangle|ellipse|polygon|bspline|polypath|polyline|path/)) {
+        return { key: 'shape', label: 'Shape' };
+      }
+      if (has(/background|textplus|text3d|text|generator|solid|checker|gradient|fastnoise|noise/)) {
+        return { key: 'generator', label: 'Generator' };
+      }
+      if (has(/transform|merge|blur|glow|color|correct|dissolve|resize|crop|key|tracker|optical|lens|vignette|channel|levels|brightness|contrast|sharpen/)) {
+        return { key: 'effect', label: 'Effect' };
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   function renderNodes(nodes) {
     if (!nodesList) return;
     nodesList.innerHTML = '';
     if (!state.parseResult) state.parseResult = {};
     if (!(state.parseResult.nodesCollapsed instanceof Set)) state.parseResult.nodesCollapsed = new Set();
     if (!(state.parseResult.nodesPublishedOnly instanceof Set)) state.parseResult.nodesPublishedOnly = new Set();
-    if (!(state.parseResult.nodesPublishedOnly instanceof Set)) state.parseResult.nodesPublishedOnly = new Set();
     if (!state.parseResult.nodesViewInitialized) {
       state.parseResult.nodesCollapsed.clear();
       state.parseResult.nodesPublishedOnly.clear();
       nodes.forEach(n => {
         const hasPublished = (n.controls || []).some(c => {
-          if (c.type === 'color-group') return (c.channels || []).some(ch => isPublished(n.name, ch.id));
+          if (isGroupedControl(c)) {
+            return (c.channels || []).some((ch) => {
+              const chId = resolveControlSource(ch);
+              const chOp = resolvePublishSourceOp(n, ch);
+              return !!chId && isPublished(chOp, chId);
+            });
+          }
           const key = resolveControlSource(c);
-          return key ? isPublished(n.name, key) : false;
+          const op = resolvePublishSourceOp(n, c);
+          return key ? isPublished(op, key) : false;
         });
         if (hasPublished) state.parseResult.nodesPublishedOnly.add(n.name);
         else state.parseResult.nodesCollapsed.add(n.name);
@@ -538,8 +1449,12 @@ export function createNodesPane(options = {}) {
     };
     let selectIndex = 0;
     for (const n of nodes) {
+      const typeMeta = getNodeTypeMeta(n);
       const wrapper = document.createElement('div');
       wrapper.className = 'node';
+      if (typeMeta && typeMeta.key) {
+        wrapper.classList.add('node-has-type', `node-type-${typeMeta.key}`);
+      }
       wrapper.dataset.op = n.name;
       const header = document.createElement('div');
       header.className = 'node-header';
@@ -559,6 +1474,12 @@ export function createNodesPane(options = {}) {
       } else {
         title.textContent = `${n.name} (${n.type || 'Unknown'})`;
       }
+      if (showNodeTypeLabels && typeMeta && typeMeta.label && typeMeta.key !== 'modifier') {
+        const typeChip = document.createElement('span');
+        typeChip.className = 'node-type-chip';
+        typeChip.textContent = typeMeta.label;
+        title.appendChild(typeChip);
+      }
       const flags = document.createElement('div');
       flags.className = 'node-flags';
       (function () {
@@ -570,11 +1491,19 @@ export function createNodesPane(options = {}) {
           flags.appendChild(badge);
         }
       })();
-      const nodeControls = ensureDissolveMixControl(n, n.controls || []);
+      const nodeControlsRaw = ensureDissolveMixControl(n, n.controls || []);
+      const nodeControls = dedupeControlsByResolvedSource(nodeControlsRaw);
       const hasAnyPublished = (nodeControls || []).some(c => {
-        if (c.type === 'color-group') return (c.channels || []).some(ch => isPublished(n.name, ch.id));
+        if (isGroupedControl(c)) {
+          return (c.channels || []).some((ch) => {
+            const chId = resolveControlSource(ch);
+            const chOp = resolvePublishSourceOp(n, ch);
+            return !!chId && isPublished(chOp, chId);
+          });
+        }
         const key = resolveControlSource(c);
-        return key ? isPublished(n.name, key) : false;
+        const op = resolvePublishSourceOp(n, c);
+        return key ? isPublished(op, key) : false;
       });
       const allowSourceControl = /switch/i.test(String(n.type || n.name || ''));
       if (!hasAnyPublished) publishedOnlyNodes.delete(n.name);
@@ -598,10 +1527,44 @@ export function createNodesPane(options = {}) {
       });
       header.appendChild(nodeTwisty);
       header.appendChild(title);
-      if (Array.isArray(n.bindings) && n.bindings.length > 0) {
+      const metaLinksWrap = document.createElement('div');
+      metaLinksWrap.className = 'node-meta-links';
+      let hasMetaLinks = false;
+      let hasNextNodeLink = false;
+      let hasInstanceLink = false;
+      const appendMetaLink = (el) => {
+        if (!el) return;
+        metaLinksWrap.appendChild(el);
+        hasMetaLinks = true;
+      };
+      let nextNodeWrap = null;
+      if (showInstancedConnections && n.instanceSourceOp) {
+        const instanceWrap = document.createElement('div');
+        instanceWrap.className = 'node-next node-instance-link';
+        const sep = document.createElement('span'); sep.className = 'sep'; sep.innerHTML = createIcon('chevron-right');
+        const prefix = document.createElement('span');
+        prefix.className = 'node-instance-prefix';
+        prefix.textContent = 'Instanced From';
+        const link = document.createElement('a');
+        link.href = '#';
+        link.className = 'deep-link';
+        link.textContent = n.instanceSourceOp;
+        link.title = 'Go to source instance node';
+        link.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          try { clearHighlights(); highlightCallback(n.instanceSourceOp, null); } catch (_) {}
+        });
+        instanceWrap.appendChild(sep);
+        instanceWrap.appendChild(prefix);
+        instanceWrap.appendChild(link);
+        hasInstanceLink = true;
+        appendMetaLink(instanceWrap);
+      }
+      if (showNextNodeLinks && Array.isArray(n.bindings) && n.bindings.length > 0) {
         const b = n.bindings[0];
-        const nextWrap = document.createElement('div');
-        nextWrap.className = 'node-next';
+        nextNodeWrap = document.createElement('div');
+        nextNodeWrap.className = 'node-next';
         const sep = document.createElement('span'); sep.className = 'sep'; sep.innerHTML = createIcon('chevron-right');
         const link = document.createElement('a');
         link.href = '#'; link.className = 'deep-link';
@@ -611,12 +1574,12 @@ export function createNodesPane(options = {}) {
           ev.preventDefault(); ev.stopPropagation();
           try { clearHighlights(); highlightCallback(b.tool, b.id); } catch (_) {}
         });
-        nextWrap.appendChild(sep);
-        nextWrap.appendChild(link);
-        header.appendChild(nextWrap);
-      } else if (Array.isArray(n.downstream) && n.downstream.length > 0) {
-        const nextWrap = document.createElement('div');
-        nextWrap.className = 'node-next';
+        nextNodeWrap.appendChild(sep);
+        nextNodeWrap.appendChild(link);
+        hasNextNodeLink = true;
+      } else if (showNextNodeLinks && Array.isArray(n.downstream) && n.downstream.length > 0) {
+        nextNodeWrap = document.createElement('div');
+        nextNodeWrap.className = 'node-next';
         const sep = document.createElement('span'); sep.className = 'sep'; sep.innerHTML = createIcon('chevron-right');
         const link = document.createElement('a');
         link.href = '#'; link.className = 'deep-link';
@@ -627,12 +1590,47 @@ export function createNodesPane(options = {}) {
           ev.preventDefault(); ev.stopPropagation();
           try { clearHighlights(); highlightCallback(nextName, null); } catch (_) {}
         });
-        nextWrap.appendChild(sep);
-        nextWrap.appendChild(link);
-        header.appendChild(nextWrap);
+        nextNodeWrap.appendChild(sep);
+        nextNodeWrap.appendChild(link);
+        hasNextNodeLink = true;
+      }
+      if (hasNextNodeLink && nextNodeWrap) {
+        if (hasInstanceLink && metaLinksWrap.firstChild) {
+          metaLinksWrap.insertBefore(nextNodeWrap, metaLinksWrap.firstChild);
+          hasMetaLinks = true;
+        } else {
+          appendMetaLink(nextNodeWrap);
+        }
+      }
+      if (hasMetaLinks) {
+        if (hasNextNodeLink && hasInstanceLink) {
+          metaLinksWrap.classList.add('stacked');
+        }
+        header.appendChild(metaLinksWrap);
       }
       const headerTail = document.createElement('div');
       headerTail.className = 'node-header-tail';
+      const quickCandidates = buildQuickSetCandidates(nodeControls, allowSourceControl);
+      const savedQuickSet = getQuickSetForType(n.type, quickCandidates.map);
+      const effectiveQuickSetCount = (savedQuickSet.length ? savedQuickSet : buildSuggestedQuickSetKeys(quickCandidates.list)).length;
+      const quickPublishBtn = document.createElement('button');
+      quickPublishBtn.type = 'button';
+      quickPublishBtn.className = 'node-quick-publish-btn';
+      quickPublishBtn.textContent = 'Quick';
+      quickPublishBtn.title = `Quick Publish (${effectiveQuickSetCount})`;
+      quickPublishBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        applyQuickSetToNode(n, nodeControls, allowSourceControl);
+      });
+      const quickEditBtn = document.createElement('button');
+      quickEditBtn.type = 'button';
+      quickEditBtn.className = 'node-quick-edit-btn';
+      quickEditBtn.textContent = 'Set';
+      quickEditBtn.title = `Edit Quick Set (${effectiveQuickSetCount})`;
+      quickEditBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        openQuickSetModal(n, nodeControls, allowSourceControl);
+      });
       if (typeof requestAddControl === 'function') {
         const addBtn = document.createElement('button');
         addBtn.type = 'button';
@@ -651,60 +1649,106 @@ export function createNodesPane(options = {}) {
       const list = document.createElement('div');
       list.className = 'node-controls';
       list.style.display = isCollapsed ? 'none' : '';
+      const quickRow = document.createElement('div');
+      quickRow.className = 'node-quick-row';
+      quickRow.appendChild(quickPublishBtn);
+      quickRow.appendChild(quickEditBtn);
+      list.appendChild(quickRow);
       const isControlled = (id) => {
         try {
           const m = n && n.controlledBy;
-          if (!m) return false;
-          if (typeof m.get === 'function') {
-            const arr = m.get(id);
-            return !!(arr && arr.length);
+          const exprMap = n && n.expressionDriven;
+          let modDriven = false;
+          if (m) {
+            if (typeof m.get === 'function') {
+              const arr = m.get(id);
+              modDriven = !!(arr && arr.length);
+            } else {
+              const arr = m[id];
+              modDriven = !!(arr && arr.length);
+            }
           }
-          const arr = m[id];
-          return !!(arr && arr.length);
+          let exprDriven = false;
+          if (exprMap) {
+            if (typeof exprMap.get === 'function') {
+              const arr = exprMap.get(id);
+              exprDriven = !!(arr && arr.length);
+            } else {
+              const arr = exprMap[id];
+              exprDriven = !!(arr && arr.length);
+            }
+          }
+          return modDriven || exprDriven;
         } catch (_) { return false; }
       };
         for (const c of (nodeControls || [])) {
           if (c.id === 'SourceOp') continue;
           if (c.id === 'Source' && !allowSourceControl) continue;
-          if (c.type === 'color-group') {
+          if (isGroupedControl(c)) {
           if (hideReplaced) {
             const anyControlled = (c.channels || []).some(ch => isControlled(ch.id));
             if (anyControlled) continue;
           }
           if (showPublishedOnly) {
-            const allPublished = (c.channels || []).length > 0 && (c.channels || []).every(ch => isPublished(n.name, ch.id));
+            const allPublished = (c.channels || []).length > 0 && (c.channels || []).every((ch) => {
+              const chId = resolveControlSource(ch);
+              const chOp = resolvePublishSourceOp(n, ch);
+              return !!chId && isPublished(chOp, chId);
+            });
             if (!allPublished) continue;
           }
           const row = document.createElement('div'); row.className = 'node-row';
           row.dataset.selectIndex = String(selectIndex++);
           row.dataset.kind = 'group';
           row.dataset.sourceOp = n.name;
-          row.dataset.groupBase = c.base || '';
+          const groupId = c.base || c.id || '';
+          row.dataset.groupId = groupId;
           row.dataset.channels = (c.channels || []).map(ch => ch.id).join('|');
           row._mmMeta = {
             kind: 'group',
             sourceOp: n.name,
-            groupBase: c.base || '',
-            channels: (c.channels || []).map(ch => ({ id: ch.id, name: ch.name || ch.id })),
+            groupBase: groupId,
+            channels: (c.channels || []).map((ch) => {
+              const chSource = resolveControlSource(ch);
+              return {
+                sourceOp: resolvePublishSourceOp(n, ch),
+                source: chSource,
+                id: chSource,
+                name: ch.name || ch.id,
+                control: ch.control || null,
+              };
+            }),
           };
           try {
-            const key0 = `group|${n.name}|${c.base || ''}`;
+            const key0 = `group|${n.name}|${groupId}`;
             if (!state.parseResult.nodeSelectionMuted && getNodeSelection().has(key0)) row.classList.add('selected');
           } catch (_) {}
           if (enableNodeDrag) {
             row.draggable = true;
             row.addEventListener('dragstart', (ev) => {
               try {
-                const payload = { kind: 'group', sourceOp: n.name, base: c.base, channels: (c.channels || []).map(ch => ch.id) };
+                const payload = {
+                  kind: 'group',
+                  sourceOp: n.name,
+                  base: groupId,
+                  channels: (row._mmMeta?.channels || []).map((ch) => ({
+                    sourceOp: ch?.sourceOp || n.name,
+                    source: ch?.source || ch?.id || '',
+                    id: ch?.id || ch?.source || '',
+                    name: ch?.name || ch?.id || '',
+                  })),
+                };
                 const txt = 'FMR_NODE:' + JSON.stringify(payload);
                 ev.dataTransfer && ev.dataTransfer.setData('text/plain', txt);
                 ev.dataTransfer && (ev.dataTransfer.effectAllowed = 'copy');
               } catch (_) {}
             });
           }
-          const cb = document.createElement('input'); cb.type = 'checkbox'; cb.className = 'node-ctrl group'; cb.title = 'Select color group';
-          cb.dataset.sourceOp = n.name; cb.dataset.groupBase = c.base; cb.dataset.channels = (c.channels || []).map(ch => ch.id).join('|');
-          cb.checked = getNodeSelection().has(`group|${n.name}|${c.base || ''}`);
+          const cb = document.createElement('input'); cb.type = 'checkbox'; cb.className = 'node-ctrl group'; cb.title = 'Select grouped controls';
+          cb.dataset.sourceOp = n.name;
+          cb.dataset.groupId = groupId;
+          cb.dataset.channels = (row._mmMeta.channels || []).map(ch => ch.source || ch.id).join('|');
+          cb.checked = getNodeSelection().has(`group|${n.name}|${groupId}`);
           cb.addEventListener('click', (ev) => {
             if (!ev.shiftKey) return;
             cb.dataset.shiftSelect = '1';
@@ -725,7 +1769,7 @@ export function createNodesPane(options = {}) {
               return;
             }
             if (state.parseResult) state.parseResult.nodeSelectionMuted = false;
-            const key = `group|${n.name}|${c.base || ''}`;
+            const key = `group|${n.name}|${groupId}`;
             const sel = getNodeSelection();
             const shouldSelect = cb.checked;
             if (ev && ev.shiftKey) {
@@ -739,7 +1783,41 @@ export function createNodesPane(options = {}) {
               lastSelectIndex = parseInt(row.dataset.selectIndex || '-1', 10);
             }
           });
-          const label = document.createElement('span'); label.textContent = c.groupLabel || (c.base + ' (color)');
+          const toggleGroupPublish = () => {
+            setSingleSelection(row);
+            const channelMeta = row._mmMeta && Array.isArray(row._mmMeta.channels) ? row._mmMeta.channels : [];
+            const allPublished = channelMeta.length > 0 && channelMeta.every((ch) => {
+              const chOp = String(ch?.sourceOp || n.name);
+              const chSrc = String(ch?.source || ch?.id || '').trim();
+              return !!chSrc && isPublished(chOp, chSrc);
+            });
+            if (!allPublished) {
+              const allIdxs = [];
+              for (const ch of channelMeta) {
+                const chOp = String(ch?.sourceOp || n.name);
+                const chSrc = String(ch?.source || ch?.id || '').trim();
+                if (!chSrc) continue;
+                const meta = ch && ch.control ? buildControlMetaFromDefinition(ch.control) : null;
+                const r = ensurePublished(chOp, chSrc, ch.name, meta);
+                if (r) allIdxs.push(r.index);
+              }
+              if (allIdxs.length) {
+                const pos = getInsertionPosUnderSelection();
+                try { logDiag(`Insert group count=${allIdxs.length} at pos ${pos}`); } catch (_) {}
+                state.parseResult.order = insertIndicesAt(state.parseResult.order, allIdxs, pos);
+              }
+            } else {
+              for (const ch of channelMeta) {
+                const chOp = String(ch?.sourceOp || n.name);
+                const chSrc = String(ch?.source || ch?.id || '').trim();
+                if (!chSrc) continue;
+                removePublished(chOp, chSrc);
+              }
+            }
+            renderPublishedList(state.parseResult.entries, state.parseResult.order);
+            refreshNodesChecks();
+          };
+          const label = document.createElement('span'); label.className = 'ctrl-name'; label.textContent = c.groupLabel || (groupId + ' (group)');
           row.addEventListener('click', (ev) => {
             const t = ev.target;
             if (t && t.tagName === 'INPUT') return;
@@ -747,15 +1825,19 @@ export function createNodesPane(options = {}) {
               applyRangeSelection(row, true);
               return;
             }
-            state.parseResult.nodeSelectionMuted = false;
-            const key = `group|${n.name}|${c.base || ''}`;
-            const sel = getNodeSelection();
-            if (sel.has(key)) sel.delete(key); else sel.add(key);
-            state.parseResult.nodeSelection = sel;
-            row.classList.toggle('selected');
-            cb.checked = sel.has(key);
-            updateNodeSelectionButtons();
-            lastSelectIndex = parseInt(row.dataset.selectIndex || '-1', 10);
+            if (ev.metaKey || ev.ctrlKey || ev.altKey) {
+              state.parseResult.nodeSelectionMuted = false;
+              const key = `group|${n.name}|${groupId}`;
+              const sel = getNodeSelection();
+              if (sel.has(key)) sel.delete(key); else sel.add(key);
+              state.parseResult.nodeSelection = sel;
+              row.classList.toggle('selected');
+              cb.checked = sel.has(key);
+              updateNodeSelectionButtons();
+              lastSelectIndex = parseInt(row.dataset.selectIndex || '-1', 10);
+              return;
+            }
+            toggleGroupPublish();
           });
           label.addEventListener('click', (ev) => {
             ev.preventDefault(); ev.stopPropagation();
@@ -765,31 +1847,25 @@ export function createNodesPane(options = {}) {
               publishRangeFromRow(row, anchor, 'publish');
               return;
             }
-            setSingleSelection(row);
-            const allPublished = (c.channels || []).length > 0 && (c.channels || []).every(ch => isPublished(n.name, ch.id));
-            if (!allPublished) {
-              const allIdxs = [];
-              for (const ch of c.channels) {
-                const r = ensurePublished(n.name, ch.id, ch.name, null);
-                if (r) allIdxs.push(r.index);
-              }
-              if (allIdxs.length) {
-                const pos = getInsertionPosUnderSelection();
-                try { logDiag(`Insert group count=${allIdxs.length} at pos ${pos}`); } catch (_) {}
-                state.parseResult.order = insertIndicesAt(state.parseResult.order, allIdxs, pos);
-              }
-            } else {
-              for (const ch of c.channels) removePublished(n.name, ch.id);
-            }
-            renderPublishedList(state.parseResult.entries, state.parseResult.order);
+            toggleGroupPublish();
           });
           row.appendChild(cb); row.appendChild(label);
+          if (showInstancedConnections && n.instanceSourceOp) {
+            const badgeMeta = getInstanceBadgeMeta(c.instanceState);
+            if (badgeMeta) {
+              const badge = document.createElement('span');
+              badge.className = `ctrl-instance-badge ${badgeMeta.className}`;
+              badge.textContent = badgeMeta.text;
+              row.appendChild(badge);
+            }
+          }
           list.appendChild(row);
           continue;
         }
         if (hideReplaced && isControlled(c.id)) continue;
         const srcKey = resolveControlSource(c);
-        if (showPublishedOnly && !(srcKey && isPublished(n.name, srcKey))) continue;
+        const srcOpTarget = resolvePublishSourceOp(n, c);
+        if (showPublishedOnly && !(srcKey && isPublished(srcOpTarget, srcKey))) continue;
         const row = document.createElement('div'); row.className = 'node-row';
         row.dataset.selectIndex = String(selectIndex++);
         row.dataset.kind = 'control';
@@ -812,7 +1888,7 @@ export function createNodesPane(options = {}) {
         const controlMeta = buildControlMetaFromDefinition(c);
         row._mmMeta = {
           kind: 'control',
-          sourceOp: n.name,
+          sourceOp: srcOpTarget,
           source: srcKey,
           displayName: c.name || c.id,
           controlMeta,
@@ -879,6 +1955,7 @@ export function createNodesPane(options = {}) {
           }
         });
         const label = document.createElement('span'); label.className = 'ctrl-name'; label.textContent = c.name || c.id;
+        if (isControlled(c.id)) label.classList.add('replaced');
         row.addEventListener('click', (ev) => {
           const t = ev.target; if (t && t.tagName === 'INPUT') return;
           if (ev.shiftKey) {
@@ -904,9 +1981,9 @@ export function createNodesPane(options = {}) {
             return;
           }
           setSingleSelection(row);
-          const already = isPublished(n.name, srcKey);
+          const already = isPublished(srcOpTarget, srcKey);
           if (!already) {
-            const r = ensurePublished(n.name, srcKey, c.name, controlMeta);
+            const r = ensurePublished(srcOpTarget, srcKey, c.name, controlMeta);
             if (r) {
               const pos = getInsertionPosUnderSelection();
               try { logDiag(`Insert single idx=${r.index} at pos ${pos}`); } catch (_) {}
@@ -916,19 +1993,79 @@ export function createNodesPane(options = {}) {
               consumePendingControlMeta(n.name, srcKey);
             }
           } else {
-            removePublished(n.name, srcKey);
+            removePublished(srcOpTarget, srcKey);
           }
           renderPublishedList(state.parseResult.entries, state.parseResult.order);
+          refreshNodesChecks();
         });
+        if (showInstancedConnections && n.instanceSourceOp) {
+          const badgeMeta = getInstanceBadgeMeta(c.instanceState);
+          if (badgeMeta) {
+            const badge = document.createElement('span');
+            badge.className = `ctrl-instance-badge ${badgeMeta.className}`;
+            badge.textContent = badgeMeta.text;
+            row.appendChild(badge);
+          }
+        }
         let byEl = null;
         try {
           const mods = (n && n.controlledBy) ? (typeof n.controlledBy.get === 'function' ? (n.controlledBy.get(c.id) || []) : (n.controlledBy[c.id] || [])) : [];
-          if (mods && mods.length > 0) {
+          const exprRefs = (n && n.expressionDriven)
+            ? (typeof n.expressionDriven.get === 'function' ? (n.expressionDriven.get(c.id) || []) : (n.expressionDriven[c.id] || []))
+            : [];
+          if ((mods && mods.length > 0) || (exprRefs && exprRefs.length > 0)) {
             const by = document.createElement('span'); by.className = 'ctrl-by';
-            const modName = mods[0];
-            const a = document.createElement('a'); a.href = '#'; a.textContent = modName; a.title = 'Jump to modifier';
-            a.addEventListener('click', (ev) => { ev.preventDefault(); ev.stopPropagation(); try { clearHighlights(); highlightCallback(modName, null); } catch (_) {} });
-            const icon = document.createElement('span'); icon.className = 'sep'; icon.innerHTML = createIcon('chevron-right', 12); by.appendChild(icon); by.appendChild(a);
+            if (mods && mods.length > 0) {
+              const modName = mods[0];
+              const a = document.createElement('a'); a.href = '#'; a.textContent = modName; a.title = 'Jump to modifier';
+              a.addEventListener('click', (ev) => { ev.preventDefault(); ev.stopPropagation(); try { clearHighlights(); highlightCallback(modName, null); } catch (_) {} });
+              const icon = document.createElement('span'); icon.className = 'sep'; icon.innerHTML = createIcon('chevron-right', 12); by.appendChild(icon); by.appendChild(a);
+            }
+            if (exprRefs && exprRefs.length > 0) {
+              if (mods && mods.length > 0) {
+                const sepText = document.createElement('span');
+                sepText.className = 'ctrl-by-dot';
+                sepText.textContent = '•';
+                by.appendChild(sepText);
+              } else {
+                const icon = document.createElement('span'); icon.className = 'sep'; icon.innerHTML = createIcon('chevron-right', 12); by.appendChild(icon);
+              }
+              const expr = exprRefs[0];
+              const target = Array.isArray(expr.targets) && expr.targets.length ? expr.targets[0] : null;
+              const exprClass = classifyExpressionRef(expr);
+              const exprLink = document.createElement('a');
+              exprLink.href = '#';
+              exprLink.className = 'ctrl-by-expr';
+              if (exprClass.kind === 'direct') {
+                exprLink.textContent = 'Expr';
+                exprLink.title = expr.expression ? `Expression: ${expr.expression}` : 'Expression-driven';
+              } else {
+                const refs = Array.isArray(expr.targets) ? expr.targets.length : 0;
+                exprLink.textContent = refs > 1 ? `Expr fx (${refs})` : 'Expr fx';
+                exprLink.title = expr.expression
+                  ? `Complex expression (${refs} refs): ${expr.expression}`
+                  : `Complex expression-driven control (${refs} refs)`;
+              }
+              exprLink.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                try {
+                  if (exprClass.kind === 'direct') {
+                    clearHighlights();
+                    if (target && target.sourceOp) highlightCallback(target.sourceOp, target.source || null);
+                    return;
+                  }
+                  openExpressionInspector({
+                    sourceOp: n.name,
+                    source: srcKey,
+                    displayName: c.name || c.id,
+                    expression: expr.expression || '',
+                    targets: Array.isArray(expr.targets) ? expr.targets : [],
+                  });
+                } catch (_) {}
+              });
+              by.appendChild(exprLink);
+            }
             byEl = by;
           }
         } catch (_) {}
@@ -948,7 +2085,7 @@ export function createNodesPane(options = {}) {
   function getRowSelectionKey(row) {
     if (!row) return null;
     if (row.dataset.kind === 'group') {
-      return `group|${row.dataset.sourceOp || ''}|${row.dataset.groupBase || ''}`;
+      return `group|${row.dataset.sourceOp || ''}|${row.dataset.groupId || row.dataset.groupBase || ''}`;
     }
     if (row.dataset.kind === 'control') {
       return `control|${row.dataset.sourceOp || ''}|${row.dataset.source || ''}`;
@@ -1021,7 +2158,11 @@ export function createNodesPane(options = {}) {
       const shouldPublish = mode === 'publish'
         ? true
         : (firstMeta && firstMeta.kind === 'group'
-          ? !((firstMeta.channels || []).length > 0 && (firstMeta.channels || []).every(ch => isPublished(firstMeta.sourceOp, ch.id)))
+          ? !((firstMeta.channels || []).length > 0 && (firstMeta.channels || []).every((ch) => {
+            const chOp = String(ch?.sourceOp || firstMeta.sourceOp || '').trim();
+            const chSrc = String(ch?.source || ch?.id || '').trim();
+            return !!chSrc && isPublished(chOp, chSrc);
+          }))
           : !(firstMeta && firstMeta.source && isPublished(firstMeta.sourceOp, firstMeta.source)));
       const indices = [];
       let insertAfterPos = -1;
@@ -1033,19 +2174,23 @@ export function createNodesPane(options = {}) {
         if (!meta) continue;
         if (meta.kind === 'group') {
           for (const ch of (meta.channels || [])) {
+            const chOp = String(ch?.sourceOp || meta.sourceOp || '').trim();
+            const chSrc = String(ch?.source || ch?.id || '').trim();
+            if (!chSrc) continue;
             if (shouldPublish) {
-              if (!isPublished(meta.sourceOp, ch.id)) {
-                const res = ensurePublished(meta.sourceOp, ch.id, ch.name, null);
+              if (!isPublished(chOp, chSrc)) {
+                const chMeta = ch && ch.control ? buildControlMetaFromDefinition(ch.control) : null;
+                const res = ensurePublished(chOp, chSrc, ch.name, chMeta);
                 if (res) indices.push(res.index);
               } else {
-                const idx = findEntryIndex(meta.sourceOp, ch.id);
+                const idx = findEntryIndex(chOp, chSrc);
                 if (idx >= 0) {
                   const pos = order.indexOf(idx);
                   if (pos > insertAfterPos) insertAfterPos = pos;
                 }
               }
-            } else if (mode !== 'publish' && isPublished(meta.sourceOp, ch.id)) {
-              removePublished(meta.sourceOp, ch.id);
+            } else if (mode !== 'publish' && isPublished(chOp, chSrc)) {
+              removePublished(chOp, chSrc);
             }
           }
         } else if (meta.kind === 'control') {
@@ -1075,6 +2220,7 @@ export function createNodesPane(options = {}) {
         state.parseResult.order = insertIndicesAt(state.parseResult.order, indices, pos);
       }
       renderPublishedList(state.parseResult.entries, state.parseResult.order);
+      refreshNodesChecks();
     } catch (_) {}
   }
 
@@ -1113,12 +2259,70 @@ export function createNodesPane(options = {}) {
         const tClose = findMatchingBrace(inner, tOpen);
         if (tClose < 0) break;
         const body = inner.slice(tOpen + 1, tClose);
-        out.push({ name: toolName, type: toolType, body });
+        const instanceSourceOp = extractTopLevelQuotedProp(body, 'SourceOp');
+        out.push({ name: toolName, type: toolType, body, instanceSourceOp: instanceSourceOp || null });
         i = tClose + 1; continue;
       }
       i++;
     }
     return out;
+  }
+
+  function extractTopLevelQuotedProp(body, prop) {
+    try {
+      if (!body || !prop) return null;
+      let i = 0;
+      let depth = 0;
+      let inStr = false;
+      while (i < body.length) {
+        const ch = body[i];
+        if (inStr) {
+          if (ch === '"' && !isQuoteEscaped(body, i)) inStr = false;
+          i += 1;
+          continue;
+        }
+        if (ch === '"') {
+          inStr = true;
+          i += 1;
+          continue;
+        }
+        if (ch === '{') { depth += 1; i += 1; continue; }
+        if (ch === '}') { depth -= 1; i += 1; continue; }
+        if (depth !== 0) { i += 1; continue; }
+        if (!isIdentStart(ch)) { i += 1; continue; }
+        const nameStart = i;
+        i += 1;
+        while (i < body.length && isIdentPart(body[i])) i += 1;
+        const key = body.slice(nameStart, i);
+        while (i < body.length && isSpace(body[i])) i += 1;
+        if (body[i] !== '=') { i += 1; continue; }
+        i += 1;
+        while (i < body.length && isSpace(body[i])) i += 1;
+        if (key !== prop) {
+          if (body[i] === '"') {
+            i += 1;
+            while (i < body.length) {
+              if (body[i] === '"' && !isQuoteEscaped(body, i)) { i += 1; break; }
+              i += 1;
+            }
+          }
+          continue;
+        }
+        if (body[i] !== '"') return null;
+        i += 1;
+        const start = i;
+        while (i < body.length) {
+          if (body[i] === '"' && !isQuoteEscaped(body, i)) {
+            return body.slice(start, i);
+          }
+          i += 1;
+        }
+        return null;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
   }
 
   function parseModifiersInGroup(text, groupOpen, groupClose) {
@@ -1156,7 +2360,8 @@ export function createNodesPane(options = {}) {
         const mClose = findMatchingBrace(inner, mOpen);
         if (mClose < 0) break;
         const body = inner.slice(mOpen + 1, mClose);
-        out.push({ name: modName, type: modType, body, isModifier: true });
+        const instanceSourceOp = extractTopLevelQuotedProp(body, 'SourceOp');
+        out.push({ name: modName, type: modType, body, isModifier: true, instanceSourceOp: instanceSourceOp || null });
         i = mClose + 1; continue;
       }
       i++;
@@ -1203,7 +2408,8 @@ export function createNodesPane(options = {}) {
         const bOpen = j; const bClose = findMatchingBrace(inner, bOpen); if (bClose < 0) break;
         const ibody = inner.slice(bOpen + 1, bClose);
         const mod = extractQuotedProp(ibody, 'SourceOp');
-        if (mod) res.push({ id, modifier: mod });
+        const src = extractQuotedProp(ibody, 'Source') || '';
+        if (mod) res.push({ id, modifier: mod, source: src });
         j = bClose + 1; continue;
       }
       j++;
@@ -1215,11 +2421,136 @@ export function createNodesPane(options = {}) {
         while ((m2 = re2.exec(body)) !== null) {
           const id2 = m2[2];
           const mod2 = m2[3];
-          if (mod2) res.push({ id: id2, modifier: mod2 });
+          if (mod2) res.push({ id: id2, modifier: mod2, source: '' });
         }
       } catch (_) {}
     }
     return res;
+  }
+
+  function findExpressionRefsInToolBody(body) {
+    const res = [];
+    if (!body) return res;
+    const ip = body.indexOf('Inputs');
+    if (ip < 0) return res;
+    let i = ip + 'Inputs'.length;
+    while (i < body.length && isSpace(body[i])) i++;
+    if (body[i] !== '=') return res; i++;
+    while (i < body.length && isSpace(body[i])) i++;
+    if (body.slice(i, i + 8).toLowerCase() === 'ordered(') {
+      i += 8;
+      while (i < body.length && isSpace(body[i])) i++;
+      if (body[i] === ')') i++;
+      while (i < body.length && isSpace(body[i])) i++;
+    }
+    if (body[i] !== '{') return res;
+    const open = i; const close = findMatchingBrace(body, open); if (close < 0) return res;
+    const inner = body.slice(open + 1, close);
+    let j = 0, depth = 0, inStr = false;
+    while (j < inner.length) {
+      const ch = inner[j];
+      if (inStr) { if (ch === '\"' && !isQuoteEscaped(inner, j)) inStr = false; j++; continue; }
+      if (ch === '\"') { inStr = true; j++; continue; }
+      if (ch === '{') { depth++; j++; continue; }
+      if (ch === '}') { depth--; j++; continue; }
+      if (depth === 0 && isIdentStart(ch)) {
+        const idStart = j; j++;
+        while (j < inner.length && isIdentPart(inner[j])) j++;
+        const id = inner.slice(idStart, j);
+        while (j < inner.length && isSpace(inner[j])) j++;
+        if (inner[j] !== '=') { j++; continue; }
+        j++;
+        while (j < inner.length && isSpace(inner[j])) j++;
+        if (inner.slice(j, j + 5) !== 'Input') { continue; }
+        while (j < inner.length && inner[j] !== '{') j++;
+        if (inner[j] !== '{') { continue; }
+        const bOpen = j; const bClose = findMatchingBrace(inner, bOpen); if (bClose < 0) break;
+        const ibody = inner.slice(bOpen + 1, bClose);
+        const expr = extractQuotedProp(ibody, 'Expression') || '';
+        if (expr) {
+          const targets = extractExpressionTargets(expr);
+          res.push({ id, expression: expr, targets });
+        }
+        j = bClose + 1; continue;
+      }
+      j++;
+    }
+    if (res.length === 0) {
+      try {
+        const re2 = /(\n|\r|^)\s*([A-Za-z_\[\]\.][A-Za-z0-9_\[\]\.]*?)\s*=\s*Input\s*\{[\s\S]*?Expression\s*=\s*"([^"]+)"/g;
+        let m2;
+        while ((m2 = re2.exec(body)) !== null) {
+          const id2 = m2[2];
+          const expr2 = m2[3];
+          if (expr2) res.push({ id: id2, expression: expr2, targets: extractExpressionTargets(expr2) });
+        }
+      } catch (_) {}
+    }
+    return res;
+  }
+
+  function extractExpressionTargets(expression) {
+    const out = [];
+    try {
+      const expr = String(expression || '');
+      const re = /([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_\[\]\.][A-Za-z0-9_\[\]\.]*)/g;
+      let m;
+      const seen = new Set();
+      while ((m = re.exec(expr)) !== null) {
+        const sourceOp = m[1];
+        const source = m[2];
+        const key = `${sourceOp}::${source}`;
+        if (!sourceOp || !source || seen.has(key)) continue;
+        seen.add(key);
+        out.push({ sourceOp, source });
+      }
+    } catch (_) {}
+    return out;
+  }
+
+  function stripOuterParens(value) {
+    let s = String(value || '').trim();
+    let changed = true;
+    while (changed && s.startsWith('(') && s.endsWith(')')) {
+      changed = false;
+      let depth = 0;
+      let wrapsWhole = true;
+      for (let i = 0; i < s.length; i += 1) {
+        const ch = s[i];
+        if (ch === '(') depth += 1;
+        else if (ch === ')') depth -= 1;
+        if (depth === 0 && i < s.length - 1) {
+          wrapsWhole = false;
+          break;
+        }
+      }
+      if (wrapsWhole) {
+        s = s.slice(1, -1).trim();
+        changed = true;
+      }
+    }
+    return s;
+  }
+
+  function classifyExpressionRef(exprRef) {
+    try {
+      const targets = Array.isArray(exprRef?.targets) ? exprRef.targets : [];
+      if (targets.length !== 1) {
+        return { kind: 'complex', primaryTarget: targets[0] || null, targetCount: targets.length };
+      }
+      const t = targets[0];
+      if (!t || !t.sourceOp || !t.source) {
+        return { kind: 'complex', primaryTarget: null, targetCount: targets.length };
+      }
+      const exprText = stripOuterParens(String(exprRef?.expression || '').trim());
+      const bareRef = `${t.sourceOp}.${t.source}`;
+      if (exprText === bareRef) {
+        return { kind: 'direct', primaryTarget: t, targetCount: 1 };
+      }
+      return { kind: 'complex', primaryTarget: t, targetCount: 1 };
+    } catch (_) {
+      return { kind: 'complex', primaryTarget: null, targetCount: 0 };
+    }
   }
 
   function findToolByNameAnywhere(text, toolName) {
@@ -1235,22 +2566,53 @@ export function createNodesPane(options = {}) {
         const closeIndex = findMatchingBrace(text, openIndex);
         if (closeIndex < 0) continue;
         const body = text.slice(openIndex + 1, closeIndex);
-        return { name, type, body };
+        const instanceSourceOp = extractTopLevelQuotedProp(body, 'SourceOp');
+        return { name, type, body, instanceSourceOp: instanceSourceOp || null };
       }
       return null;
     } catch (_) { return null; }
   }
 
-  function deriveControlsForTool(tool, catalog) {
+  function deriveControlsForTool(tool, catalog, profileRoot, contextBindings = []) {
     const fromUC = parseUserControls(tool.body);
     const fromInputs = parseToolInputs(tool.body);
+    const profileControls = getProfileControls(profileRoot || nodeProfiles, tool.type);
     const isUtility = String(tool.name || '').toUpperCase() === UTILITY_NODE_NAME;
     if (isUtility) {
       return groupColorControls(tool.name, fromUC);
     }
     const map = new Map();
-    for (const c of fromInputs) map.set(c.id, { id: c.id, name: c.name, kind: c.kind || 'Input' });
-    for (const c of fromUC) map.set(c.id, { id: c.id, name: c.name, kind: c.kind || 'UserControl', launchUrl: c.launchUrl || null });
+    for (const c of (profileControls || [])) {
+      if (!c || !c.id) continue;
+      map.set(c.id, {
+        id: c.id,
+        name: c.name || humanizeName(c.id),
+        kind: c.kind || 'Input',
+        inputControl: c.inputControl || null,
+        defaultValue: c.defaultValue != null ? c.defaultValue : null,
+        defaultX: c.defaultX != null ? c.defaultX : null,
+        defaultY: c.defaultY != null ? c.defaultY : null,
+        controlGroup: Number.isFinite(c.controlGroup) ? Number(c.controlGroup) : null,
+        groupKey: c.groupKey || null,
+      });
+    }
+    for (const c of fromInputs) {
+      const existing = map.get(c.id) || { id: c.id };
+      map.set(c.id, { ...existing, id: c.id, name: c.name, kind: c.kind || existing.kind || 'Input' });
+    }
+    for (const c of fromUC) {
+      const existing = map.get(c.id) || { id: c.id };
+      map.set(c.id, {
+        ...existing,
+        id: c.id,
+        name: c.name,
+        kind: c.kind || existing.kind || 'UserControl',
+        launchUrl: c.launchUrl || existing.launchUrl || null,
+        inputControl: c.inputControl || existing.inputControl || null,
+        labelCount: Number.isFinite(c.labelCount) ? c.labelCount : (Number.isFinite(existing.labelCount) ? existing.labelCount : null),
+        defaultValue: c.defaultValue != null ? c.defaultValue : existing.defaultValue,
+      });
+    }
     const catControls = getCatalogControls(catalog, tool.type);
     if (catControls && Array.isArray(catControls)) {
       for (const c of catControls) {
@@ -1296,13 +2658,233 @@ export function createNodesPane(options = {}) {
       const adjusted = applyPrimaryColorOverrides(ordered, overrides);
       let finalControls = applyDissolveMixOverrides(tool, adjusted);
       finalControls = applySwitchSourceOverrides(tool, finalControls);
-      return groupColorControls(tool.name, finalControls, overrides);
+      finalControls = groupColorControls(tool.name, finalControls, overrides);
+      finalControls = applyProfileGroups(finalControls, profileControls);
+      finalControls = applyModifierContextOverrides(tool, finalControls, contextBindings);
+      return applyInstanceStates(tool, finalControls);
     }
     const overrides = getPrimaryColorOverrides(tool, merged);
     const adjusted = applyPrimaryColorOverrides(merged, overrides);
     let finalControls = applyDissolveMixOverrides(tool, adjusted);
     finalControls = applySwitchSourceOverrides(tool, finalControls);
-    return groupColorControls(tool.name, finalControls, overrides);
+    finalControls = groupColorControls(tool.name, finalControls, overrides);
+    finalControls = applyProfileGroups(finalControls, profileControls);
+    finalControls = applyModifierContextOverrides(tool, finalControls, contextBindings);
+    return applyInstanceStates(tool, finalControls);
+  }
+
+  function applyModifierContextOverrides(tool, controls, bindings) {
+    try {
+      if (!tool || !Array.isArray(controls) || !controls.length) return controls;
+      const type = String(tool.type || '').toLowerCase();
+      const refs = Array.isArray(bindings) ? bindings : [];
+      if (!refs.length) return controls;
+      const diagOnce = (message) => {
+        try {
+          const key = `${tool.name || ''}::${tool.type || ''}`;
+          if (modifierContextDiagSeen.has(key)) return;
+          modifierContextDiagSeen.add(key);
+          logDiag(`[Modifier context] ${tool.name} (${tool.type}) ${message}`);
+        } catch (_) {}
+      };
+
+      if (type === 'offset') {
+        const modeScore = { position: 0, distance: 0, angle: 0 };
+        for (const ref of refs) {
+          const src = String(ref?.source || '').toLowerCase();
+          const id = String(ref?.id || '').toLowerCase();
+          if (src === 'position' || /center|pivot|position/.test(id)) modeScore.position += 2;
+          if (src === 'distance' || /distance|size|scale/.test(id)) modeScore.distance += 2;
+          if (src === 'angle' || /angle|aspect|rotation/.test(id)) modeScore.angle += 2;
+        }
+        const context =
+          modeScore.distance > modeScore.angle && modeScore.distance >= modeScore.position ? 'distance'
+          : modeScore.angle > modeScore.distance && modeScore.angle >= modeScore.position ? 'angle'
+          : 'position';
+        diagOnce(`=> ${context} (bindings=${refs.length})`);
+        const suffix = context === 'distance' ? 'Distance' : context === 'angle' ? 'Angle' : 'Position';
+        return controls.map((c) => {
+          if (!c || c.type) return c;
+          if (String(c.id || '') !== 'Offset') return c;
+          return { ...c, name: `Offset ${suffix}` };
+        });
+      }
+
+      if (type.startsWith('perturb')) {
+        const primary = refs[0] || null;
+        const targetName = primary?.id ? humanizeName(primary.id) : '';
+        if (!targetName) return controls;
+        diagOnce(`=> value targets "${targetName}" (from ${primary?.tool || '?'}:${primary?.id || '?'})`);
+        return controls.map((c) => {
+          if (!c || c.type) return c;
+          if (String(c.id || '') !== 'Value') return c;
+          return { ...c, name: targetName };
+        });
+      }
+
+      if (type.startsWith('switch')) {
+        const primary = refs[0] || null;
+        const targetName = primary?.id ? humanizeName(primary.id) : '';
+        if (!targetName || /^source$/i.test(targetName)) return controls;
+        diagOnce(`=> source label "${targetName} Source" (from ${primary?.tool || '?'}:${primary?.id || '?'})`);
+        return controls.map((c) => {
+          if (!c || c.type) return c;
+          if (String(c.id || '') !== 'Source') return c;
+          return { ...c, name: `${targetName} Source` };
+        });
+      }
+
+      return controls;
+    } catch (_) {
+      return controls;
+    }
+  }
+
+  function getProfileControls(profileObj, type) {
+    try {
+      if (!profileObj || !type) return null;
+      const root = profileObj.types && typeof profileObj.types === 'object' ? profileObj.types : profileObj;
+      const cleanType = String(type).trim();
+      let entry = root[cleanType];
+      if (!entry) {
+        const lower = cleanType.toLowerCase();
+        for (const key of Object.keys(root || {})) {
+          if (String(key).toLowerCase() === lower) { entry = root[key]; break; }
+        }
+      }
+      if (!entry) {
+        const variants = [];
+        variants.push(cleanType + 'Mod');
+        variants.push(cleanType + 'Modifier');
+        if (cleanType.endsWith('Mod')) variants.push(cleanType.slice(0, -3));
+        if (cleanType.endsWith('Modifier')) variants.push(cleanType.slice(0, -8));
+        for (const v of variants) {
+          if (root[v]) { entry = root[v]; break; }
+        }
+      }
+      if (!entry || !Array.isArray(entry.controls)) return null;
+      return entry.controls;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function applyProfileGroups(controls, profileControls) {
+    try {
+      if (!Array.isArray(controls) || !controls.length || !Array.isArray(profileControls) || !profileControls.length) return controls;
+      const deriveProfileGroupLabel = (groupKey, explicitLabel, members) => {
+        try {
+          const cleanExplicit = String(explicitLabel || '').trim();
+          if (cleanExplicit && !/^controlGroup:\d+$/i.test(cleanExplicit)) return cleanExplicit;
+          const memberList = Array.isArray(members) ? members : [];
+          const names = memberList
+            .map((m) => String((m && (m.name || humanizeName(m.id))) || '').trim())
+            .filter(Boolean);
+          const ids = memberList.map((m) => String(m && m.id ? m.id : '').toLowerCase());
+          if (ids.includes('fliphoriz') && ids.includes('flipvert')) return 'Flip';
+          if (names.length >= 2) {
+            const tokenized = names.map((n) => n.split(/\s+/).filter(Boolean));
+            const first = tokenized[0] || [];
+            const shared = [];
+            for (let i = 0; i < first.length; i += 1) {
+              const token = first[i];
+              if (!tokenized.every((arr) => String(arr[i] || '').toLowerCase() === String(token).toLowerCase())) break;
+              shared.push(token);
+            }
+            if (shared.length) return shared.join(' ');
+            if (names.length === 2) return `${names[0]} / ${names[1]}`;
+          }
+          if (names.length === 1) return names[0];
+          if (cleanExplicit) return cleanExplicit;
+          return /^controlGroup:\d+$/i.test(String(groupKey || '')) ? 'Grouped Controls' : (humanizeName(groupKey) || groupKey);
+        } catch (_) {
+          return humanizeName(groupKey) || groupKey;
+        }
+      };
+      const groupDefs = new Map();
+      for (const c of profileControls) {
+        if (!c || !c.id) continue;
+        let key = '';
+        if (c.groupKey != null && String(c.groupKey).trim()) {
+          key = String(c.groupKey).trim();
+        } else if (Number.isFinite(c.controlGroup) && Number(c.controlGroup) > 0) {
+          key = `controlGroup:${Number(c.controlGroup)}`;
+        }
+        if (!key) continue;
+        if (!groupDefs.has(key)) groupDefs.set(key, { ids: new Set(), label: c.groupLabel || c.name || null, leader: key });
+        const def = groupDefs.get(key);
+        def.ids.add(String(c.id));
+        if (!def.label && (c.groupLabel || c.name)) def.label = c.groupLabel || c.name;
+      }
+      if (!groupDefs.size) return controls;
+      const controlById = new Map();
+      for (const c of controls) {
+        if (!c || c.type) continue;
+        if (!c.id) continue;
+        controlById.set(String(c.id), c);
+      }
+      const activeGroups = new Map();
+      for (const [gk, def] of groupDefs.entries()) {
+        const members = Array.from(def.ids).map((id) => controlById.get(id)).filter(Boolean);
+        if (members.length < 2) continue;
+        activeGroups.set(gk, {
+          id: gk,
+          label: deriveProfileGroupLabel(gk, def.label, members),
+          memberIds: new Set(members.map((m) => String(m.id))),
+        });
+      }
+      if (!activeGroups.size) return controls;
+      const emittedGroups = new Set();
+      const groupedMembers = new Set();
+      const next = [];
+      for (const c of controls) {
+        if (!c || c.type) {
+          next.push(c);
+          continue;
+        }
+        const cid = String(c.id || '');
+        if (!cid) {
+          next.push(c);
+          continue;
+        }
+        if (groupedMembers.has(cid)) continue;
+        let matched = null;
+        for (const [gk, g] of activeGroups.entries()) {
+          if (g.memberIds.has(cid)) { matched = { gk, g }; break; }
+        }
+        if (!matched) {
+          next.push(c);
+          continue;
+        }
+        if (emittedGroups.has(matched.gk)) {
+          groupedMembers.add(cid);
+          continue;
+        }
+        const channels = [];
+        for (const c2 of controls) {
+          if (!c2 || c2.type || !c2.id) continue;
+          const id2 = String(c2.id);
+          if (!matched.g.memberIds.has(id2)) continue;
+          channels.push({ id: c2.id, name: c2.name || c2.id, control: c2 });
+          groupedMembers.add(id2);
+        }
+        if (channels.length >= 2) {
+          next.push({
+            id: `group:${matched.gk}`,
+            base: matched.gk,
+            type: 'linked-group',
+            groupLabel: matched.g.label,
+            channels,
+          });
+          emittedGroups.add(matched.gk);
+        } else {
+          next.push(c);
+        }
+      }
+      return next;
+    } catch (_) {
+      return controls;
+    }
   }
 
   function getPrimaryColorOverrides(tool, controls) {
@@ -1480,6 +3062,29 @@ export function createNodesPane(options = {}) {
     } catch (_) { return false; }
   }
 
+  function hasTypeInProfiles(profiles, type) {
+    try {
+      if (!profiles || !type) return false;
+      const root = profiles.types && typeof profiles.types === 'object' ? profiles.types : profiles;
+      const t = String(type).trim().toLowerCase();
+      if (Object.prototype.hasOwnProperty.call(root, type)) return true;
+      for (const k of Object.keys(root || {})) {
+        if (String(k).toLowerCase() === t) return true;
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function isModifierType(type) {
+    try {
+      return hasTypeInCatalog(modifierCatalog, type) || hasTypeInProfiles(modifierProfiles, type);
+    } catch (_) {
+      return false;
+    }
+  }
+
   function parseUserControls(body) {
     const match = /UserControls\s*=\s*(?:ordered\(\))?\s*\{/m.exec(body);
     if (!match) return [];
@@ -1553,7 +3158,7 @@ export function createNodesPane(options = {}) {
     }
   }
 
-  function parseToolInputs(body) {
+  function parseToolInputEntries(body) {
     const match = /Inputs\s*=\s*(?:ordered\(\))?\s*\{/m.exec(body);
     if (!match) return [];
     const open = match.index + match[0].lastIndexOf('{');
@@ -1587,12 +3192,87 @@ export function createNodesPane(options = {}) {
         const cClose = findMatchingBrace(inner, cOpen);
         if (cClose < 0) break;
         const cBody = inner.slice(cOpen + 1, cClose);
-        if (!isConnectorInputName(id)) out.push({ id, name: humanizeName(id), kind: 'Input' });
+        if (!isConnectorInputName(id)) out.push({ id, name: humanizeName(id), kind: 'Input', inputBody: cBody });
         i = cClose + 1; continue;
       }
       i++;
     }
     return out;
+  }
+
+  function parseToolInputs(body) {
+    const entries = parseToolInputEntries(body);
+    return entries.map(({ id, name, kind }) => ({ id, name, kind }));
+  }
+
+  function parseInstanceInputStateMap(body) {
+    const map = new Map();
+    try {
+      const entries = parseToolInputEntries(body);
+      for (const entry of entries) {
+        if (!entry || !entry.id) continue;
+        const compact = String(entry.inputBody || '').replace(/[\s,]/g, '').trim();
+        if (!compact) map.set(String(entry.id), 'instanced-explicit');
+        else map.set(String(entry.id), 'overridden');
+      }
+    } catch (_) {}
+    return map;
+  }
+
+  function resolveInstanceStateForId(id, stateMap) {
+    const key = String(id || '').trim();
+    if (!key) return null;
+    if (stateMap instanceof Map && stateMap.has(key)) return stateMap.get(key);
+    return 'instanced';
+  }
+
+  function reduceInstanceState(states) {
+    const clean = (states || []).filter(Boolean);
+    if (!clean.length) return null;
+    const uniq = Array.from(new Set(clean));
+    if (uniq.length === 1) return uniq[0];
+    return 'mixed';
+  }
+
+  function applyInstanceStates(tool, controls) {
+    try {
+      if (!tool || !tool.instanceSourceOp || !Array.isArray(controls) || !controls.length) return controls;
+      const stateMap = parseInstanceInputStateMap(tool.body);
+      return controls.map((c) => {
+        if (!c) return c;
+        if (isGroupedControl(c)) {
+          const channels = (c.channels || []).map((ch) => {
+            if (!ch) return ch;
+            const chState = resolveInstanceStateForId(ch.id, stateMap);
+            return { ...ch, instanceState: chState };
+          });
+          const groupState = reduceInstanceState(channels.map((ch) => ch && ch.instanceState));
+          return { ...c, channels, instanceState: groupState };
+        }
+        const instanceState = resolveInstanceStateForId(c.id, stateMap);
+        return { ...c, instanceState };
+      });
+    } catch (_) {
+      return controls;
+    }
+  }
+
+  function getInstanceBadgeMeta(instanceState) {
+    const state = String(instanceState || '').trim().toLowerCase();
+    if (!state) return null;
+    if (state === 'instanced') {
+      return { text: 'Instanced', className: 'instanced' };
+    }
+    if (state === 'instanced-explicit') {
+      return { text: 'Instanced (Explicit)', className: 'instanced-explicit' };
+    }
+    if (state === 'overridden') {
+      return { text: 'Overridden', className: 'overridden' };
+    }
+    if (state === 'mixed') {
+      return { text: 'Mixed', className: 'mixed' };
+    }
+    return { text: humanizeName(state), className: 'instanced' };
   }
 
   function isConnectorInputName(id) {
@@ -1653,13 +3333,15 @@ export function createNodesPane(options = {}) {
       const items = [];
       const base = payload.base || null;
       const nameById = new Map();
+      const opById = new Map();
       try {
         const tool = findToolByNameAnywhere(state.originalText, payload.sourceOp);
         if (tool) {
-          const cat = (modifierCatalog && hasTypeInCatalog(modifierCatalog, tool.type || ''))
-            ? (modifierCatalog || nodeCatalog)
-            : nodeCatalog;
-          const ctrls = deriveControlsForTool(tool, cat) || [];
+          const isMod = isModifierType(tool.type || '');
+          const cat = isMod ? (modifierCatalog || nodeCatalog) : nodeCatalog;
+          const profileRef = isMod ? (modifierProfiles || nodeProfiles) : nodeProfiles;
+          const contextBindings = isMod ? (modifierBindingContext.get(tool.name) || []) : [];
+          const ctrls = deriveControlsForTool(tool, cat, profileRef, contextBindings) || [];
           for (const c of ctrls) {
             if (c && c.id) nameById.set(String(c.id), c.name || c.id);
           }
@@ -1669,9 +3351,25 @@ export function createNodesPane(options = {}) {
           }
         }
       } catch (_) {}
-      for (const id of payload.channels) {
-        const fallbackName = humanizeName(id) || id;
-        items.push({ sourceOp: payload.sourceOp, source: id, displayName: nameById.get(String(id)) || fallbackName, base });
+      for (const ch of payload.channels) {
+        const rawId = (ch && typeof ch === 'object')
+          ? (ch.source || ch.id || '')
+          : ch;
+        const id = String(rawId || '').trim();
+        if (!id) continue;
+        const fallbackName = (ch && typeof ch === 'object' && ch.name)
+          ? String(ch.name)
+          : (humanizeName(id) || id);
+        const sourceOp = (ch && typeof ch === 'object' && ch.sourceOp)
+          ? String(ch.sourceOp)
+          : String(payload.sourceOp || '');
+        if (sourceOp) opById.set(id, sourceOp);
+        items.push({
+          sourceOp: opById.get(id) || String(payload.sourceOp || ''),
+          source: id,
+          displayName: nameById.get(String(id)) || fallbackName,
+          base,
+        });
       }
       return items;
     }
@@ -1706,14 +3404,27 @@ export function createNodesPane(options = {}) {
     if (!nodesList) return;
     const cbs = nodesList.querySelectorAll('input.node-ctrl');
     cbs.forEach(cb => {
+      const row = cb.closest ? cb.closest('.node-row') : null;
+      const meta = row && row._mmMeta ? row._mmMeta : null;
+      if (meta && meta.kind === 'control') {
+        cb.checked = isPublished(meta.sourceOp, meta.source);
+        return;
+      }
+      if (meta && meta.kind === 'group') {
+        const channels = Array.isArray(meta.channels) ? meta.channels : [];
+        cb.checked = channels.length > 0 && channels.every((ch) => {
+          const chOp = String(ch?.sourceOp || meta.sourceOp || '').trim();
+          const chSrc = String(ch?.source || ch?.id || '').trim();
+          return !!chSrc && isPublished(chOp, chSrc);
+        });
+        return;
+      }
       const op = cb.dataset.sourceOp;
       const src = cb.dataset.source;
       if (src) cb.checked = isPublished(op, src);
-      else if (cb.dataset.groupBase) {
-        const base = cb.dataset.groupBase;
+      else if (cb.dataset.groupId || cb.dataset.groupBase) {
         const listStr = (cb.dataset.channels || '');
-        const list = listStr ? listStr.split('|').filter(s => s) : [];
-        const ids = list.length ? list : [base + 'Red', base + 'Green', base + 'Blue', base + 'Alpha'];
+        const ids = listStr ? listStr.split('|').filter(s => s) : [];
         cb.checked = ids.length > 0 && ids.every(id => isPublished(op, id));
       }
     });
@@ -1737,8 +3448,12 @@ export function createNodesPane(options = {}) {
     getNodeNames: () => [...lastNodeNames],
     setNodeCatalog(data) { nodeCatalog = data || null; },
     setModifierCatalog(data) { modifierCatalog = data || null; },
+    setNodeProfiles(data) { nodeProfiles = data || null; },
+    setModifierProfiles(data) { modifierProfiles = data || null; },
     getNodeCatalog() { return nodeCatalog; },
     getModifierCatalog() { return modifierCatalog; },
+    getNodeProfiles() { return nodeProfiles; },
+    getModifierProfiles() { return modifierProfiles; },
     expandNode: (name, mode = 'open') => {
       if (!state.parseResult) return;
       if (!(state.parseResult.nodesCollapsed instanceof Set)) state.parseResult.nodesCollapsed = new Set();

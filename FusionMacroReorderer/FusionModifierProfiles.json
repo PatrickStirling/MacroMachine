@@ -1,0 +1,1768 @@
+{
+  "version": 1,
+  "source": "Published_ALL_Modifiers.setting",
+  "generatedAt": "2026-02-25T00:15:06.037Z",
+  "types": {
+    "PerturbPolyLine": {
+      "controls": [
+        {
+          "id": "Value"
+        },
+        {
+          "id": "Jaggedness",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Phase"
+        },
+        {
+          "id": "XScale",
+          "defaultValue": "1"
+        },
+        {
+          "id": "YScale",
+          "defaultValue": "1"
+        },
+        {
+          "id": "RandomSeed",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Randomize"
+        },
+        {
+          "id": "Strength",
+          "defaultValue": "0.1"
+        },
+        {
+          "id": "Wobble",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Speed",
+          "defaultValue": "1"
+        }
+      ]
+    },
+    "Calculation": {
+      "controls": [
+        {
+          "id": "FirstOperand"
+        },
+        {
+          "id": "Operator"
+        },
+        {
+          "id": "SecondOperand"
+        },
+        {
+          "id": "FirstOperandTimeScale",
+          "defaultValue": "1"
+        },
+        {
+          "id": "FirstOperandTimeOffset",
+          "defaultValue": "0"
+        },
+        {
+          "id": "SecondOperandTimeScale",
+          "defaultValue": "1"
+        },
+        {
+          "id": "SecondOperandTimeOffset",
+          "defaultValue": "0"
+        }
+      ]
+    },
+    "CoordTransform3D": {
+      "controls": [
+        {
+          "id": "Transform3DOp.Translate.X",
+          "name": "X",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Transform3DOp.Translate.Y",
+          "name": "Y",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Transform3DOp.Translate.Z",
+          "name": "Z",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Transform3DOp.Rotate.RotOrder",
+          "name": "Order"
+        },
+        {
+          "id": "Transform3DOp.Rotate.X",
+          "name": "X",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Transform3DOp.Rotate.Y",
+          "name": "Y",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Transform3DOp.Rotate.Z",
+          "name": "Z",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Transform3DOp.Pivot.X",
+          "name": "X",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Transform3DOp.Pivot.Y",
+          "name": "Y",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Transform3DOp.Pivot.Z",
+          "name": "Z",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Transform3DOp.ScaleLock",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Transform3DOp.Scale.X",
+          "name": "Scale",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Transform3DOp.Scale.Y",
+          "name": "Y",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Transform3DOp.Scale.Z",
+          "name": "Z",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Transform3DOp.UseTarget"
+        },
+        {
+          "id": "Transform3DOp.Target.X",
+          "name": "X",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Transform3DOp.Target.Y",
+          "name": "Y",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Transform3DOp.Target.Z",
+          "name": "Z",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Transform3DOp.InvertTransform",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Transform3DOp.Import"
+        },
+        {
+          "id": "TargetObject"
+        },
+        {
+          "id": "SubID"
+        },
+        {
+          "id": "SceneInput"
+        }
+      ]
+    },
+    "KeyStretcherMod": {
+      "controls": [
+        {
+          "id": "SourceStart",
+          "defaultValue": "0"
+        },
+        {
+          "id": "SourceEnd",
+          "defaultValue": "120"
+        },
+        {
+          "id": "StretchStart",
+          "defaultValue": "24",
+          "controlGroup": 43
+        },
+        {
+          "id": "StretchEnd",
+          "defaultValue": "96",
+          "controlGroup": 43
+        },
+        {
+          "id": "StretchEdges",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Invert",
+          "defaultValue": "0"
+        }
+      ]
+    },
+    "MIDI": {
+      "controls": [
+        {
+          "id": "MIDIFile"
+        },
+        {
+          "id": "TimeScale",
+          "defaultValue": "1"
+        },
+        {
+          "id": "TimeOffset",
+          "defaultValue": "0"
+        },
+        {
+          "id": "ResultOffset",
+          "defaultValue": "0"
+        },
+        {
+          "id": "ResultScale",
+          "defaultValue": "1"
+        },
+        {
+          "id": "ResultCurve",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Mode",
+          "defaultValue": "1"
+        },
+        {
+          "id": "CombineEvents"
+        },
+        {
+          "id": "BeatQuarters",
+          "defaultValue": "1"
+        },
+        {
+          "id": "NoteRangeLow",
+          "name": "Low",
+          "defaultValue": "0",
+          "controlGroup": 55
+        },
+        {
+          "id": "NoteRangeHigh",
+          "name": "High",
+          "defaultValue": "127",
+          "controlGroup": 55
+        },
+        {
+          "id": "PitchScale",
+          "defaultValue": "0"
+        },
+        {
+          "id": "VelocityScale",
+          "defaultValue": "1"
+        },
+        {
+          "id": "PreAttackTime",
+          "defaultValue": "0"
+        },
+        {
+          "id": "PreAttackLevel",
+          "defaultValue": "0"
+        },
+        {
+          "id": "AttackTime",
+          "defaultValue": "0"
+        },
+        {
+          "id": "AttackLevel",
+          "defaultValue": "1"
+        },
+        {
+          "id": "DecayTime",
+          "defaultValue": "0"
+        },
+        {
+          "id": "SustainLevel",
+          "defaultValue": "1"
+        },
+        {
+          "id": "ReleaseTime",
+          "defaultValue": "0"
+        },
+        {
+          "id": "ControlNumber",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Channel1",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Channel2",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Channel3",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Channel4",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Channel5",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Channel6",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Channel7",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Channel8",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Channel9",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Channel10",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Channel11",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Channel12",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Channel13",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Channel14",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Channel15",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Channel16",
+          "defaultValue": "1"
+        }
+      ]
+    },
+    "Vector": {
+      "controls": [
+        {
+          "id": "Origin"
+        },
+        {
+          "id": "Distance",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Angle",
+          "defaultValue": "0"
+        },
+        {
+          "id": "ImageAspect",
+          "defaultValue": "1.777778"
+        }
+      ]
+    },
+    "PolyPath": {
+      "controls": [
+        {
+          "id": "ShowViewControls",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Center"
+        },
+        {
+          "id": "Size",
+          "defaultValue": "1"
+        },
+        {
+          "id": "XRotation",
+          "defaultValue": "0"
+        },
+        {
+          "id": "YRotation",
+          "defaultValue": "0"
+        },
+        {
+          "id": "ZRotation",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Displacement",
+          "defaultValue": "0"
+        },
+        {
+          "id": "HeadingOffset",
+          "defaultValue": "0"
+        },
+        {
+          "id": "PolyLine",
+          "name": "Right-click here for shape animation"
+        }
+      ]
+    },
+    "Probe": {
+      "controls": [
+        {
+          "id": "ImageToProbe"
+        },
+        {
+          "id": "Channel"
+        },
+        {
+          "id": "Position"
+        },
+        {
+          "id": "ProbeRectangle",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Width",
+          "defaultValue": "0.1"
+        },
+        {
+          "id": "Height",
+          "defaultValue": "0.1"
+        },
+        {
+          "id": "Evaluation"
+        },
+        {
+          "id": "ClipInputLow",
+          "name": "Black",
+          "defaultValue": "0",
+          "controlGroup": 102
+        },
+        {
+          "id": "ClipInputHigh",
+          "name": "White",
+          "defaultValue": "1",
+          "controlGroup": 102
+        },
+        {
+          "id": "MinimumValue",
+          "defaultValue": "0"
+        },
+        {
+          "id": "MaximumValue",
+          "defaultValue": "1"
+        },
+        {
+          "id": "OutOfImageValue",
+          "defaultValue": "0"
+        }
+      ]
+    },
+    "Shake": {
+      "controls": [
+        {
+          "id": "RandomSeed",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Randomize"
+        },
+        {
+          "id": "Smoothness",
+          "defaultValue": "10"
+        },
+        {
+          "id": "LockXY",
+          "defaultValue": "1"
+        },
+        {
+          "id": "XMinimum",
+          "defaultValue": "0"
+        },
+        {
+          "id": "XMaximum",
+          "defaultValue": "1"
+        },
+        {
+          "id": "YMinimum",
+          "defaultValue": "0"
+        },
+        {
+          "id": "YMaximum",
+          "defaultValue": "1"
+        }
+      ]
+    },
+    "CustomPoly": {
+      "controls": [
+        {
+          "id": "p1"
+        },
+        {
+          "id": "p2"
+        },
+        {
+          "id": "p3"
+        },
+        {
+          "id": "p4"
+        },
+        {
+          "id": "p5"
+        },
+        {
+          "id": "p6"
+        },
+        {
+          "id": "p7"
+        },
+        {
+          "id": "p8"
+        },
+        {
+          "id": "p9"
+        },
+        {
+          "id": "n1"
+        },
+        {
+          "id": "n2"
+        },
+        {
+          "id": "n3"
+        },
+        {
+          "id": "n4"
+        },
+        {
+          "id": "n5"
+        },
+        {
+          "id": "n6"
+        },
+        {
+          "id": "n7"
+        },
+        {
+          "id": "n8"
+        },
+        {
+          "id": "n9"
+        },
+        {
+          "id": "SourcePolyline",
+          "name": "Connect Source Polyline here"
+        },
+        {
+          "id": "SourcePolyline2"
+        },
+        {
+          "id": "SourcePolyline3"
+        },
+        {
+          "id": "SourceImage"
+        },
+        {
+          "id": "ShowViewControls",
+          "defaultValue": "1"
+        },
+        {
+          "id": "NumPoints",
+          "defaultValue": "20"
+        },
+        {
+          "id": "PolyExpressionX"
+        },
+        {
+          "id": "PolyExpressionY"
+        },
+        {
+          "id": "RandomSeed",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Randomize"
+        },
+        {
+          "id": "ShowNumber1",
+          "defaultValue": "1"
+        },
+        {
+          "id": "NameforNumber1"
+        },
+        {
+          "id": "ShowNumber2",
+          "defaultValue": "1"
+        },
+        {
+          "id": "NameforNumber2"
+        },
+        {
+          "id": "ShowNumber3",
+          "defaultValue": "1"
+        },
+        {
+          "id": "NameforNumber3"
+        },
+        {
+          "id": "ShowNumber4",
+          "defaultValue": "1"
+        },
+        {
+          "id": "NameforNumber4"
+        },
+        {
+          "id": "ShowNumber5",
+          "defaultValue": "0"
+        },
+        {
+          "id": "NameforNumber5"
+        },
+        {
+          "id": "ShowNumber6",
+          "defaultValue": "0"
+        },
+        {
+          "id": "NameforNumber6"
+        },
+        {
+          "id": "ShowNumber7",
+          "defaultValue": "0"
+        },
+        {
+          "id": "NameforNumber7"
+        },
+        {
+          "id": "ShowNumber8",
+          "defaultValue": "0"
+        },
+        {
+          "id": "NameforNumber8"
+        },
+        {
+          "id": "ShowNumber9",
+          "defaultValue": "0"
+        },
+        {
+          "id": "NameforNumber9"
+        },
+        {
+          "id": "ShowPoint1",
+          "defaultValue": "1"
+        },
+        {
+          "id": "NameforPoint1"
+        },
+        {
+          "id": "ShowPoint2",
+          "defaultValue": "0"
+        },
+        {
+          "id": "NameforPoint2"
+        },
+        {
+          "id": "ShowPoint3",
+          "defaultValue": "0"
+        },
+        {
+          "id": "NameforPoint3"
+        },
+        {
+          "id": "ShowPoint4",
+          "defaultValue": "0"
+        },
+        {
+          "id": "NameforPoint4"
+        },
+        {
+          "id": "ShowPoint5",
+          "defaultValue": "0"
+        },
+        {
+          "id": "NameforPoint5"
+        },
+        {
+          "id": "ShowPoint6",
+          "defaultValue": "0"
+        },
+        {
+          "id": "NameforPoint6"
+        },
+        {
+          "id": "ShowPoint7",
+          "defaultValue": "0"
+        },
+        {
+          "id": "NameforPoint7"
+        },
+        {
+          "id": "ShowPoint8",
+          "defaultValue": "0"
+        },
+        {
+          "id": "NameforPoint8"
+        },
+        {
+          "id": "ShowPoint9",
+          "defaultValue": "0"
+        },
+        {
+          "id": "NameforPoint9"
+        }
+      ]
+    },
+    "SwitchPoint": {
+      "controls": [
+        {
+          "id": "Source",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Input0"
+        },
+        {
+          "id": "Input1"
+        },
+        {
+          "id": "NumberOfInputs",
+          "defaultValue": "2"
+        },
+        {
+          "id": "Name0"
+        },
+        {
+          "id": "Name1"
+        }
+      ]
+    },
+    "XYPath": {
+      "controls": [
+        {
+          "id": "ShowViewControls",
+          "defaultValue": "1"
+        },
+        {
+          "id": "X",
+          "defaultValue": "0.5"
+        },
+        {
+          "id": "Y",
+          "defaultValue": "0.5"
+        },
+        {
+          "id": "Z",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Center"
+        },
+        {
+          "id": "Size",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Angle",
+          "defaultValue": "0"
+        },
+        {
+          "id": "HeadingOffset",
+          "defaultValue": "0"
+        }
+      ]
+    },
+    "SwitchNumber": {
+      "controls": [
+        {
+          "id": "Source",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Input0",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Input1"
+        },
+        {
+          "id": "NumberOfInputs",
+          "defaultValue": "2"
+        },
+        {
+          "id": "Name0"
+        },
+        {
+          "id": "Name1"
+        }
+      ]
+    },
+    "TrackerModifier": {
+      "controls": [
+        {
+          "id": "TrackerSource"
+        },
+        {
+          "id": "TrackReverse",
+          "controlGroup": 199
+        },
+        {
+          "id": "TrackBidirectional",
+          "controlGroup": 199
+        },
+        {
+          "id": "TrackForward",
+          "controlGroup": 199
+        },
+        {
+          "id": "TrackReverseFromCurrentTime",
+          "controlGroup": 199
+        },
+        {
+          "id": "StopTracking",
+          "controlGroup": 199
+        },
+        {
+          "id": "TrackForwardFromCurrentTime",
+          "controlGroup": 199
+        },
+        {
+          "id": "Sep1"
+        },
+        {
+          "id": "FramesPerPathPoint",
+          "defaultValue": "1"
+        },
+        {
+          "id": "AdaptiveMode"
+        },
+        {
+          "id": "MatchTolerance",
+          "defaultValue": "0.1"
+        },
+        {
+          "id": "PathCenter"
+        },
+        {
+          "id": "TrackerType",
+          "controlGroup": 205
+        },
+        {
+          "id": "Enabled",
+          "defaultValue": "1"
+        },
+        {
+          "id": "TrackerLabel0",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Tracker",
+          "controlGroup": 208
+        },
+        {
+          "id": "TrackerBestMatch",
+          "controlGroup": 208
+        },
+        {
+          "id": "TrackerChannel",
+          "defaultValue": "4",
+          "controlGroup": 208
+        },
+        {
+          "id": "TrackerShowChannel",
+          "controlGroup": 208
+        },
+        {
+          "id": "PatternCenter0",
+          "defaultX": "0.5",
+          "defaultY": "0.5"
+        },
+        {
+          "id": "PatternWidth0",
+          "defaultValue": "0.03"
+        },
+        {
+          "id": "PatternHeight0",
+          "defaultValue": "0.0534"
+        },
+        {
+          "id": "SearchWidth0",
+          "defaultValue": "0.125"
+        },
+        {
+          "id": "SearchHeight0",
+          "defaultValue": "0.125"
+        },
+        {
+          "id": "TrackedCenter0",
+          "defaultX": "0.5",
+          "defaultY": "0.5"
+        },
+        {
+          "id": "XOffset0"
+        },
+        {
+          "id": "YOffset0"
+        }
+      ]
+    },
+    "TextTimer": {
+      "controls": [
+        {
+          "id": "Mode"
+        },
+        {
+          "id": "DayOn",
+          "name": "Day",
+          "defaultValue": "0"
+        },
+        {
+          "id": "DaysOn",
+          "name": "Days",
+          "defaultValue": "0"
+        },
+        {
+          "id": "MonthOn",
+          "name": "Mnth",
+          "defaultValue": "0"
+        },
+        {
+          "id": "YearOn",
+          "name": "Year",
+          "defaultValue": "0"
+        },
+        {
+          "id": "HoursOn",
+          "name": "Hrs",
+          "defaultValue": "1"
+        },
+        {
+          "id": "MinsOn",
+          "name": "Mins",
+          "defaultValue": "1"
+        },
+        {
+          "id": "SecsOn",
+          "name": "Secs",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Twenty4h",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Hrs"
+        },
+        {
+          "id": "Mins",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Secs"
+        },
+        {
+          "id": "Start"
+        },
+        {
+          "id": "Reset"
+        }
+      ]
+    },
+    "Offset": {
+      "controls": [
+        {
+          "id": "Position"
+        },
+        {
+          "id": "Offset",
+          "defaultX": "0.1",
+          "defaultY": "0.1"
+        },
+        {
+          "id": "FlipPosHoriz",
+          "name": "Horiz",
+          "defaultValue": "0"
+        },
+        {
+          "id": "FlipPosVert",
+          "name": "Vert",
+          "defaultValue": "0"
+        },
+        {
+          "id": "FlipOffsetHoriz",
+          "name": "Horiz",
+          "defaultValue": "0"
+        },
+        {
+          "id": "FlipOffsetVert",
+          "name": "Vert",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Mode"
+        },
+        {
+          "id": "ImageAspect",
+          "defaultValue": "1.777778"
+        },
+        {
+          "id": "AngleScale",
+          "defaultValue": "1"
+        },
+        {
+          "id": "AngleOffset",
+          "defaultValue": "0"
+        },
+        {
+          "id": "DistanceScale",
+          "defaultValue": "1"
+        },
+        {
+          "id": "DistanceOffset",
+          "defaultValue": "0"
+        },
+        {
+          "id": "AngleMode"
+        },
+        {
+          "id": "PositionTimeScale",
+          "defaultValue": "1"
+        },
+        {
+          "id": "PositionTimeOffset",
+          "defaultValue": "0"
+        },
+        {
+          "id": "OffsetTimeScale",
+          "defaultValue": "1"
+        },
+        {
+          "id": "OffsetTimeOffset",
+          "defaultValue": "0"
+        }
+      ]
+    },
+    "PerturbPoint": {
+      "controls": [
+        {
+          "id": "Value"
+        },
+        {
+          "id": "XScale",
+          "defaultValue": "1"
+        },
+        {
+          "id": "YScale",
+          "defaultValue": "1"
+        },
+        {
+          "id": "RandomSeed",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Randomize"
+        },
+        {
+          "id": "Strength",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Wobble",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Speed",
+          "defaultValue": "1"
+        }
+      ]
+    },
+    "PerturbNumber": {
+      "controls": [
+        {
+          "id": "Value"
+        },
+        {
+          "id": "RandomSeed",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Randomize"
+        },
+        {
+          "id": "Strength",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Wobble",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Speed",
+          "defaultValue": "1"
+        }
+      ]
+    },
+    "SwitchText": {
+      "controls": [
+        {
+          "id": "Source",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Input0"
+        },
+        {
+          "id": "Input1"
+        },
+        {
+          "id": "NumberOfInputs",
+          "defaultValue": "2"
+        },
+        {
+          "id": "Name0"
+        },
+        {
+          "id": "Name1"
+        }
+      ]
+    },
+    "GradientColorModifier": {
+      "controls": [
+        {
+          "id": "Gradient"
+        },
+        {
+          "id": "GradientInterpolationMethod"
+        },
+        {
+          "id": "Repeat"
+        },
+        {
+          "id": "Offset",
+          "defaultValue": "0"
+        },
+        {
+          "id": "StartTime",
+          "defaultValue": "0"
+        },
+        {
+          "id": "EndTime",
+          "defaultValue": "0"
+        }
+      ]
+    },
+    "StyledTextCLS": {
+      "controls": [
+        {
+          "id": "SelectTextLabel"
+        },
+        {
+          "id": "Text"
+        },
+        {
+          "id": "Font",
+          "controlGroup": 329
+        },
+        {
+          "id": "Style",
+          "controlGroup": 329
+        },
+        {
+          "id": "RedClone",
+          "name": "Color",
+          "defaultValue": "1",
+          "controlGroup": 330
+        },
+        {
+          "id": "GreenClone",
+          "name": "Color",
+          "defaultValue": "1",
+          "controlGroup": 330
+        },
+        {
+          "id": "BlueClone",
+          "name": "Color",
+          "defaultValue": "1",
+          "controlGroup": 330
+        },
+        {
+          "id": "AlphaClone",
+          "name": "Color",
+          "defaultValue": "1",
+          "controlGroup": 330
+        },
+        {
+          "id": "Size",
+          "defaultValue": "0.1"
+        },
+        {
+          "id": "CharacterSpacingClone",
+          "name": "Tracking",
+          "defaultValue": "1"
+        },
+        {
+          "id": "LineSpacingClone",
+          "defaultValue": "1"
+        },
+        {
+          "id": "VerticalTopCenterBottom",
+          "defaultValue": "0"
+        },
+        {
+          "id": "HorizontalLeftCenterRight",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Strikeout",
+          "name": "Emphasis",
+          "controlGroup": 336
+        },
+        {
+          "id": "Underline",
+          "name": "Emphasis",
+          "controlGroup": 336
+        },
+        {
+          "id": "CharacterLevelStyling"
+        },
+        {
+          "id": "ClearSelectedStyling"
+        },
+        {
+          "id": "ClearAllStyling"
+        },
+        {
+          "id": "Orientation",
+          "defaultValue": "0"
+        },
+        {
+          "id": "UnderlinePosition",
+          "defaultValue": "1000000"
+        },
+        {
+          "id": "ForceMonospaced",
+          "defaultValue": "0"
+        },
+        {
+          "id": "DoFontDefinedKerning",
+          "defaultValue": "1"
+        },
+        {
+          "id": "UseLigatures",
+          "defaultValue": "1"
+        },
+        {
+          "id": "StylisticSet",
+          "defaultValue": "0"
+        },
+        {
+          "id": "FontFeatures"
+        },
+        {
+          "id": "Select",
+          "name": "Transform",
+          "defaultValue": "0"
+        },
+        {
+          "id": "LineSpacing",
+          "name": "Spacing",
+          "defaultValue": "1"
+        },
+        {
+          "id": "LineOffset",
+          "name": "Offset",
+          "defaultX": "0",
+          "defaultY": "0"
+        },
+        {
+          "id": "LineOffsetZ",
+          "name": "Offset Z",
+          "defaultValue": "0"
+        },
+        {
+          "id": "WordSpacing",
+          "name": "Spacing",
+          "defaultValue": "1"
+        },
+        {
+          "id": "WordOffset",
+          "name": "Offset",
+          "defaultX": "0",
+          "defaultY": "0"
+        },
+        {
+          "id": "WordOffsetZ",
+          "name": "Offset Z",
+          "defaultValue": "0"
+        },
+        {
+          "id": "CharacterSpacing",
+          "name": "Spacing",
+          "defaultValue": "1"
+        },
+        {
+          "id": "CharacterOffset",
+          "name": "Offset",
+          "defaultX": "0",
+          "defaultY": "0"
+        },
+        {
+          "id": "CharacterOffsetZ",
+          "name": "Offset Z",
+          "defaultValue": "0"
+        },
+        {
+          "id": "LineAngleX",
+          "name": "X",
+          "defaultValue": "0"
+        },
+        {
+          "id": "LineAngleY",
+          "name": "Y",
+          "defaultValue": "0"
+        },
+        {
+          "id": "LineAngleZ",
+          "name": "Z",
+          "defaultValue": "0"
+        },
+        {
+          "id": "WordAngleX",
+          "name": "X",
+          "defaultValue": "0"
+        },
+        {
+          "id": "WordAngleY",
+          "name": "Y",
+          "defaultValue": "0"
+        },
+        {
+          "id": "WordAngleZ",
+          "name": "Z",
+          "defaultValue": "0"
+        },
+        {
+          "id": "AdaptWordWidthToAngle",
+          "name": "Adapt Width to Angle",
+          "defaultValue": "0"
+        },
+        {
+          "id": "CharacterAngleX",
+          "name": "X",
+          "defaultValue": "0"
+        },
+        {
+          "id": "CharacterAngleY",
+          "name": "Y",
+          "defaultValue": "0"
+        },
+        {
+          "id": "CharacterAngleZ",
+          "name": "Z",
+          "defaultValue": "0"
+        },
+        {
+          "id": "AdaptCharacterWidthToAngle",
+          "name": "Adapt Width to Angle",
+          "defaultValue": "0"
+        },
+        {
+          "id": "LinePivot",
+          "name": "Pivot",
+          "defaultX": "0",
+          "defaultY": "0"
+        },
+        {
+          "id": "LinePivotZ",
+          "name": "Pivot Z",
+          "defaultValue": "0"
+        },
+        {
+          "id": "WordPivot",
+          "name": "Pivot",
+          "defaultX": "0",
+          "defaultY": "0"
+        },
+        {
+          "id": "WordPivotZ",
+          "name": "Pivot Z",
+          "defaultValue": "0"
+        },
+        {
+          "id": "CharacterPivot",
+          "name": "Pivot",
+          "defaultX": "0",
+          "defaultY": "0"
+        },
+        {
+          "id": "CharacterPivotZ",
+          "name": "Pivot Z",
+          "defaultValue": "0"
+        },
+        {
+          "id": "LineShearX",
+          "name": "X",
+          "defaultValue": "0"
+        },
+        {
+          "id": "LineShearY",
+          "name": "Y",
+          "defaultValue": "0"
+        },
+        {
+          "id": "WordShearX",
+          "name": "X",
+          "defaultValue": "0"
+        },
+        {
+          "id": "WordShearY",
+          "name": "Y",
+          "defaultValue": "0"
+        },
+        {
+          "id": "CharacterShearX",
+          "name": "X",
+          "defaultValue": "0"
+        },
+        {
+          "id": "CharacterShearY",
+          "name": "Y",
+          "defaultValue": "0"
+        },
+        {
+          "id": "LineSizeX",
+          "name": "X",
+          "defaultValue": "1"
+        },
+        {
+          "id": "LineSizeY",
+          "name": "Y",
+          "defaultValue": "1"
+        },
+        {
+          "id": "WordSizeX",
+          "name": "X",
+          "defaultValue": "1"
+        },
+        {
+          "id": "WordSizeY",
+          "name": "Y",
+          "defaultValue": "1"
+        },
+        {
+          "id": "CharacterSizeX",
+          "name": "X",
+          "defaultValue": "1"
+        },
+        {
+          "id": "CharacterSizeY",
+          "name": "Y",
+          "defaultValue": "1"
+        },
+        {
+          "id": "SelectElement"
+        },
+        {
+          "id": "Enabled",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Opacity",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Overlap",
+          "defaultValue": "-1000000"
+        },
+        {
+          "id": "Shape",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Thickness",
+          "defaultValue": "0.02"
+        },
+        {
+          "id": "AdaptThicknessToPerspective",
+          "defaultValue": "0"
+        },
+        {
+          "id": "OutsideOnly",
+          "defaultValue": "0"
+        },
+        {
+          "id": "CleanIntersections",
+          "defaultValue": "0"
+        },
+        {
+          "id": "JoinStyle",
+          "defaultValue": "0"
+        },
+        {
+          "id": "MiterLimit",
+          "defaultValue": "12.7455"
+        },
+        {
+          "id": "LineStyle",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Level",
+          "defaultValue": "3"
+        },
+        {
+          "id": "ExtendHorizontal",
+          "defaultValue": "0"
+        },
+        {
+          "id": "ExtendVertical",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Round",
+          "defaultValue": "0"
+        },
+        {
+          "id": "ElementSeparator"
+        },
+        {
+          "id": "Type",
+          "defaultValue": "0"
+        },
+        {
+          "id": "MappingSpacer"
+        },
+        {
+          "id": "Red1",
+          "name": "Text Color",
+          "defaultValue": "1",
+          "controlGroup": 405
+        },
+        {
+          "id": "Green1",
+          "name": "Color",
+          "defaultValue": "1",
+          "controlGroup": 405
+        },
+        {
+          "id": "Blue1",
+          "name": "Color",
+          "defaultValue": "1",
+          "controlGroup": 405
+        },
+        {
+          "id": "Alpha1",
+          "name": "Color",
+          "defaultValue": "1",
+          "controlGroup": 405
+        },
+        {
+          "id": "Red",
+          "name": "Text Color",
+          "defaultValue": "1",
+          "controlGroup": 406
+        },
+        {
+          "id": "Green",
+          "name": "Color",
+          "defaultValue": "1",
+          "controlGroup": 406
+        },
+        {
+          "id": "Blue",
+          "name": "Color",
+          "defaultValue": "1",
+          "controlGroup": 406
+        },
+        {
+          "id": "Alpha",
+          "name": "Color",
+          "defaultValue": "1",
+          "controlGroup": 406
+        },
+        {
+          "id": "MappingAngle",
+          "defaultValue": "0"
+        },
+        {
+          "id": "MappingSize",
+          "defaultValue": "1"
+        },
+        {
+          "id": "MappingAspect",
+          "defaultValue": "1"
+        },
+        {
+          "id": "SoftnessX",
+          "defaultValue": "0"
+        },
+        {
+          "id": "SoftnessY",
+          "defaultValue": "0"
+        },
+        {
+          "id": "SoftnessOnShadingToo",
+          "defaultValue": "0"
+        },
+        {
+          "id": "SoftnessGlow",
+          "defaultValue": "0"
+        },
+        {
+          "id": "SoftnessBlend",
+          "defaultValue": "1"
+        },
+        {
+          "id": "PriorityBack",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Expand",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Offset",
+          "defaultX": "0",
+          "defaultY": "0"
+        },
+        {
+          "id": "OffsetZ",
+          "defaultValue": "0"
+        },
+        {
+          "id": "AngleX",
+          "defaultValue": "0"
+        },
+        {
+          "id": "AngleY",
+          "defaultValue": "0"
+        },
+        {
+          "id": "AngleZ",
+          "defaultValue": "0"
+        },
+        {
+          "id": "Pivot",
+          "defaultX": "0",
+          "defaultY": "0"
+        },
+        {
+          "id": "PivotZ",
+          "defaultValue": "0"
+        },
+        {
+          "id": "ShearX",
+          "defaultValue": "0"
+        },
+        {
+          "id": "ShearY",
+          "defaultValue": "0"
+        },
+        {
+          "id": "SizeX",
+          "defaultValue": "1"
+        },
+        {
+          "id": "SizeY",
+          "defaultValue": "1"
+        },
+        {
+          "id": "ExtrusionMaxZ"
+        },
+        {
+          "id": "BevelDepth",
+          "defaultValue": "0"
+        },
+        {
+          "id": "BevelWidth",
+          "defaultValue": "0"
+        },
+        {
+          "id": "SmoothingAngle",
+          "defaultValue": "10"
+        }
+      ]
+    },
+    "TextScramble": {
+      "controls": [
+        {
+          "id": "InputText"
+        },
+        {
+          "id": "Randomness",
+          "defaultValue": "0"
+        },
+        {
+          "id": "AnimateOnTime",
+          "name": "Time",
+          "defaultValue": "1"
+        },
+        {
+          "id": "AnimateOnRandomness",
+          "name": "Randomness",
+          "defaultValue": "1"
+        },
+        {
+          "id": "DonTChangeSpaces",
+          "defaultValue": "1"
+        },
+        {
+          "id": "SubstituteChars"
+        }
+      ]
+    },
+    "TimeCode": {
+      "controls": [
+        {
+          "id": "Hrs",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Mins",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Secs",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Frms",
+          "defaultValue": "1"
+        },
+        {
+          "id": "Flds",
+          "defaultValue": "0"
+        },
+        {
+          "id": "StartOffset",
+          "defaultValue": "0"
+        },
+        {
+          "id": "FramesPerSecond",
+          "defaultValue": "30"
+        },
+        {
+          "id": "PadDigits",
+          "defaultValue": "1"
+        },
+        {
+          "id": "DropFrame",
+          "defaultValue": "1"
+        }
+      ]
+    }
+  }
+}

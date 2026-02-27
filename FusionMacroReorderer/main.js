@@ -1670,8 +1670,10 @@ function updateDocExportPathDisplay() {
   const addControlNameInput = document.getElementById('addControlName');
   const addControlTypeSelect = document.getElementById('addControlType');
   const addLabelOptions = document.getElementById('addLabelOptions');
+  const addComboOptions = document.getElementById('addComboOptions');
   const addControlLabelCountInput = document.getElementById('addControlLabelCount');
   const addControlLabelDefaultSelect = document.getElementById('addControlLabelDefault');
+  const addControlComboOptionsInput = document.getElementById('addControlComboOptions');
   const addControlPageInput = document.getElementById('addControlPage');
   const addControlPageOptions = document.getElementById('addControlPageOptions');
   const addControlTargetSelect = document.getElementById('addControlTarget');
@@ -1828,6 +1830,11 @@ function updateDocExportPathDisplay() {
   const addControlQuickMenu = document.getElementById('addControlQuickMenu');
 
   const hideReplacedEl = document.getElementById('hideReplaced');
+  const viewControlsBtn = document.getElementById('viewControlsBtn');
+  const viewControlsMenu = document.getElementById('viewControlsMenu');
+  const showNodeTypeLabelsEl = document.getElementById('showNodeTypeLabels');
+  const showInstancedConnectionsEl = document.getElementById('showInstancedConnections');
+  const showNextNodeLinksEl = document.getElementById('showNextNodeLinks');
 
   const macroNameEl = document.getElementById('macroName');
   const setMacroNameDisplay = (value) => {
@@ -1934,8 +1941,10 @@ function updateDocExportPathDisplay() {
     addControlNameInput,
     addControlTypeSelect,
     addLabelOptions,
+    addComboOptions,
     addControlLabelCountInput,
     addControlLabelDefaultSelect,
+    addControlComboOptionsInput,
     addControlPageInput,
     addControlPageOptions,
     addControlTargetSelect,
@@ -1985,7 +1994,7 @@ function updateDocExportPathDisplay() {
 
   async function quickCreateControl(type) {
     const safeType = String(type || '').toLowerCase();
-    if (!['label', 'slider', 'button', 'separator'].includes(safeType)) return;
+    if (!['label', 'slider', 'combo', 'button', 'separator'].includes(safeType)) return;
     if (!state.parseResult || !state.originalText) {
       error('Load a macro before creating controls.');
       return;
@@ -2002,6 +2011,8 @@ function updateDocExportPathDisplay() {
         ? 'Label'
         : safeType === 'slider'
           ? 'Slider'
+          : safeType === 'combo'
+            ? 'Combo'
           : safeType === 'button'
             ? 'Button'
             : 'Separator',
@@ -3271,7 +3282,7 @@ function hideDetailDrawer() {
     };
     const pageDisplay = infoColumn('Page', entry.page || 'Controls');
     infoRow.appendChild(pageDisplay);
-    const effectiveDataType = entry.isButton ? '"Number"' : (meta.dataType || null);
+    const effectiveDataType = entry.isButton ? '"Number"' : (inferEntryDataType(entry) || null);
     const dataDisplay = infoColumn('Data Type', effectiveDataType ? String(effectiveDataType).replace(/"/g, '') : 'Unknown');
     infoRow.appendChild(dataDisplay);
     const controlWrap = document.createElement('div');
@@ -3353,14 +3364,35 @@ function hideDetailDrawer() {
       currentGroup.className = 'detail-default-item';
       const currentLabel = document.createElement('span');
       currentLabel.textContent = 'Current';
-      const currentInput = document.createElement('input');
-      currentInput.type = 'text';
-      currentInput.className = 'current-input';
+      const isCombo = !isTextControl(entry) && isComboControl(entry);
+      const comboOptions = isCombo ? getChoiceOptions(entry) : [];
+      const useComboSelect = isCombo && comboOptions.length > 0;
+      let currentInput = null;
+      let currentSelect = null;
+      if (useComboSelect) {
+        currentSelect = document.createElement('select');
+        currentSelect.className = 'detail-type-select current-input current-combo-input';
+        comboOptions.forEach((label, idx) => {
+          const opt = document.createElement('option');
+          opt.value = String(idx);
+          opt.textContent = String(label == null ? `Option ${idx}` : label);
+          currentSelect.appendChild(opt);
+        });
+      } else {
+        currentInput = document.createElement('input');
+        currentInput.type = isCombo ? 'number' : 'text';
+        if (isCombo) {
+          currentInput.step = '1';
+          currentInput.min = '0';
+          currentInput.placeholder = 'Combo index (0-based)';
+        }
+        currentInput.className = 'current-input';
+      }
       const currentNote = document.createElement('span');
       currentNote.className = 'detail-default-note';
       const currentWrap = document.createElement('div');
       currentWrap.className = 'detail-input-wrap';
-      currentWrap.appendChild(currentInput);
+      currentWrap.appendChild(useComboSelect ? currentSelect : currentInput);
       const hasCsv = !!(state.csvData && Array.isArray(state.csvData.headers) && state.csvData.headers.length);
       const hasLinkSource = !!(state.parseResult && state.parseResult.dataLink && state.parseResult.dataLink.source);
       const canLinkCsv = isCsvLinkableControl(entry);
@@ -3412,23 +3444,44 @@ function hideDetailDrawer() {
       }
       const refreshCurrent = () => {
         const info = getCurrentInputInfo(entry);
-        currentInput.value = info.value || '';
-        currentInput.placeholder = info.value ? '' : (info.note || 'Current value');
+        const rawValue = String(info.value || '').trim().replace(/^\"|\"$/g, '');
+        if (useComboSelect) {
+          const idx = parseComboIndexValue(entry, rawValue);
+          currentSelect.value = idx != null ? String(idx) : '';
+        } else {
+          currentInput.value = info.value || '';
+          if (!isCombo) {
+            currentInput.placeholder = info.value ? '' : (info.note || 'Current value');
+          }
+        }
         const csvNote = entry?.csvLink?.column ? `Linked to CSV: ${entry.csvLink.column}` : '';
         const noteParts = [];
+        if (useComboSelect) {
+          const idx = parseComboIndexValue(entry, rawValue);
+          const label = idx != null ? getComboOptionLabel(entry, idx) : '';
+          if (label) noteParts.push(`Current option: ${label} (${idx})`);
+        } else if (isCombo) {
+          noteParts.push('Combo control uses numeric index values starting at 0.');
+          noteParts.push('No combo option labels found on this control yet.');
+        }
         if (info.note) noteParts.push(info.note);
         if (csvNote) noteParts.push(csvNote);
         currentNote.textContent = noteParts.join(' ');
         currentNote.hidden = noteParts.length === 0;
       };
       const commitCurrent = () => {
-        setEntryCurrentValue(index, currentInput.value);
+        const nextValue = useComboSelect ? currentSelect.value : currentInput.value;
+        setEntryCurrentValue(index, nextValue);
         refreshCurrent();
       };
-      currentInput.addEventListener('keydown', (ev) => {
-        if (ev.key === 'Enter') { ev.preventDefault(); commitCurrent(); }
-      });
-      currentInput.addEventListener('blur', commitCurrent);
+      if (useComboSelect) {
+        currentSelect.addEventListener('change', commitCurrent);
+      } else {
+        currentInput.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Enter') { ev.preventDefault(); commitCurrent(); }
+        });
+        currentInput.addEventListener('blur', commitCurrent);
+      }
       const cgBlock = getColorGroupBlockByIndex(index);
       if (cgBlock && cgBlock.firstIndex === index && cgBlock.count >= 2) {
         const components = getColorGroupComponents(cgBlock);
@@ -3739,36 +3792,159 @@ function hideDetailDrawer() {
         defaultRow.className = 'detail-default-row';
         const rangeRow = document.createElement('div');
         rangeRow.className = 'detail-default-row';
+        const comboDefaults = isComboControl(entry) ? getChoiceOptions(entry) : [];
         const buildDefaultInput = (title, key, handler) => {
           const group = document.createElement('div');
           group.className = 'detail-default-item';
           const lbl = document.createElement('span');
           lbl.textContent = title;
-          const input = document.createElement('input');
-          input.type = 'text';
-          input.value = formatDefaultForDisplay(entry, meta[key]) || '';
-          const originalMeta = entry.controlMetaOriginal || {};
-          if (originalMeta[key] != null) {
-            const originalDisplay = formatDefaultForDisplay(entry, originalMeta[key]);
-            input.placeholder = `Original: ${originalDisplay || ''}`;
+          const isComboDefault = key === 'defaultValue' && comboDefaults.length > 0;
+          if (isComboDefault) {
+            const select = document.createElement('select');
+            select.className = 'detail-type-select current-input current-combo-input';
+            comboDefaults.forEach((label, idx) => {
+              const opt = document.createElement('option');
+              opt.value = String(idx);
+              opt.textContent = String(label == null ? `Option ${idx}` : label);
+              select.appendChild(opt);
+            });
+            const parsedDefault = parseComboIndexValue(entry, meta[key]);
+            if (parsedDefault != null) {
+              select.value = String(parsedDefault);
+            }
+            select.addEventListener('change', () => handler(select.value));
+            group.appendChild(lbl);
+            group.appendChild(select);
+          } else {
+            const input = document.createElement('input');
+            const isComboNumeric = key === 'defaultValue' && isComboControl(entry) && !isTextControl(entry);
+            input.type = isComboNumeric ? 'number' : 'text';
+            if (isComboNumeric) {
+              input.step = '1';
+              input.min = '0';
+              input.placeholder = 'Index (0-based)';
+            }
+            input.value = formatDefaultForDisplay(entry, meta[key]) || '';
+            const originalMeta = entry.controlMetaOriginal || {};
+            if (originalMeta[key] != null) {
+              const originalDisplay = formatDefaultForDisplay(entry, originalMeta[key]);
+              if (!isComboNumeric) input.placeholder = `Original: ${originalDisplay || ''}`;
+            }
+            const commit = () => handler(input.value);
+            input.addEventListener('keydown', (ev) => {
+              if (ev.key === 'Enter') { ev.preventDefault(); commit(); }
+            });
+            input.addEventListener('blur', commit);
+            group.appendChild(lbl);
+            group.appendChild(input);
           }
-          const commit = () => handler(input.value);
-          input.addEventListener('keydown', (ev) => {
-            if (ev.key === 'Enter') { ev.preventDefault(); commit(); }
-          });
-          input.addEventListener('blur', commit);
-          group.appendChild(lbl);
-          group.appendChild(input);
           return group;
         };
         defaultRow.appendChild(buildDefaultInput('Default', 'defaultValue', (val) => setEntryDefaultValue(index, val)));
-        rangeRow.appendChild(buildDefaultInput('Min', 'minScale', (val) => setEntryRangeValue(index, 'minScale', val)));
-        rangeRow.appendChild(buildDefaultInput('Max', 'maxScale', (val) => setEntryRangeValue(index, 'maxScale', val)));
         defaultsField.appendChild(defaultRow);
-        defaultsField.appendChild(rangeRow);
+        if (!isComboControl(entry)) {
+          rangeRow.appendChild(buildDefaultInput('Min', 'minScale', (val) => setEntryRangeValue(index, 'minScale', val)));
+          rangeRow.appendChild(buildDefaultInput('Max', 'maxScale', (val) => setEntryRangeValue(index, 'maxScale', val)));
+          defaultsField.appendChild(rangeRow);
+        }
       }
     }
     detailDrawerBody.appendChild(defaultsField);
+    if (!entry.isLabel && isComboControl(entry)) {
+      const comboField = document.createElement('div');
+      comboField.className = 'detail-field';
+      const comboLabel = document.createElement('label');
+      comboLabel.textContent = 'Combo Options';
+      comboField.appendChild(comboLabel);
+      const comboInput = document.createElement('textarea');
+      comboInput.className = 'detail-combo-options-input';
+      const options = getChoiceOptions(entry);
+      comboInput.value = options.length ? options.join('\n') : '';
+      comboInput.placeholder = 'Option 0\nOption 1\nOption 2';
+      comboField.appendChild(comboInput);
+      const comboNote = document.createElement('span');
+      comboNote.className = 'detail-default-note';
+      comboNote.textContent = 'One option per line. Option order defines numeric values starting at 0.';
+      comboField.appendChild(comboNote);
+      const comboActions = document.createElement('div');
+      comboActions.className = 'detail-actions';
+      const comboSaveBtn = document.createElement('button');
+      comboSaveBtn.type = 'button';
+      comboSaveBtn.textContent = 'Save';
+      comboSaveBtn.addEventListener('click', () => {
+        const parsed = parseComboOptionsText(comboInput.value);
+        setEntryComboOptions(index, parsed);
+      });
+      const comboResetBtn = document.createElement('button');
+      comboResetBtn.type = 'button';
+      comboResetBtn.textContent = 'Reset';
+      comboResetBtn.addEventListener('click', () => {
+        const original = Array.isArray(entry?.controlMetaOriginal?.choiceOptions)
+          ? entry.controlMetaOriginal.choiceOptions
+          : [];
+        comboInput.value = (original.length ? original : ['Option 1', 'Option 2', 'Option 3']).join('\n');
+        const parsed = parseComboOptionsText(comboInput.value);
+        setEntryComboOptions(index, parsed);
+      });
+      comboActions.appendChild(comboSaveBtn);
+      comboActions.appendChild(comboResetBtn);
+      comboField.appendChild(comboActions);
+      comboInput.addEventListener('keydown', (ev) => {
+        const metaEnter = ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey);
+        if (!metaEnter) return;
+        ev.preventDefault();
+        const parsed = parseComboOptionsText(comboInput.value);
+        setEntryComboOptions(index, parsed);
+      });
+      detailDrawerBody.appendChild(comboField);
+    }
+    if (!entry.isLabel) {
+      const expressionField = document.createElement('div');
+      expressionField.className = 'detail-field';
+      const expressionLabel = document.createElement('label');
+      expressionLabel.textContent = 'Expression';
+      expressionField.appendChild(expressionLabel);
+
+      const expressionInput = document.createElement('textarea');
+      expressionInput.className = 'detail-expression-input';
+      expressionInput.placeholder = 'Example: Transform1.Angle * 2';
+      expressionInput.value = getEntryExpression(entry) || '';
+      expressionField.appendChild(expressionInput);
+
+      const expressionNote = document.createElement('span');
+      expressionNote.className = 'detail-default-note';
+      expressionNote.textContent = expressionInput.value.trim()
+        ? 'Expression drives this control. Setting Current value removes it.'
+        : 'Set an expression to drive this control from other controls.';
+      expressionField.appendChild(expressionNote);
+
+      const expressionActions = document.createElement('div');
+      expressionActions.className = 'detail-actions';
+      const applyExprBtn = document.createElement('button');
+      applyExprBtn.type = 'button';
+      applyExprBtn.textContent = 'Apply';
+      applyExprBtn.addEventListener('click', () => {
+        setEntryExpression(index, expressionInput.value);
+      });
+      const clearExprBtn = document.createElement('button');
+      clearExprBtn.type = 'button';
+      clearExprBtn.textContent = 'Clear';
+      clearExprBtn.addEventListener('click', () => {
+        expressionInput.value = '';
+        setEntryExpression(index, '');
+      });
+      expressionActions.appendChild(applyExprBtn);
+      expressionActions.appendChild(clearExprBtn);
+      expressionField.appendChild(expressionActions);
+
+      expressionInput.addEventListener('keydown', (ev) => {
+        const metaEnter = ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey);
+        if (!metaEnter) return;
+        ev.preventDefault();
+        setEntryExpression(index, expressionInput.value);
+      });
+      detailDrawerBody.appendChild(expressionField);
+    }
     if (entry.isLabel) {
       const styleField = document.createElement('div');
       styleField.className = 'detail-field';
@@ -4021,6 +4197,26 @@ function hideDetailDrawer() {
     return trimmed.length ? trimmed : null;
   }
 
+  function inferEntryDataType(entry) {
+    try {
+      const explicit = normalizeMetaValue(
+        entry?.controlMeta?.dataType || entry?.controlMetaOriginal?.dataType || entry?.dataType
+      );
+      if (explicit) return explicit;
+      const inputControl = normalizeInputControlValue(
+        entry?.controlMeta?.inputControl || entry?.controlMetaOriginal?.inputControl
+      );
+      const lower = String(inputControl || '').toLowerCase();
+      if (/texteditcontrol/.test(lower) || /styledtext/i.test(String(entry?.source || ''))) return '"Text"';
+      if (/checkbox/.test(lower)) return '"Boolean"';
+      if (/combo|slider|screw|button|label|separator/.test(lower)) return '"Number"';
+      if (POINT_INPUT_CONTROLS.includes(inputControl)) return '"Point"';
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   function isTextControl(entry) {
     const inputControl = normalizeInputControlValue(
       entry?.controlMeta?.inputControl || entry?.controlMetaOriginal?.inputControl
@@ -4172,12 +4368,58 @@ function hideDetailDrawer() {
     return Number.isFinite(num) ? num : null;
   }
 
+  function getChoiceOptions(entry) {
+    try {
+      const fromMeta = entry?.controlMeta?.choiceOptions;
+      if (Array.isArray(fromMeta) && fromMeta.length) return fromMeta;
+      const fromOriginal = entry?.controlMetaOriginal?.choiceOptions;
+      if (Array.isArray(fromOriginal) && fromOriginal.length) return fromOriginal;
+      return [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function parseComboIndexValue(entry, raw) {
+    if (raw == null) return null;
+    let text = String(raw).trim();
+    if (!text) return null;
+    if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'"))) {
+      text = text.slice(1, -1).trim();
+    }
+    if (!text) return null;
+    const num = Number(text);
+    if (!Number.isFinite(num)) return null;
+    const rounded = Math.round(num);
+    const clamped = clampNumericToEntry(entry, rounded);
+    return Number.isFinite(clamped) ? clamped : null;
+  }
+
+  function getComboOptionLabel(entry, index) {
+    try {
+      const options = getChoiceOptions(entry);
+      if (!options.length) return '';
+      if (!Number.isFinite(index)) return '';
+      const idx = Math.trunc(index);
+      if (idx < 0 || idx >= options.length) return '';
+      return String(options[idx] == null ? '' : options[idx]);
+    } catch (_) {
+      return '';
+    }
+  }
+
   function clampNumericToEntry(entry, value) {
     let next = value;
     const minRaw = entry?.controlMeta?.minAllowed ?? entry?.controlMetaOriginal?.minAllowed;
     const maxRaw = entry?.controlMeta?.maxAllowed ?? entry?.controlMetaOriginal?.maxAllowed;
     const min = minRaw != null ? Number(String(minRaw).replace(/"/g, '').trim()) : null;
     const max = maxRaw != null ? Number(String(maxRaw).replace(/"/g, '').trim()) : null;
+    if (isComboControl(entry)) {
+      const options = getChoiceOptions(entry);
+      if (options.length) {
+        next = Math.max(0, Math.min(options.length - 1, next));
+      }
+    }
     if (Number.isFinite(min)) next = Math.max(min, next);
     if (Number.isFinite(max)) next = Math.min(max, next);
     return next;
@@ -5116,7 +5358,15 @@ function hideDetailDrawer() {
     if (!entry) return;
     entry.controlMeta = entry.controlMeta || {};
     entry.controlMetaOriginal = entry.controlMetaOriginal || {};
-    const next = normalizeMetaValue(value);
+    let next = normalizeMetaValue(value);
+    if (next != null && isComboControl(entry) && !isTextControl(entry)) {
+      const comboIndex = parseComboIndexValue(entry, next);
+      if (comboIndex == null) {
+        error('Combo default must be a numeric index.');
+        return;
+      }
+      next = String(comboIndex);
+    }
     const current = entry.controlMeta.defaultValue != null ? String(entry.controlMeta.defaultValue) : null;
     if ((current || null) === (next || null)) return;
     pushHistory('edit default');
@@ -5143,21 +5393,47 @@ function hideDetailDrawer() {
     markContentDirty();
   }
 
+  function getEntryInputContext(entry) {
+    try {
+      if (!entry || !entry.sourceOp || !entry.source || !state.originalText || !state.parseResult) return null;
+      const bounds = locateMacroGroupBounds(state.originalText, state.parseResult);
+      if (!bounds) return null;
+      const toolBlock = findToolBlockInGroup(state.originalText, bounds.groupOpenIndex, bounds.groupCloseIndex, entry.sourceOp);
+      if (!toolBlock) return null;
+      const inputsBlock = findInputsInTool(state.originalText, toolBlock.open, toolBlock.close);
+      if (!inputsBlock) return null;
+      const inputBlock = findInputBlockInInputs(state.originalText, inputsBlock.open, inputsBlock.close, entry.source);
+      if (!inputBlock) return null;
+      const body = state.originalText.slice(inputBlock.open + 1, inputBlock.close);
+      return { bounds, toolBlock, inputsBlock, inputBlock, body };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function getEntryExpression(entry) {
+    const ctx = getEntryInputContext(entry);
+    if (!ctx) return '';
+    return extractControlStringProp(ctx.body, 'Expression') || '';
+  }
+
   function setEntryCurrentValue(index, value) {
     if (!state.parseResult || !Array.isArray(state.parseResult.entries)) return;
     const entry = state.parseResult.entries[index];
-    if (!entry || !entry.sourceOp || !entry.source || !state.originalText) return;
-    const bounds = locateMacroGroupBounds(state.originalText, state.parseResult);
-    if (!bounds) return;
-    const toolBlock = findToolBlockInGroup(state.originalText, bounds.groupOpenIndex, bounds.groupCloseIndex, entry.sourceOp);
-    if (!toolBlock) return;
-    const inputsBlock = findInputsInTool(state.originalText, toolBlock.open, toolBlock.close);
-    if (!inputsBlock) return;
-    const inputBlock = findInputBlockInInputs(state.originalText, inputsBlock.open, inputsBlock.close, entry.source);
-    if (!inputBlock) return;
-    const trimmed = String(value || '').trim();
-    let body = state.originalText.slice(inputBlock.open + 1, inputBlock.close);
-    const indent = (getLineIndent(state.originalText, inputBlock.open) || '') + '\t';
+    if (!entry || !state.originalText) return;
+    const ctx = getEntryInputContext(entry);
+    if (!ctx) return;
+    let trimmed = String(value || '').trim();
+    if (trimmed && isComboControl(entry) && !isTextControl(entry)) {
+      const comboIndex = parseComboIndexValue(entry, trimmed);
+      if (comboIndex == null) {
+        error('Combo value must be a numeric index.');
+        return;
+      }
+      trimmed = String(comboIndex);
+    }
+    let body = ctx.body;
+    const indent = (getLineIndent(state.originalText, ctx.inputBlock.open) || '') + '\t';
     const eol = state.newline || '\n';
     if (trimmed) {
       body = removeControlProp(body, 'Expression');
@@ -5167,12 +5443,39 @@ function hideDetailDrawer() {
     } else {
       body = removeControlProp(body, 'Value');
     }
-    const updated = state.originalText.slice(0, inputBlock.open + 1) + body + state.originalText.slice(inputBlock.close);
+    const updated = state.originalText.slice(0, ctx.inputBlock.open + 1) + body + state.originalText.slice(ctx.inputBlock.close);
     if (updated === state.originalText) return;
     pushHistory('edit current value');
     state.originalText = updated;
     renderActiveList();
     markContentDirty();
+  }
+
+  function setEntryExpression(index, expression) {
+    if (!state.parseResult || !Array.isArray(state.parseResult.entries)) return false;
+    const entry = state.parseResult.entries[index];
+    if (!entry || !state.originalText) return false;
+    const ctx = getEntryInputContext(entry);
+    if (!ctx) return false;
+    const nextExpr = String(expression || '').trim();
+    const indent = (getLineIndent(state.originalText, ctx.inputBlock.open) || '') + '\t';
+    const eol = state.newline || '\n';
+    let body = ctx.body;
+    if (nextExpr) {
+      body = removeControlProp(body, 'Value');
+      body = removeControlProp(body, 'SourceOp');
+      body = removeControlProp(body, 'Source');
+      body = upsertControlProp(body, 'Expression', `"${escapeSettingString(nextExpr)}"`, indent, eol);
+    } else {
+      body = removeControlProp(body, 'Expression');
+    }
+    const updated = state.originalText.slice(0, ctx.inputBlock.open + 1) + body + state.originalText.slice(ctx.inputBlock.close);
+    if (updated === state.originalText) return false;
+    pushHistory('edit expression');
+    state.originalText = updated;
+    renderActiveList();
+    markContentDirty();
+    return true;
   }
 
   function setEntryLabelStyle(index, style) {
@@ -5889,20 +6192,34 @@ function hideDetailDrawer() {
   function buildControlDefinitionLines(type, config = {}) {
     const name = config.name ? escapeQuotes(config.name) : 'Custom';
     const page = config.page ? `ICS_ControlPage = "${escapeQuotes(config.page)}",` : null;
-    if (type === 'slider' || type === 'screw') {
-      const control = type === 'slider' ? 'SliderControl' : 'ScrewControl';
+    if (type === 'slider' || type === 'screw' || type === 'combo') {
+      const control = type === 'slider' ? 'SliderControl' : type === 'screw' ? 'ScrewControl' : 'ComboControl';
       const lines = [
         `LINKS_Name = "${name}",`,
         'LINKID_DataType = "Number",',
         'INP_Integer = false,',
         'INP_Default = 0,',
-        'INP_MinScale = 0,',
-        'INP_MaxScale = 1,',
-        'INP_MinAllowed = -1000000,',
-        'INP_MaxAllowed = 1000000,',
         'INP_SplineType = "Default",',
         `INPID_InputControl = "${control}",`,
       ];
+      if (type !== 'combo') {
+        lines.splice(4, 0,
+          'INP_MinScale = 0,',
+          'INP_MaxScale = 1,',
+          'INP_MinAllowed = -1000000,',
+          'INP_MaxAllowed = 1000000,'
+        );
+      }
+      if (type === 'combo') {
+        const rawOptions = Array.isArray(config.comboOptions) ? config.comboOptions : [];
+        const options = rawOptions
+          .map((opt) => String(opt || '').trim())
+          .filter((opt) => opt.length > 0);
+        const safeOptions = options.length ? options : ['Option 1', 'Option 2', 'Option 3'];
+        safeOptions.forEach((opt) => {
+          lines.push(`{ CCS_AddString = "${escapeQuotes(opt)}" },`);
+        });
+      }
       if (page) lines.push(page);
       return lines;
     }
@@ -5983,7 +6300,7 @@ function hideDetailDrawer() {
     if (!trimmedName) throw new Error('Control name is required.');
     const normalizedPage = (config?.page && String(config.page).trim()) ? String(config.page).trim() : 'Controls';
     const typeRaw = (config?.type || 'label').toLowerCase();
-    const supportedTypes = new Set(['label', 'separator', 'button', 'slider', 'screw']);
+    const supportedTypes = new Set(['label', 'separator', 'button', 'slider', 'combo', 'screw']);
     const type = supportedTypes.has(typeRaw) ? typeRaw : 'label';
     let workingText = state.originalText;
     const ensured = ensureToolUserControlsBlock(workingText, bounds, nodeName, newline);
@@ -5996,6 +6313,7 @@ function hideDetailDrawer() {
       page: normalizedPage,
       labelCount: config?.labelCount,
       labelDefault,
+      comboOptions: Array.isArray(config?.comboOptions) ? config.comboOptions : [],
     });
     const pendingMeta = {
       kind: type === 'label' ? 'label' : type === 'button' ? 'button' : null,
@@ -6003,10 +6321,14 @@ function hideDetailDrawer() {
       defaultValue: type === 'label' ? (labelDefault === 'closed' ? '0' : '1') : null,
       inputControl:
         type === 'slider' ? 'SliderControl'
+        : type === 'combo' ? 'ComboControl'
         : type === 'screw' ? 'ScrewControl'
         : type === 'button' ? 'ButtonControl'
         : type === 'separator' ? 'SeparatorControl'
         : 'LabelControl',
+      choiceOptions: type === 'combo' && Array.isArray(config?.comboOptions)
+        ? config.comboOptions.map((opt) => String(opt || '').trim()).filter((opt) => opt.length > 0)
+        : [],
     };
     workingText = insertUserControlBlock(workingText, ensured.ucBlock, controlId, lines, newline);
     rememberPendingControlMeta(nodeName, controlId, pendingMeta);
@@ -6016,7 +6338,17 @@ function hideDetailDrawer() {
     state.originalText = persisted;
     await reloadMacroFromCurrentText({ skipClear: true });
     runValidation('add-control');
-    const typeLabel = type === 'button' ? 'button' : type === 'slider' ? 'slider' : type === 'screw' ? 'screw control' : type === 'separator' ? 'separator control' : 'label';
+    const typeLabel = type === 'button'
+      ? 'button'
+      : type === 'slider'
+        ? 'slider'
+        : type === 'combo'
+          ? 'combo control'
+          : type === 'screw'
+            ? 'screw control'
+            : type === 'separator'
+              ? 'separator control'
+              : 'label';
     info(`Added ${typeLabel} "${trimmedName}" to ${nodeName}.`);
     return { nodeName, controlId, displayName: trimmedName };
   }
@@ -6031,7 +6363,7 @@ function hideDetailDrawer() {
     if (!trimmedName) throw new Error('Control name is required.');
     const normalizedPage = (config?.page && String(config.page).trim()) ? String(config.page).trim() : 'Controls';
     const typeRaw = (config?.type || 'label').toLowerCase();
-    const supportedTypes = new Set(['label', 'separator', 'button', 'slider', 'screw']);
+    const supportedTypes = new Set(['label', 'separator', 'button', 'slider', 'combo', 'screw']);
     const type = supportedTypes.has(typeRaw) ? typeRaw : 'label';
     let workingText = state.originalText;
     const ensured = ensureGroupUserControlsBlockExists(workingText, bounds, newline, state.parseResult);
@@ -6048,6 +6380,7 @@ function hideDetailDrawer() {
       page: normalizedPage,
       labelCount: config?.labelCount,
       labelDefault,
+      comboOptions: Array.isArray(config?.comboOptions) ? config.comboOptions : [],
     });
     const pendingMeta = {
       kind: type === 'label' ? 'label' : type === 'button' ? 'button' : null,
@@ -6055,10 +6388,14 @@ function hideDetailDrawer() {
       defaultValue: type === 'label' ? (labelDefault === 'closed' ? '0' : '1') : null,
       inputControl:
         type === 'slider' ? 'SliderControl'
+        : type === 'combo' ? 'ComboControl'
         : type === 'screw' ? 'ScrewControl'
         : type === 'button' ? 'ButtonControl'
         : type === 'separator' ? 'SeparatorControl'
         : 'LabelControl',
+      choiceOptions: type === 'combo' && Array.isArray(config?.comboOptions)
+        ? config.comboOptions.map((opt) => String(opt || '').trim()).filter((opt) => opt.length > 0)
+        : [],
     };
     workingText = insertUserControlBlock(workingText, ucRange, controlId, lines, newline);
     const macroName = state.parseResult.macroName || state.parseResult.macroNameOriginal || 'Macro';
@@ -6068,7 +6405,17 @@ function hideDetailDrawer() {
     state.originalText = persisted;
     await reloadMacroFromCurrentText({ skipClear: true });
     runValidation('add-control');
-    const typeLabel = type === 'button' ? 'button' : type === 'slider' ? 'slider' : type === 'screw' ? 'screw control' : type === 'separator' ? 'separator control' : 'label';
+    const typeLabel = type === 'button'
+      ? 'button'
+      : type === 'slider'
+        ? 'slider'
+        : type === 'combo'
+          ? 'combo control'
+          : type === 'screw'
+            ? 'screw control'
+            : type === 'separator'
+              ? 'separator control'
+              : 'label';
     info(`Added ${typeLabel} "${trimmedName}" to the macro.`);
     return { nodeName: macroName, controlId, displayName: trimmedName };
   }
@@ -6119,6 +6466,124 @@ function hideDetailDrawer() {
     markContentDirty();
   }
 
+  function findEntryControlBlockBounds(entry) {
+    try {
+      if (!entry || !entry.source || !state.originalText || !state.parseResult) return null;
+      const bounds = locateMacroGroupBounds(state.originalText, state.parseResult);
+      if (!bounds) return null;
+      let toolBlock = null;
+      if (entry.sourceOp) {
+        toolBlock = findToolBlockInGroup(state.originalText, bounds.groupOpenIndex, bounds.groupCloseIndex, entry.sourceOp);
+        if (!toolBlock) toolBlock = findToolBlockAnywhere(state.originalText, entry.sourceOp);
+      }
+      if (toolBlock) {
+        let cb = findControlBlockInTool(state.originalText, toolBlock.open, toolBlock.close, entry.source);
+        if (!cb) {
+          const toolUc = findUserControlsInTool(state.originalText, toolBlock.open, toolBlock.close);
+          if (toolUc) cb = findControlBlockInUc(state.originalText, toolUc.open, toolUc.close, entry.source);
+        }
+        if (cb) return cb;
+      }
+      const groupUc = findUserControlsInGroup(state.originalText, bounds.groupOpenIndex, bounds.groupCloseIndex);
+      if (groupUc) {
+        const gcb = findControlBlockInUc(state.originalText, groupUc.open, groupUc.close, entry.source);
+        if (gcb) return gcb;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function parseComboOptionsText(raw) {
+    const text = String(raw || '').replace(/\r\n?/g, '\n');
+    const rows = text.includes('\n') ? text.split('\n') : text.split(',');
+    return rows
+      .map((line) => String(line || '').trim().replace(/^"(.*)"$/, '$1'))
+      .filter((line) => line.length > 0);
+  }
+
+  function setEntryComboOptions(index, options, opts = {}) {
+    if (!state.parseResult || !Array.isArray(state.parseResult.entries)) return false;
+    const entry = state.parseResult.entries[index];
+    if (!entry) return false;
+    const normalized = Array.isArray(options)
+      ? options.map((opt) => String(opt || '').trim()).filter((opt) => opt.length > 0)
+      : [];
+    if (!normalized.length) {
+      if (!opts.silent) error('Combo controls require at least one option.');
+      return false;
+    }
+    const current = getChoiceOptions(entry);
+    if (current.length === normalized.length && current.every((v, i) => String(v) === String(normalized[i]))) {
+      return false;
+    }
+    const applyChoicesToBody = (body, indent, eol) => {
+      let nextBody = removeControlListPropEntries(body, 'CCS_AddString');
+      nextBody = removeControlListPropEntries(nextBody, 'MBTNC_AddButton');
+      if (nextBody.trim().length) {
+        const trimmed = nextBody.replace(/\s+$/g, '');
+        if (trimmed && !trimmed.endsWith(',')) {
+          nextBody = trimmed + ',' + nextBody.slice(trimmed.length);
+        }
+        if (!nextBody.endsWith(eol)) nextBody += eol;
+      }
+      normalized.forEach((opt) => {
+        nextBody += `${indent}{ CCS_AddString = "${escapeQuotes(opt)}" },${eol}`;
+      });
+      return nextBody;
+    };
+
+    let changed = false;
+    let pendingText = null;
+    let pendingRaw = null;
+    const cb = findEntryControlBlockBounds(entry);
+    const eol = state.newline || '\n';
+    if (cb) {
+      const indent = (getLineIndent(state.originalText, cb.open) || '') + '\t';
+      const body = state.originalText.slice(cb.open + 1, cb.close);
+      const rebuilt = applyChoicesToBody(body, indent, eol);
+      const nextText = state.originalText.slice(0, cb.open + 1) + rebuilt + state.originalText.slice(cb.close);
+      if (nextText !== state.originalText) {
+        pendingText = nextText;
+        changed = true;
+      }
+    } else if (typeof entry.raw === 'string') {
+      const rawOpen = entry.raw.indexOf('{');
+      const rawClose = entry.raw.lastIndexOf('}');
+      if (rawOpen >= 0 && rawClose > rawOpen) {
+        const rawIndent = (getLineIndent(entry.raw, rawOpen) || '') + '\t';
+        const rawBody = entry.raw.slice(rawOpen + 1, rawClose);
+        const rebuiltRaw = applyChoicesToBody(rawBody, rawIndent, eol);
+        const nextRaw = entry.raw.slice(0, rawOpen + 1) + rebuiltRaw + entry.raw.slice(rawClose);
+        if (nextRaw !== entry.raw) {
+          pendingRaw = nextRaw;
+          changed = true;
+        }
+      }
+    }
+    if (!changed) {
+      if (!opts.silent) error('Unable to locate control definition for combo options.');
+      return false;
+    }
+    if (!opts.skipHistory) pushHistory('edit combo options');
+    if (pendingText != null) state.originalText = pendingText;
+    if (pendingRaw != null) entry.raw = pendingRaw;
+    entry.controlMeta = entry.controlMeta || {};
+    entry.controlMetaOriginal = entry.controlMetaOriginal || {};
+    entry.controlMeta.choiceOptions = [...normalized];
+    if (!Array.isArray(entry.controlMetaOriginal.choiceOptions) || !entry.controlMetaOriginal.choiceOptions.length) {
+      entry.controlMetaOriginal.choiceOptions = [...normalized];
+    }
+    entry.controlMetaDirty = true;
+    if (!opts.silent) {
+      renderActiveList({ safe: true });
+      renderDetailDrawer(index);
+    }
+    markContentDirty();
+    return true;
+  }
+
   function setEntryTextLines(index, value) {
     if (!state.parseResult || !Array.isArray(state.parseResult.entries)) return;
     const entry = state.parseResult.entries[index];
@@ -6140,25 +6605,7 @@ function hideDetailDrawer() {
     entry.controlMeta.textLines = String(nextVal);
     entry.controlMetaDirty = true;
 
-    const bounds = locateMacroGroupBounds(state.originalText, state.parseResult);
-    if (!bounds) return;
-    let toolBlock = null;
-    if (entry.sourceOp) {
-      toolBlock = findToolBlockInGroup(state.originalText, bounds.groupOpenIndex, bounds.groupCloseIndex, entry.sourceOp);
-      if (!toolBlock) toolBlock = findToolBlockAnywhere(state.originalText, entry.sourceOp);
-    }
-    let cb = null;
-    if (toolBlock) {
-      cb = findControlBlockInTool(state.originalText, toolBlock.open, toolBlock.close, entry.source);
-    }
-    if (!cb && toolBlock) {
-      const uc = findUserControlsInTool(state.originalText, toolBlock.open, toolBlock.close);
-      if (uc) cb = findControlBlockInUc(state.originalText, uc.open, uc.close, entry.source);
-    }
-    if (!cb) {
-      const uc = findUserControlsInGroup(state.originalText, bounds.groupOpenIndex, bounds.groupCloseIndex);
-      if (uc) cb = findControlBlockInUc(state.originalText, uc.open, uc.close, entry.source);
-    }
+    const cb = findEntryControlBlockBounds(entry);
     if (!cb) return;
     const indent = (getLineIndent(state.originalText, cb.open) || '') + '\t';
     let body = state.originalText.slice(cb.open + 1, cb.close);
@@ -6262,6 +6709,12 @@ function hideDetailDrawer() {
           body = removeInstanceInputProp(body, prop);
         });
         entry.raw = entry.raw.slice(0, open + 1) + body + entry.raw.slice(close);
+      }
+    }
+    if (norm && /combocontrol/i.test(norm)) {
+      const options = getChoiceOptions(entry);
+      if (!options.length) {
+        setEntryComboOptions(index, ['Option 1', 'Option 2', 'Option 3'], { skipHistory: true, silent: true });
       }
     }
     if (!silent) {
@@ -6415,6 +6868,11 @@ function hideDetailDrawer() {
     nodesList,
     nodesSearch,
     hideReplacedEl,
+    viewControlsBtn,
+    viewControlsMenu,
+    showNodeTypeLabelsEl,
+    showInstancedConnectionsEl,
+    showNextNodeLinksEl,
     publishSelectedBtn,
     clearNodeSelectionBtn,
     importCatalogBtn,
@@ -6424,6 +6882,7 @@ function hideDetailDrawer() {
     logDiag,
     logTag,
     error,
+    info,
     highlightNode,
     clearHighlights,
     renderList,
@@ -7222,6 +7681,36 @@ async function handleFile(file) {
             logTag('Catalog', 'Loaded modifier catalog via fetch: ' + Object.keys(json || {}).length + ' modifier types');
           } catch (err) {
             logTag('Catalog', 'Modifier catalog fetch failed: ' + (err?.message || err));
+          }
+        })());
+      }
+
+      if (!nodesPane?.getNodeProfiles?.()) {
+        pending.push((async () => {
+          try {
+            const resp = await fetch('FusionNodeProfiles.json');
+            if (!resp.ok) return;
+            const json = await resp.json();
+            nodesPane?.setNodeProfiles?.(json || null);
+            const count = Object.keys((json && json.types) || {}).length;
+            logTag('Catalog', 'Loaded node profiles via fetch: ' + count + ' tool types');
+          } catch (err) {
+            logTag('Catalog', 'Node profiles fetch failed: ' + (err?.message || err));
+          }
+        })());
+      }
+
+      if (!nodesPane?.getModifierProfiles?.()) {
+        pending.push((async () => {
+          try {
+            const resp = await fetch('FusionModifierProfiles.json');
+            if (!resp.ok) return;
+            const json = await resp.json();
+            nodesPane?.setModifierProfiles?.(json || null);
+            const count = Object.keys((json && json.types) || {}).length;
+            logTag('Catalog', 'Loaded modifier profiles via fetch: ' + count + ' modifier types');
+          } catch (err) {
+            logTag('Catalog', 'Modifier profiles fetch failed: ' + (err?.message || err));
           }
         })());
       }
@@ -12069,6 +12558,62 @@ async function handleFile(file) {
     } catch (_) { return null; }
   }
 
+  function extractControlStringProp(body, prop) {
+    try {
+      if (!body || !prop) return null;
+      const range = findControlPropRange(body, prop);
+      if (!range) return null;
+      const line = body.slice(range.start, range.end);
+      const eq = line.indexOf('=');
+      if (eq < 0) return null;
+      let value = line.slice(eq + 1).trim();
+      if (value.endsWith(',')) value = value.slice(0, -1).trim();
+      if (!value) return null;
+      if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+        return unescapeSettingString(value.slice(1, -1));
+      }
+      return value;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function extractControlStringPropList(body, prop) {
+    try {
+      if (!body || !prop) return [];
+      const escapedProp = String(prop).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(`(?:\\{\\s*)?${escapedProp}\\s*=\\s*("(?:\\\\.|[^"])*"|[^,}\\r\\n]+)\\s*(?:\\})?`, 'ig');
+      const values = [];
+      let match;
+      while ((match = re.exec(body))) {
+        let value = (match[1] || '').trim();
+        if (!value) continue;
+        if (value.endsWith(',')) value = value.slice(0, -1).trim();
+        value = value.replace(/\}\s*$/, '').trim();
+        if (!value) continue;
+        if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+          value = unescapeSettingString(value.slice(1, -1));
+        }
+        values.push(value);
+      }
+      return values;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function extractChoiceOptionsFromBody(body) {
+    try {
+      const combo = extractControlStringPropList(body, 'CCS_AddString');
+      if (combo.length) return combo;
+      const buttons = extractControlStringPropList(body, 'MBTNC_AddButton');
+      if (buttons.length) return buttons;
+      return [];
+    } catch (_) {
+      return [];
+    }
+  }
+
   function getCurrentInputInfo(entry) {
     const empty = { value: '', note: '' };
     try {
@@ -12139,7 +12684,7 @@ async function handleFile(file) {
       }
       const sourceOp = extractControlPropValue(body, 'SourceOp');
       const source = extractControlPropValue(body, 'Source');
-      const expression = extractControlPropValue(body, 'Expression');
+      const expression = extractControlStringProp(body, 'Expression');
       const strip = (v) => String(v || '').replace(/^\"|\"$/g, '');
       let note = '';
       if (expression) {
@@ -12231,6 +12776,7 @@ async function handleFile(file) {
               meta.maxAllowed = extractControlPropValue(body, 'INP_MaxAllowed');
               meta.minScale = extractControlPropValue(body, 'INP_MinScale');
               meta.maxScale = extractControlPropValue(body, 'INP_MaxScale');
+              meta.choiceOptions = extractChoiceOptionsFromBody(body);
             const execLine = extractBtncsExecuteString(text, uc.open, uc.close, entry.source);
             if (execLine) {
               const first = execLine.indexOf('"');
@@ -12257,6 +12803,9 @@ async function handleFile(file) {
                   meta.maxAllowed = meta.maxAllowed || extractControlPropValue(body, 'INP_MaxAllowed');
                   meta.minScale = meta.minScale || extractControlPropValue(body, 'INP_MinScale');
                   meta.maxScale = meta.maxScale || extractControlPropValue(body, 'INP_MaxScale');
+                  if (!Array.isArray(meta.choiceOptions) || !meta.choiceOptions.length) {
+                    meta.choiceOptions = extractChoiceOptionsFromBody(body);
+                  }
                 }
                 if (!meta.inputControl) {
                   const toolUc = findUserControlsInTool(text, tb.open, tb.close);
@@ -12273,6 +12822,9 @@ async function handleFile(file) {
                       meta.maxAllowed = meta.maxAllowed || extractControlPropValue(body, 'INP_MaxAllowed');
                       meta.minScale = meta.minScale || extractControlPropValue(body, 'INP_MinScale');
                       meta.maxScale = meta.maxScale || extractControlPropValue(body, 'INP_MaxScale');
+                      if (!Array.isArray(meta.choiceOptions) || !meta.choiceOptions.length) {
+                        meta.choiceOptions = extractChoiceOptionsFromBody(body);
+                      }
                     }
                   }
                 }
@@ -12293,6 +12845,9 @@ async function handleFile(file) {
                 meta.maxAllowed = meta.maxAllowed || extractControlPropValue(body, 'INP_MaxAllowed');
                 meta.minScale = meta.minScale || extractControlPropValue(body, 'INP_MinScale');
                 meta.maxScale = meta.maxScale || extractControlPropValue(body, 'INP_MaxScale');
+                if (!Array.isArray(meta.choiceOptions) || !meta.choiceOptions.length) {
+                  meta.choiceOptions = extractChoiceOptionsFromBody(body);
+                }
               }
             }
           }
@@ -12310,8 +12865,14 @@ async function handleFile(file) {
             entry.labelValueOriginal = actual;
           }
         }
-        entry.controlMeta = { ...meta };
-        entry.controlMetaOriginal = { ...meta };
+        entry.controlMeta = {
+          ...meta,
+          choiceOptions: Array.isArray(meta.choiceOptions) ? [...meta.choiceOptions] : [],
+        };
+        entry.controlMetaOriginal = {
+          ...meta,
+          choiceOptions: Array.isArray(meta.choiceOptions) ? [...meta.choiceOptions] : [],
+        };
         entry.controlMetaDirty = false;
         if (meta.inputControl && /buttoncontrol/i.test(meta.inputControl)) {
           entry.isButton = true;
@@ -13551,6 +14112,39 @@ function applyBlendCheckboxesToTool(text, bounds, toolName, controls, eol, resul
     }
   }
 
+  function removeControlPropAll(body, prop) {
+    try {
+      let next = body;
+      let guard = 0;
+      while (guard < 500) {
+        const range = findControlPropRange(next, prop);
+        if (!range) break;
+        next = next.slice(0, range.start) + next.slice(range.end);
+        guard += 1;
+      }
+      return next;
+    } catch (_) {
+      return body;
+    }
+  }
+
+  function removeControlListPropEntries(body, prop) {
+    try {
+      let next = String(body || '');
+      const escapedProp = String(prop || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (!escapedProp) return next;
+      const quoted = '"(?:\\\\.|[^"])*"';
+      const bare = '[^,}\\r\\n]+';
+      const value = `(?:${quoted}|${bare})`;
+      const braced = new RegExp(`\\{\\s*${escapedProp}\\s*=\\s*${value}\\s*\\}\\s*,?\\s*`, 'ig');
+      next = next.replace(braced, '');
+      next = removeControlPropAll(next, prop);
+      return next;
+    } catch (_) {
+      return body;
+    }
+  }
+
   function findControlPropRange(body, prop) {
     try {
       if (!body) return null;
@@ -14026,6 +14620,34 @@ function applyBlendCheckboxesToTool(text, bounds, toolName, controls, eol, resul
         entry.controlMetaOriginal = entry.controlMetaOriginal || {};
         entry.controlMeta.defaultValue = meta.defaultValue;
         if (!entry.controlMetaOriginal.defaultValue) entry.controlMetaOriginal.defaultValue = meta.defaultValue;
+      }
+      if (Array.isArray(meta.choiceOptions) && meta.choiceOptions.length) {
+        entry.controlMeta = entry.controlMeta || {};
+        entry.controlMetaOriginal = entry.controlMetaOriginal || {};
+        const normalizedChoices = meta.choiceOptions
+          .map((opt) => String(opt || '').trim())
+          .filter((opt) => opt.length > 0);
+        if (normalizedChoices.length) {
+          entry.controlMeta.choiceOptions = [...normalizedChoices];
+          if (!Array.isArray(entry.controlMetaOriginal.choiceOptions) || !entry.controlMetaOriginal.choiceOptions.length) {
+            entry.controlMetaOriginal.choiceOptions = [...normalizedChoices];
+          }
+        }
+      }
+      if (meta.defaultX != null) {
+        entry.controlMeta = entry.controlMeta || {};
+        entry.controlMetaOriginal = entry.controlMetaOriginal || {};
+        entry.controlMeta.defaultX = meta.defaultX;
+        if (!entry.controlMetaOriginal.defaultX) entry.controlMetaOriginal.defaultX = meta.defaultX;
+      }
+      if (meta.defaultY != null) {
+        entry.controlMeta = entry.controlMeta || {};
+        entry.controlMetaOriginal = entry.controlMetaOriginal || {};
+        entry.controlMeta.defaultY = meta.defaultY;
+        if (!entry.controlMetaOriginal.defaultY) entry.controlMetaOriginal.defaultY = meta.defaultY;
+      }
+      if (Number.isFinite(meta.controlGroup) && meta.controlGroup > 0) {
+        entry.controlGroup = Number(meta.controlGroup);
       }
       if (meta.locked === true) {
         entry.locked = true;
