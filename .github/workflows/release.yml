@@ -48,6 +48,35 @@ jobs:
           fi
           echo "APPLE_TEAM_ID=$TEAM_ID" >> "$GITHUB_ENV"
 
+      - name: Validate Apple notarization credentials (macOS)
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          if [ -z "${{ secrets.APPLE_ID }}" ]; then
+            echo "::error::Missing APPLE_ID secret."
+            exit 1
+          fi
+          if [ -z "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" ]; then
+            echo "::error::Missing APPLE_APP_SPECIFIC_PASSWORD secret."
+            exit 1
+          fi
+
+          set +e
+          xcrun notarytool history \
+            --apple-id "${{ secrets.APPLE_ID }}" \
+            --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
+            --team-id "${APPLE_TEAM_ID}" \
+            --output-format json \
+            > /tmp/notarytool-history.json 2> /tmp/notarytool-history.err
+          status=$?
+          set -e
+
+          if [ $status -ne 0 ]; then
+            echo "::error::Apple notarytool preflight failed. See stderr below for the exact Apple error."
+            cat /tmp/notarytool-history.err
+            exit $status
+          fi
+
       - name: Build and publish (macOS)
         if: matrix.os == 'macos-latest'
         env:
@@ -56,4 +85,5 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ env.APPLE_TEAM_ID }}
         run: node ./node_modules/electron-builder/cli.js --mac --publish always
