@@ -18,6 +18,7 @@ export function createDocTabsController(options = {}) {
     onCreateBlankDocument,
     onUpdateExportPathDisplay,
     onSelectCsvBatch,
+    getDocDisplayName,
   } = options;
 
   const render = () => {
@@ -94,7 +95,7 @@ export function createDocTabsController(options = {}) {
       const labelBtn = document.createElement('button');
       labelBtn.type = 'button';
       labelBtn.className = 'doc-tab-label';
-      const label = doc.name || doc.fileName || 'Untitled';
+      const label = getDocDisplayName?.(doc, documents) || doc.name || doc.fileName || 'Untitled';
       const lastExport = doc.snapshot && doc.snapshot.lastExportPath ? doc.snapshot.lastExportPath : '';
       const exportPath = doc.snapshot && doc.snapshot.exportFolder ? doc.snapshot.exportFolder : '';
       const exportLabel = lastExport || exportPath || '';
@@ -117,7 +118,7 @@ export function createDocTabsController(options = {}) {
           onOpenContextMenu?.(doc.id, ev.clientX, ev.clientY);
         });
       } else {
-        labelBtn.title = `${doc.fileName || doc.name || 'Untitled'} • Export: ${exportLabel || 'Default (Fusion Templates)'}`;
+        labelBtn.title = `${label} • Export: ${exportLabel || 'Default (Fusion Templates)'}`;
         labelBtn.addEventListener('click', (ev) => {
           if (ev.ctrlKey || ev.metaKey) {
             ev.preventDefault();
@@ -193,3 +194,4 @@ export function createDocTabsController(options = {}) {
     updateOverflow,
   };
 }
+

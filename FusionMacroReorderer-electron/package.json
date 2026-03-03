@@ -1,6 +1,6 @@
 {
   "name": "fusion-macro-reorderer-electron",
-  "version": "0.2.48",
+  "version": "0.2.49",
   "description": "Desktop wrapper for Macro Machine",
   "main": "main.js",
   "dependencies": {
@@ -10,7 +10,8 @@
   },
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder"
+    "dist": "electron-builder",
+    "check:group-uc": "node ../FusionMacroReorderer/scripts/check-group-usercontrols-regression.js"
   },
   "devDependencies": {
     "electron": "^31.0.0",

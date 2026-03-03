@@ -39,6 +39,7 @@ export function createNodesPane(options = {}) {
     requestAddControl = null,
     getPendingControlMeta = () => null,
     consumePendingControlMeta = () => {},
+    isPickSessionActive = () => false,
   } = options;
   const UTILITY_NODE_NAME = 'UTILITY';
   const QUICK_SET_STORAGE_KEY = 'fmr.nodeQuickSets.v1';
@@ -149,6 +150,19 @@ export function createNodesPane(options = {}) {
         showNextNodeLinks: !!showNextNodeLinks,
       }));
     } catch (_) {}
+  }
+
+  function yieldToPickSession(ev) {
+    try {
+      if (!isPickSessionActive()) return false;
+      if (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   function syncViewControlInputs() {
@@ -637,15 +651,22 @@ export function createNodesPane(options = {}) {
     if (control.kind) { meta.kind = String(control.kind).toLowerCase(); touched = true; }
     if (Number.isFinite(control.labelCount)) { meta.labelCount = Number(control.labelCount); touched = true; }
     if (control.inputControl) { meta.inputControl = control.inputControl; touched = true; }
+    if (control.page) { meta.page = String(control.page); touched = true; }
     if (control.defaultValue != null) { meta.defaultValue = control.defaultValue; touched = true; }
+    if (Array.isArray(control.choiceOptions) && control.choiceOptions.length) { meta.choiceOptions = [...control.choiceOptions]; touched = true; }
     if (control.defaultX != null) { meta.defaultX = control.defaultX; touched = true; }
     if (control.defaultY != null) { meta.defaultY = control.defaultY; touched = true; }
     if (Number.isFinite(control.controlGroup) && control.controlGroup > 0) { meta.controlGroup = Number(control.controlGroup); touched = true; }
+    if (control.isMacroUserControl) { meta.publishTarget = 'groupUserControl'; touched = true; }
     return touched ? meta : null;
   }
 
   function isGroupedControl(control) {
     return !!(control && (control.type === 'color-group' || control.type === 'linked-group'));
+  }
+
+  function isSectionHeaderControl(control) {
+    return !!(control && (control.type === 'slot-header' || control.type === 'common-header'));
   }
 
   function getNodeSelection() {
@@ -655,6 +676,16 @@ export function createNodesPane(options = {}) {
       return state.parseResult.nodeSelection;
     } catch (_) {
       return new Set();
+    }
+  }
+
+  function getNodeSlotCollapseState() {
+    try {
+      if (!state.parseResult) return new Map();
+      if (!(state.parseResult.nodeSlotCollapsed instanceof Map)) state.parseResult.nodeSlotCollapsed = new Map();
+      return state.parseResult.nodeSlotCollapsed;
+    } catch (_) {
+      return new Map();
     }
   }
 
@@ -1061,7 +1092,16 @@ export function createNodesPane(options = {}) {
       if (!nodesList) return;
       nodesList.innerHTML = '';
       if (!state.parseResult || !state.originalText) return;
-      let grp = findEnclosingGroupForIndex(state.originalText, state.parseResult.inputs.openIndex);
+      let grp = findMacroGroupForNodes(
+        state.originalText,
+        state.parseResult?.macroName,
+        state.parseResult?.macroNameOriginal,
+        state.parseResult?.operatorType,
+        state.parseResult?.operatorTypeOriginal,
+      );
+      if (!grp && state.parseResult?.inputs?.openIndex != null) {
+        grp = findEnclosingGroupForIndex(state.originalText, state.parseResult.inputs.openIndex);
+      }
       if (!grp) {
         try { logDiag('Nodes: no group bounds found; falling back to whole file.'); } catch (_) {}
         grp = { name: state.parseResult.macroName || 'Unknown', groupOpenIndex: 0, groupCloseIndex: state.originalText.length };
@@ -1124,17 +1164,16 @@ export function createNodesPane(options = {}) {
           .map((n) => String(n.name))
       ));
 
-      const macroControls = parseGroupLevelUserControls(
-        state.originalText,
-        grp.groupOpenIndex,
-        grp.groupCloseIndex,
+      const macroControls = buildMacroRootControls(
+        state.parseResult,
+        state.parseResult?.macroName || grp.name || 'Macro',
       );
       if (macroControls.length) {
         const macroName = state.parseResult?.macroName || grp.name || 'Macro';
         const macroNode = {
           name: macroName,
           type: state.parseResult?.operatorType || 'GroupOperator',
-          controls: groupColorControls(macroName, macroControls),
+          controls: macroControls,
           isModifier: false,
           external: false,
           isMacroRoot: true,
@@ -1338,6 +1377,63 @@ export function createNodesPane(options = {}) {
     return idStr;
   }
 
+  function escapeRegex(text) {
+    return String(text || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  function findMacroGroupByName(text, name, operatorType) {
+    try {
+      const safeName = String(name || '').trim();
+      const safeType = String(operatorType || '').trim();
+      if (!safeName || !safeType) return null;
+      const re = new RegExp(`(^|\\n|\\r)\\s*${escapeRegex(safeName)}\\s*=\\s*${escapeRegex(safeType)}\\s*\\{`);
+      const match = re.exec(text);
+      if (!match) return null;
+      const openIndex = match.index + match[0].lastIndexOf('{');
+      const closeIndex = findMatchingBrace(text, openIndex);
+      if (closeIndex < 0) return null;
+      return {
+        name: safeName,
+        groupOpenIndex: openIndex,
+        groupCloseIndex: closeIndex,
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function findMacroGroupForNodes(text, macroName, macroNameOriginal, operatorType, operatorTypeOriginal) {
+    try {
+      const names = [];
+      const addName = (value) => {
+        const next = String(value || '').trim();
+        if (!next || names.includes(next)) return;
+        names.push(next);
+      };
+      addName(macroName);
+      addName(macroNameOriginal);
+      const operatorTypes = [];
+      const addType = (value) => {
+        const next = String(value || '').trim();
+        if (!next || operatorTypes.includes(next)) return;
+        operatorTypes.push(next);
+      };
+      addType(operatorType);
+      addType(operatorTypeOriginal);
+      addType('GroupOperator');
+      addType('MacroOperator');
+      for (const name of names) {
+        for (const type of operatorTypes) {
+          const bounds = findMacroGroupByName(text, name, type);
+          if (bounds) return bounds;
+        }
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   function resolvePublishSourceOp(node, control) {
     try {
       const nodeOp = String(node?.name || '').trim();
@@ -1390,13 +1486,13 @@ export function createNodesPane(options = {}) {
       if (has(/\b3d\b|camera3d|renderer3d|light3d|merge3d|transform3d|material|imageplane3d|shape3d/)) {
         return { key: 'three-d', label: '3D' };
       }
-      if (has(/mask|rectangle|ellipse|polygon|bspline|polypath|polyline|path/)) {
+      if (has(/multipoly|polymask|maskpaint|bitmapmask|paintmask|mask|rectangle|ellipse|polygon|bspline|polypath|polyline|path/)) {
         return { key: 'shape', label: 'Shape' };
       }
-      if (has(/background|textplus|text3d|text|generator|solid|checker|gradient|fastnoise|noise/)) {
+      if (has(/multitext|loader|mediain|background|textplus|text3d|text|generator|solid|checker|gradient|fastnoise|noise/)) {
         return { key: 'generator', label: 'Generator' };
       }
-      if (has(/transform|merge|blur|glow|color|correct|dissolve|resize|crop|key|tracker|optical|lens|vignette|channel|levels|brightness|contrast|sharpen/)) {
+      if (has(/multimerge|transform|merge|blur|glow|color|correct|dissolve|resize|crop|key|tracker|optical|lens|vignette|channel|levels|brightness|contrast|sharpen/)) {
         return { key: 'effect', label: 'Effect' };
       }
       return null;
@@ -1493,6 +1589,9 @@ export function createNodesPane(options = {}) {
       })();
       const nodeControlsRaw = ensureDissolveMixControl(n, n.controls || []);
       const nodeControls = dedupeControlsByResolvedSource(nodeControlsRaw);
+      const slotCollapseState = getNodeSlotCollapseState();
+      let activeSectionHidden = false;
+      let activeSectionKey = '';
       const hasAnyPublished = (nodeControls || []).some(c => {
         if (isGroupedControl(c)) {
           return (c.channels || []).some((ch) => {
@@ -1684,6 +1783,30 @@ export function createNodesPane(options = {}) {
         for (const c of (nodeControls || [])) {
           if (c.id === 'SourceOp') continue;
           if (c.id === 'Source' && !allowSourceControl) continue;
+          if (isSectionHeaderControl(c)) {
+            activeSectionKey = `${n.name}::${String(c.groupKey || c.id || '').trim()}`;
+            activeSectionHidden = !!slotCollapseState.get(activeSectionKey);
+            const sectionKey = activeSectionKey;
+            const row = document.createElement('div');
+            row.className = 'node-row node-slot-header';
+            row.dataset.slotKey = sectionKey;
+            const toggle = document.createElement('span');
+            toggle.className = 'node-slot-toggle';
+            toggle.textContent = activeSectionHidden ? '▸' : '▾';
+            const label = document.createElement('span');
+            label.className = 'ctrl-name';
+            label.textContent = c.groupLabel || c.name || humanizeName(c.id || 'Slot');
+            row.appendChild(toggle);
+            row.appendChild(label);
+            row.addEventListener('click', () => {
+              const next = !slotCollapseState.get(sectionKey);
+              slotCollapseState.set(sectionKey, next);
+              parseAndRenderNodes();
+            });
+            list.appendChild(row);
+            continue;
+          }
+          if (activeSectionHidden) continue;
           if (isGroupedControl(c)) {
           if (hideReplaced) {
             const anyControlled = (c.channels || []).some(ch => isControlled(ch.id));
@@ -1819,6 +1942,7 @@ export function createNodesPane(options = {}) {
           };
           const label = document.createElement('span'); label.className = 'ctrl-name'; label.textContent = c.groupLabel || (groupId + ' (group)');
           row.addEventListener('click', (ev) => {
+            if (yieldToPickSession(ev)) return;
             const t = ev.target;
             if (t && t.tagName === 'INPUT') return;
             if (ev.shiftKey) {
@@ -1840,6 +1964,7 @@ export function createNodesPane(options = {}) {
             toggleGroupPublish();
           });
           label.addEventListener('click', (ev) => {
+            if (yieldToPickSession(ev)) return;
             ev.preventDefault(); ev.stopPropagation();
             if (ev.shiftKey) {
               const anchor = lastSelectIndex;
@@ -1957,6 +2082,7 @@ export function createNodesPane(options = {}) {
         const label = document.createElement('span'); label.className = 'ctrl-name'; label.textContent = c.name || c.id;
         if (isControlled(c.id)) label.classList.add('replaced');
         row.addEventListener('click', (ev) => {
+          if (yieldToPickSession(ev)) return;
           const t = ev.target; if (t && t.tagName === 'INPUT') return;
           if (ev.shiftKey) {
             applyRangeSelection(row, true);
@@ -1973,11 +2099,32 @@ export function createNodesPane(options = {}) {
           lastSelectIndex = parseInt(row.dataset.selectIndex || '-1', 10);
         });
         label.addEventListener('click', (ev) => {
+          if (yieldToPickSession(ev)) return;
           ev.preventDefault(); ev.stopPropagation();
           if (ev.shiftKey) {
             const anchor = lastSelectIndex;
             applyRangeSelection(row, true);
-            publishRangeFromRow(row, anchor, 'publish');
+            if (!n.isMacroRoot || !c.isMacroUserControl) {
+              publishRangeFromRow(row, anchor, 'publish');
+            }
+            return;
+          }
+          if (n.isMacroRoot && c.isMacroUserControl) {
+            setSingleSelection(row);
+            cb.checked = true;
+            const already = isPublished(srcOpTarget, srcKey);
+            if (!already) {
+              const r = ensurePublished(srcOpTarget, srcKey, c.name, controlMeta);
+              if (r) {
+                const pos = getInsertionPosUnderSelection();
+                try { logDiag(`Insert single idx=${r.index} at pos ${pos}`); } catch (_) {}
+                state.parseResult.order = insertIndicesAt(state.parseResult.order, [r.index], pos);
+              }
+            } else {
+              removePublished(srcOpTarget, srcKey);
+            }
+            renderPublishedList(state.parseResult.entries, state.parseResult.order);
+            refreshNodesChecks();
             return;
           }
           setSingleSelection(row);
@@ -2577,6 +2724,7 @@ export function createNodesPane(options = {}) {
     const fromUC = parseUserControls(tool.body);
     const fromInputs = parseToolInputs(tool.body);
     const profileControls = getProfileControls(profileRoot || nodeProfiles, tool.type);
+    const debugDynamic = isDynamicSlotToolType(tool?.type);
     const isUtility = String(tool.name || '').toUpperCase() === UTILITY_NODE_NAME;
     if (isUtility) {
       return groupColorControls(tool.name, fromUC);
@@ -2584,6 +2732,7 @@ export function createNodesPane(options = {}) {
     const map = new Map();
     for (const c of (profileControls || [])) {
       if (!c || !c.id) continue;
+      const slotMeta = deriveDynamicSlotMeta(c.id);
       map.set(c.id, {
         id: c.id,
         name: c.name || humanizeName(c.id),
@@ -2593,12 +2742,29 @@ export function createNodesPane(options = {}) {
         defaultX: c.defaultX != null ? c.defaultX : null,
         defaultY: c.defaultY != null ? c.defaultY : null,
         controlGroup: Number.isFinite(c.controlGroup) ? Number(c.controlGroup) : null,
-        groupKey: c.groupKey || null,
+        groupKey: c.groupKey || slotMeta?.groupKey || null,
+        groupLabel: c.groupLabel || slotMeta?.groupLabel || null,
+        slotType: c.slotType || slotMeta?.slotType || null,
+        slotIndex: Number.isFinite(c.slotIndex) ? c.slotIndex : (Number.isFinite(slotMeta?.slotIndex) ? slotMeta.slotIndex : null),
       });
     }
     for (const c of fromInputs) {
       const existing = map.get(c.id) || { id: c.id };
-      map.set(c.id, { ...existing, id: c.id, name: c.name, kind: c.kind || existing.kind || 'Input' });
+      map.set(c.id, {
+        ...existing,
+        id: c.id,
+        name: c.name,
+        kind: c.kind || existing.kind || 'Input',
+        groupKey: c.groupKey || existing.groupKey || null,
+        groupLabel: c.groupLabel || existing.groupLabel || null,
+        slotType: c.slotType || existing.slotType || null,
+        slotIndex: Number.isFinite(c.slotIndex) ? c.slotIndex : (Number.isFinite(existing.slotIndex) ? existing.slotIndex : null),
+      });
+    }
+    if (debugDynamic) {
+      try {
+        logDiag(`[Dynamic node] ${tool.name} (${tool.type}) fromInputs=${fromInputs.map((c) => c.id).join(', ')}`);
+      } catch (_) {}
     }
     for (const c of fromUC) {
       const existing = map.get(c.id) || { id: c.id };
@@ -2660,7 +2826,14 @@ export function createNodesPane(options = {}) {
       finalControls = applySwitchSourceOverrides(tool, finalControls);
       finalControls = groupColorControls(tool.name, finalControls, overrides);
       finalControls = applyProfileGroups(finalControls, profileControls);
+      finalControls = expandDynamicSlotDefaults(tool, finalControls);
+      finalControls = applyDynamicSlotGroups(tool, finalControls);
       finalControls = applyModifierContextOverrides(tool, finalControls, contextBindings);
+      if (debugDynamic) {
+        try {
+          logDiag(`[Dynamic node] ${tool.name} (${tool.type}) final=${finalControls.map((c) => c && (c.id || c.base || c.groupLabel || c.name)).join(', ')}`);
+        } catch (_) {}
+      }
       return applyInstanceStates(tool, finalControls);
     }
     const overrides = getPrimaryColorOverrides(tool, merged);
@@ -2669,8 +2842,81 @@ export function createNodesPane(options = {}) {
     finalControls = applySwitchSourceOverrides(tool, finalControls);
     finalControls = groupColorControls(tool.name, finalControls, overrides);
     finalControls = applyProfileGroups(finalControls, profileControls);
+    finalControls = expandDynamicSlotDefaults(tool, finalControls);
+    finalControls = applyDynamicSlotGroups(tool, finalControls);
     finalControls = applyModifierContextOverrides(tool, finalControls, contextBindings);
+    if (debugDynamic) {
+      try {
+        logDiag(`[Dynamic node] ${tool.name} (${tool.type}) final=${finalControls.map((c) => c && (c.id || c.base || c.groupLabel || c.name)).join(', ')}`);
+      } catch (_) {}
+    }
     return applyInstanceStates(tool, finalControls);
+  }
+
+  function applyDynamicSlotGroups(tool, controls) {
+    try {
+      if (!tool || !Array.isArray(controls) || !controls.length) return controls;
+      const type = String(tool.type || '').toLowerCase();
+      if (!isDynamicSlotToolType(type)) return controls;
+      const slotMap = new Map();
+      const staticControls = [];
+      for (const c of controls) {
+        if (!c || c.type || !c.id) {
+          staticControls.push(c);
+          continue;
+        }
+        const groupKey = String(c.groupKey || '').trim();
+        const slotType = String(c.slotType || '').trim();
+        const slotIndex = Number(c.slotIndex);
+        if (!groupKey || !slotType || !Number.isFinite(slotIndex)) {
+          staticControls.push(c);
+          continue;
+        }
+        if (!slotMap.has(groupKey)) {
+          slotMap.set(groupKey, {
+            key: groupKey,
+            slotType,
+            slotIndex,
+            label: String(c.groupLabel || humanizeName(groupKey) || groupKey),
+            controls: [],
+          });
+        }
+        slotMap.get(groupKey).controls.push(c);
+      }
+      if (!slotMap.size) return controls;
+      const commonSection = staticControls.length
+        ? [{
+            id: 'common-header',
+            type: 'common-header',
+            groupLabel: 'Common',
+            groupKey: 'common',
+          }, ...staticControls]
+        : [];
+      const slotSections = Array.from(slotMap.values())
+        .sort((a, b) => {
+          if (a.slotType !== b.slotType) return a.slotType.localeCompare(b.slotType);
+          return a.slotIndex - b.slotIndex;
+        })
+        .flatMap((group) => ([
+          {
+            id: `slot-header:${group.key}`,
+            type: 'slot-header',
+            groupLabel: group.label,
+            groupKey: group.key,
+            slotType: group.slotType,
+            slotIndex: group.slotIndex,
+          },
+          ...group.controls.sort((a, b) => {
+            const aOrder = Number.isFinite(a?.dynamicSlotOrder) ? Number(a.dynamicSlotOrder) : Number.MAX_SAFE_INTEGER;
+            const bOrder = Number.isFinite(b?.dynamicSlotOrder) ? Number(b.dynamicSlotOrder) : Number.MAX_SAFE_INTEGER;
+            if (aOrder !== bOrder) return aOrder - bOrder;
+            return String(a?.name || a?.id || '').localeCompare(String(b?.name || b?.id || ''));
+          }),
+        ]));
+      return [...commonSection, ...slotSections];
+    } catch (_) {
+      return controls;
+    }
   }
 
   function applyModifierContextOverrides(tool, controls, bindings) {
@@ -2887,6 +3133,35 @@ export function createNodesPane(options = {}) {
     }
   }
 
+  function parseColorChannelMeta(id) {
+    const raw = String(id || '').trim();
+    if (!raw) return null;
+    const suffix = raw.match(/^(.*?)(Red|Green|Blue|Alpha)$/i);
+    if (suffix && suffix[1]) {
+      return {
+        base: suffix[1],
+        channel: suffix[2].charAt(0).toUpperCase() + suffix[2].slice(1).toLowerCase(),
+      };
+    }
+    const prefix = raw.match(/^(Red|Green|Blue|Alpha)(.*)$/i);
+    if (prefix) {
+      const tail = String(prefix[2] || '');
+      if (!tail) {
+        return {
+          base: 'Color',
+          channel: prefix[1].charAt(0).toUpperCase() + prefix[1].slice(1).toLowerCase(),
+        };
+      }
+      if (/^\d+(clone)?$/i.test(tail)) {
+        return {
+          base: `Color${tail}`,
+          channel: prefix[1].charAt(0).toUpperCase() + prefix[1].slice(1).toLowerCase(),
+        };
+      }
+    }
+    return null;
+  }
+
   function getPrimaryColorOverrides(tool, controls) {
     try {
       const type = String(tool?.type || '').toLowerCase();
@@ -2896,19 +3171,37 @@ export function createNodesPane(options = {}) {
       if (!isTextPlus && !isGenerator && !isBackground) return null;
       const channelNameOverrides = new Map();
       const groupLabelOverrides = new Map();
-      let hasTopLeft = false;
+      let primaryBase = '';
+      let primaryId = '';
+      let primaryScore = -1;
       for (const c of controls || []) {
         if (!c || !c.id) continue;
-        if (c.id === 'TopLeftRed') {
-          channelNameOverrides.set(c.id, 'Color');
-          hasTopLeft = true;
+        const id = String(c.id);
+        const channelMeta = parseColorChannelMeta(id);
+        if (!channelMeta || channelMeta.channel !== 'Red') continue;
+        const norm = id.replace(/[^a-z0-9]/gi, '').toLowerCase();
+        let score = 0;
+        if (norm === 'red1clone') score = 40;
+        else if (norm === 'red1') score = 35;
+        else if (norm === 'topleftclonered') score = 30;
+        else if (norm === 'topleftred') score = 25;
+        else if (/clone/i.test(channelMeta.base)) score = 10;
+        if (score > primaryScore) {
+          primaryScore = score;
+          primaryBase = channelMeta.base;
+          primaryId = id;
         }
       }
-      if (hasTopLeft) {
-        groupLabelOverrides.set('TopLeft', 'Color');
+      if (primaryBase && primaryId) {
+        channelNameOverrides.set(primaryId, 'Color');
+        groupLabelOverrides.set(primaryBase, 'Color');
       }
       if (!channelNameOverrides.size && !groupLabelOverrides.size) return null;
-      return { channelNameOverrides, groupLabelOverrides, primaryGroupBase: hasTopLeft ? 'TopLeft' : null };
+      return {
+        channelNameOverrides,
+        groupLabelOverrides,
+        primaryGroupBase: primaryBase || null,
+      };
     } catch (_) {
       return null;
     }
@@ -3158,6 +3451,66 @@ export function createNodesPane(options = {}) {
     }
   }
 
+  function parseTruthyVisible(value) {
+    if (value == null || value === '') return true;
+    const lowered = String(value).trim().toLowerCase();
+    if (!lowered) return true;
+    return lowered !== 'false' && lowered !== '0' && lowered !== 'nil';
+  }
+
+  function parseLaunchUrlFromGroupControl(control) {
+    try {
+      if (!control) return null;
+      const rawBody = String(control.rawBody || '');
+      let match = rawBody.match(/bmd\.(?:openurl|openUrl)\s*\(\s*['"](https?:\/\/[^'"\)]+)['"]\s*\)/i);
+      if (!match) {
+        const script = String(control.buttonExecute || '').trim();
+        if (script) {
+          const urlMatch = script.match(/https?:\/\/[^'"\s]+/i);
+          if (urlMatch) match = [null, urlMatch[0]];
+        }
+      }
+      return match && match[1] ? match[1] : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function buildMacroRootControls(result, macroName) {
+    try {
+      const controls = Array.isArray(result?.groupUserControls) ? result.groupUserControls : [];
+      const mapped = controls
+        .filter((control) => control && control.id)
+        .filter((control) => control.kind !== 'system')
+        .filter((control) => !!String(control.inputControl || '').trim())
+        .filter((control) => parseTruthyVisible(control.visible))
+        .map((control) => {
+          const inputControl = String(control.inputControl || '').trim();
+          const lowerInput = inputControl.toLowerCase();
+          const isBtn = lowerInput === 'buttoncontrol';
+          const isLabel = lowerInput === 'labelcontrol';
+          const name = extractQuotedProp(control.rawBody || '', 'LINKS_Name') || humanizeName(control.id);
+          const labelCountMatch = String(control.rawBody || '').match(/LBLC_NumInputs\s*=\s*([0-9]+)/i);
+          return {
+            id: String(control.id),
+            name,
+            kind: isBtn ? 'Button' : isLabel ? 'Label' : 'UserControl',
+            inputControl,
+            page: control.page || 'Controls',
+            labelCount: labelCountMatch ? parseInt(labelCountMatch[1], 10) : null,
+            defaultValue: control.defaultValue != null ? control.defaultValue : null,
+            choiceOptions: Array.isArray(control.choiceOptions) ? [...control.choiceOptions] : [],
+            launchUrl: parseLaunchUrlFromGroupControl(control),
+            isMacroUserControl: true,
+            sourceOp: macroName,
+          };
+        });
+      return groupColorControls(macroName, mapped);
+    } catch (_) {
+      return [];
+    }
+  }
+
   function parseToolInputEntries(body) {
     const match = /Inputs\s*=\s*(?:ordered\(\))?\s*\{/m.exec(body);
     if (!match) return [];
@@ -3174,10 +3527,19 @@ export function createNodesPane(options = {}) {
       if (ch === '\"') { inStr = true; i++; continue; }
       if (ch === '{') { depth++; i++; continue; }
       if (ch === '}') { depth--; i++; continue; }
-      if (depth === 0 && isIdentStart(ch)) {
-        const idStart = i; i++;
-        while (i < inner.length && isIdentPart(inner[i])) i++;
-        const rawId = inner.slice(idStart, i);
+      if (depth === 0 && (isIdentStart(ch) || ch === '[')) {
+        const idStart = i;
+        let rawId = '';
+        if (ch === '[') {
+          let j = i + 1;
+          while (j < inner.length && inner[j] !== ']') j++;
+          rawId = inner.slice(i, Math.min(j + 1, inner.length));
+          i = Math.min(j + 1, inner.length);
+        } else {
+          i++;
+          while (i < inner.length && isIdentPart(inner[i])) i++;
+          rawId = inner.slice(idStart, i);
+        }
         const id = normalizeId(rawId);
         while (i < inner.length && isSpace(inner[i])) i++;
         if (inner[i] !== '=') { i++; continue; }
@@ -3192,7 +3554,19 @@ export function createNodesPane(options = {}) {
         const cClose = findMatchingBrace(inner, cOpen);
         if (cClose < 0) break;
         const cBody = inner.slice(cOpen + 1, cClose);
-        if (!isConnectorInputName(id)) out.push({ id, name: humanizeName(id), kind: 'Input', inputBody: cBody });
+        if (!isConnectorInputName(id)) {
+          const slotMeta = deriveDynamicSlotMeta(id);
+          out.push({
+            id,
+            name: slotMeta?.displayName || humanizeName(id),
+            kind: 'Input',
+            inputBody: cBody,
+            groupKey: slotMeta?.groupKey || null,
+            groupLabel: slotMeta?.groupLabel || null,
+            slotType: slotMeta?.slotType || null,
+            slotIndex: Number.isFinite(slotMeta?.slotIndex) ? slotMeta.slotIndex : null,
+          });
+        }
         i = cClose + 1; continue;
       }
       i++;
@@ -3200,9 +3574,396 @@ export function createNodesPane(options = {}) {
     return out;
   }
 
+  const DYNAMIC_SLOT_TOOL_TYPES = new Set(['multimerge', 'multitext', 'multipoly']);
+
+  const DYNAMIC_SLOT_SEED_KEYS = {
+    multimerge: {
+      layer: [
+        'Foreground_LayerSelect',
+        'Foreground',
+        'Center',
+        'Size',
+        'Angle',
+        'ApplyBlank1',
+        'ApplyMode',
+        'Operator',
+        'SubtractiveAdditive',
+        'Gain',
+        'BurnIn',
+        'Blend',
+        'ClampCoverage',
+        'ApplyBlank2',
+        'Edges',
+        'FilterMethod',
+        'WindowMethod',
+        'InvertTransform',
+        'LayerName',
+      ],
+    },
+    multitext: {
+      text: [
+        'StyledText',
+        'ClearSelectedStyling',
+        'ClearAllStyling',
+        'Style',
+        'Size',
+        'CharacterSpacing',
+        'JustifyAll',
+        'IndentStep',
+        'IndentUnit',
+        'LineSpacing',
+        'Scroll',
+        'ScrollPosition',
+        'Tab1Position',
+        'Tab1Alignment',
+        'Tab2Position',
+        'Tab2Alignment',
+        'Tab3Position',
+        'Tab3Alignment',
+        'Tab4Position',
+        'Tab4Alignment',
+        'Tab5Position',
+        'Tab5Alignment',
+        'Tab6Position',
+        'Tab6Alignment',
+        'Tab7Position',
+        'Tab7Alignment',
+        'Tab8Position',
+        'Tab8Alignment',
+        'Direction',
+        'LineDirection',
+        'ReadingDirection',
+        'Orientation',
+        'UnderlinePosition',
+        'ForceMonospaced',
+        'UseFontKerning',
+        'UseLigatures',
+        'SplitLigatures',
+        'StylisticSet',
+        'KerningSeparator',
+        'ManualFontKerning',
+        'ClearSelectedKerning',
+        'ClearAllKerning',
+        'ManualFontPlacement',
+        'ClearSelectedPlacement',
+        'ClearAllPlacement',
+        'ApplyMode',
+        'MergeOperator',
+        'SubtractiveAdditive',
+        'Gain',
+        'BurnIn',
+        'LayoutType',
+        'Wrap',
+        'Clip',
+        'Center',
+        'CenterZ',
+        'LayoutSize',
+        'LayoutWidth',
+        'LayoutHeight',
+        'Perspective',
+        'FitCharacters',
+        'AlignType',
+        'RotationOrder',
+        'AngleX',
+        'AngleY',
+        'AngleZ',
+        'VerticalTopCenterBottom',
+        'VerticallyJustified',
+        'HorizontalLeftCenterRight',
+        'HorizontallyJustified',
+        'Enable1',
+        'Opacity1',
+        'SoftnessX1',
+        'SoftnessY1',
+        'SoftnessGlow1',
+        'SoftnessBlend1',
+        'SeparatorOutline',
+        'Enable2',
+        'Opacity2',
+        'Thickness',
+        'AdaptThicknessToPerspective',
+        'OutsideOnly',
+        'CleanIntersections',
+        'JoinStyle',
+        'MiterLimit',
+        'LineStyle',
+        'SoftnessX2',
+        'SoftnessY2',
+        'SoftnessGlow2',
+        'SoftnessBlend2',
+        'SeparatorShadow',
+        'Enable3',
+        'Opacity3',
+        'ShadowPosition',
+        'SoftnessX3',
+        'SoftnessY3',
+        'SoftnessGlow3',
+        'SoftnessBlend3',
+        'CharacterLevelStylingBase',
+        'CharacterLevelStyling',
+        'Text1Fill',
+        'Text2Fill',
+        'Text3Fill',
+        'Justification',
+        'IndentDecrease',
+        'Softness1',
+        'Softness2',
+        'Softness3',
+        'Text1',
+        'Text1AdvancedControls',
+        'Text1AlignLayers',
+        'Text1Font',
+        'Text1Layout',
+        'Text1LayoutHeader',
+        'Text1LayoutRotation',
+        'Text1Merge',
+        'Text1Outline',
+        'Text1Paragraph',
+        'Text1Scroll',
+        'Text1Shading',
+        'Text1Shadow',
+      ],
+    },
+    multipoly: {
+      poly: [
+        'Name',
+        'Filter',
+        'BorderWidth',
+        'Size',
+        'Center',
+        'Polyline',
+        'Polyline2',
+      ],
+    },
+  };
+
+  function isDynamicSlotToolType(type) {
+    return DYNAMIC_SLOT_TOOL_TYPES.has(String(type || '').trim().toLowerCase());
+  }
+
+  function createDynamicSlotMeta(slotType, slotIndex, groupKey, groupLabel, displayName) {
+    return {
+      slotType,
+      slotIndex: parseInt(slotIndex, 10),
+      groupKey,
+      groupLabel,
+      displayName,
+    };
+  }
+
+  function deriveDynamicSlotMeta(id) {
+    try {
+      const raw = String(id || '').trim();
+      if (!raw) return null;
+      let match = raw.match(/^(Layer)(\d+)\.(.+)$/i);
+      if (match) {
+        return createDynamicSlotMeta('layer', match[2], `Layer${match[2]}`, `Layer ${match[2]}`, humanizeName(match[3]));
+      }
+      match = raw.match(/^(LayerName)(\d+)$/i);
+      if (match) {
+        return createDynamicSlotMeta('layer', match[2], `Layer${match[2]}`, `Layer ${match[2]}`, 'Layer Name');
+      }
+      match = raw.match(/^(Text)(\d+)\.(.+)$/i);
+      if (match) {
+        let suffix = String(match[3] || '');
+        const repeatedPrefix = new RegExp(`^Text${match[2]}`, 'i');
+        suffix = suffix.replace(repeatedPrefix, '') || String(match[3] || '');
+        return createDynamicSlotMeta('text', match[2], `Text${match[2]}`, `Text ${match[2]}`, humanizeName(suffix));
+      }
+      match = raw.match(/^(PolyMask)(\d+)\.(.+)$/i);
+      if (match) {
+        return createDynamicSlotMeta('poly', match[2], `PolyMask${match[2]}`, `Poly ${match[2]}`, humanizeName(match[3]));
+      }
+      match = raw.match(/^(PolyMaskName)(\d+)$/i);
+      if (match) {
+        return createDynamicSlotMeta('poly', match[2], `PolyMask${match[2]}`, `Poly ${match[2]}`, 'Name');
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function getDynamicSlotTemplateDescriptor(id, slotType) {
+    try {
+      const raw = String(id || '').trim();
+      const type = String(slotType || '').trim().toLowerCase();
+      if (!raw || !type) return null;
+      let match = raw.match(/^Layer(\d+)\.(.+)$/i);
+      if (type === 'layer' && match) {
+        const suffix = String(match[2] || '').trim();
+        if (!suffix) return null;
+        return {
+          templateKey: suffix,
+          buildId: (slotIndex) => `Layer${slotIndex}.${suffix}`,
+        };
+      }
+      match = raw.match(/^LayerName(\d+)$/i);
+      if (type === 'layer' && match) {
+        return {
+          templateKey: 'LayerName',
+          buildId: (slotIndex) => `LayerName${slotIndex}`,
+        };
+      }
+      match = raw.match(/^Text(\d+)\.(.+)$/i);
+      if (type === 'text' && match) {
+        const suffix = String(match[2] || '').trim();
+        if (!suffix) return null;
+        return {
+          templateKey: suffix,
+          buildId: (slotIndex) => `Text${slotIndex}.${suffix}`,
+        };
+      }
+      match = raw.match(/^PolyMask(\d+)\.(.+)$/i);
+      if (type === 'poly' && match) {
+        const suffix = String(match[2] || '').trim();
+        if (!suffix) return null;
+        return {
+          templateKey: suffix,
+          buildId: (slotIndex) => `PolyMask${slotIndex}.${suffix}`,
+        };
+      }
+      match = raw.match(/^PolyMaskName(\d+)$/i);
+      if (type === 'poly' && match) {
+        return {
+          templateKey: 'Name',
+          buildId: (slotIndex) => `PolyMaskName${slotIndex}`,
+        };
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function getDynamicSlotSeedTemplateKeys(toolType, slotType) {
+    try {
+      const type = String(toolType || '').trim().toLowerCase();
+      const slot = String(slotType || '').trim().toLowerCase();
+      return Array.isArray(DYNAMIC_SLOT_SEED_KEYS[type]?.[slot]) ? [...DYNAMIC_SLOT_SEED_KEYS[type][slot]] : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function buildDynamicSlotId(slotType, slotIndex, templateKey) {
+    try {
+      const slot = String(slotType || '').trim().toLowerCase();
+      const key = String(templateKey || '').trim();
+      const index = Number(slotIndex);
+      if (!slot || !key || !Number.isFinite(index)) return '';
+      if (slot === 'layer') return key === 'LayerName' ? `LayerName${index}` : `Layer${index}.${key}`;
+      if (slot === 'text') {
+        const slotKey = key.replace(/^Text\d+/i, `Text${index}`);
+        return `Text${index}.${slotKey}`;
+      }
+      if (slot === 'poly') return key === 'Name' ? `PolyMaskName${index}` : `PolyMask${index}.${key}`;
+      return '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function expandDynamicSlotDefaults(tool, controls) {
+    try {
+      if (!tool || !Array.isArray(controls) || !controls.length) return controls;
+      const type = String(tool.type || '').toLowerCase();
+      if (!isDynamicSlotToolType(type)) return controls;
+      const slotDefs = new Map();
+      const nonSlotControls = [];
+      const actualById = new Map();
+      const extraOrderBySlotType = new Map();
+      for (const c of controls) {
+        if (!c || c.type || !c.id) {
+          nonSlotControls.push(c);
+          continue;
+        }
+        const id = String(c.id || '').trim();
+        if (!id) {
+          nonSlotControls.push(c);
+          continue;
+        }
+        const groupKey = String(c.groupKey || '').trim();
+        const slotType = String(c.slotType || '').trim().toLowerCase();
+        const slotIndex = Number(c.slotIndex);
+        if (!groupKey || !slotType || !Number.isFinite(slotIndex)) {
+          nonSlotControls.push(c);
+          continue;
+        }
+        if (!slotDefs.has(groupKey)) {
+          slotDefs.set(groupKey, {
+            groupKey,
+            groupLabel: String(c.groupLabel || humanizeName(groupKey) || groupKey),
+            slotType,
+            slotIndex,
+          });
+        }
+        actualById.set(id, c);
+        const descriptor = getDynamicSlotTemplateDescriptor(id, slotType);
+        if (!descriptor) continue;
+        if (!extraOrderBySlotType.has(slotType)) extraOrderBySlotType.set(slotType, []);
+        const orderList = extraOrderBySlotType.get(slotType);
+        if (!orderList.includes(descriptor.templateKey)) orderList.push(descriptor.templateKey);
+      }
+      if (!slotDefs.size) return controls;
+      const expanded = [...nonSlotControls];
+      const sortedSlots = Array.from(slotDefs.values()).sort((a, b) => {
+        if (a.slotType !== b.slotType) return a.slotType.localeCompare(b.slotType);
+        return a.slotIndex - b.slotIndex;
+      });
+      for (const slot of sortedSlots) {
+        const slotType = slot.slotType;
+        const seeded = getDynamicSlotSeedTemplateKeys(type, slotType);
+        const discovered = extraOrderBySlotType.get(slotType) || [];
+        const orderedKeys = [...seeded];
+        for (const key of discovered) {
+          if (!orderedKeys.includes(key)) orderedKeys.push(key);
+        }
+        const emittedIds = new Set();
+        for (let i = 0; i < orderedKeys.length; i += 1) {
+          const templateKey = orderedKeys[i];
+          const nextId = buildDynamicSlotId(slotType, slot.slotIndex, templateKey);
+          if (!nextId || emittedIds.has(nextId)) continue;
+          const actual = actualById.get(nextId);
+          const slotMeta = deriveDynamicSlotMeta(nextId);
+          expanded.push(actual ? {
+            ...actual,
+            groupKey: slot.groupKey,
+            groupLabel: slot.groupLabel,
+            slotType: slot.slotType,
+            slotIndex: slot.slotIndex,
+            dynamicSlotOrder: i,
+          } : {
+            id: nextId,
+            name: slotMeta?.displayName || humanizeName(nextId),
+            kind: 'Input',
+            groupKey: slot.groupKey,
+            groupLabel: slot.groupLabel,
+            slotType: slot.slotType,
+            slotIndex: slot.slotIndex,
+            dynamicSlotOrder: i,
+            isSyntheticDynamicSlot: true,
+          });
+          emittedIds.add(nextId);
+        }
+      }
+      return expanded;
+    } catch (_) {
+      return controls;
+    }
+  }
+
   function parseToolInputs(body) {
     const entries = parseToolInputEntries(body);
-    return entries.map(({ id, name, kind }) => ({ id, name, kind }));
+    return entries.map(({ id, name, kind, groupKey, groupLabel, slotType, slotIndex }) => ({
+      id,
+      name,
+      kind,
+      groupKey: groupKey || null,
+      groupLabel: groupLabel || null,
+      slotType: slotType || null,
+      slotIndex: Number.isFinite(slotIndex) ? slotIndex : null,
+    }));
   }
 
   function parseInstanceInputStateMap(body) {
@@ -3285,17 +4046,16 @@ export function createNodesPane(options = {}) {
     const primaryGroupBase = opts.primaryGroupBase ? String(opts.primaryGroupBase) : '';
     const groups = new Map();
     const others = [];
-    const colorSuf = ['Red','Green','Blue','Alpha'];
     for (const c of controls) {
-      const suf = colorSuf.find(s => c.id.endsWith(s));
-      if (!suf) { others.push({ ...c, sourceOp }); continue; }
-      const base = c.id.slice(0, c.id.length - suf.length);
+      const meta = parseColorChannelMeta(c?.id);
+      if (!meta) { others.push({ ...c, sourceOp }); continue; }
+      const base = meta.base;
       if (!groups.has(base)) groups.set(base, []);
-      groups.get(base).push({ ...c, base, sourceOp });
+      groups.get(base).push({ ...c, base, sourceOp, colorChannel: meta.channel });
     }
     const grouped = [];
     for (const [base, ch] of groups.entries()) {
-      const sorted = ['Red','Green','Blue','Alpha'].map(s => ch.find(v => v.id.endsWith(s))).filter(Boolean);
+      const sorted = ['Red','Green','Blue','Alpha'].map(s => ch.find(v => v.colorChannel === s)).filter(Boolean);
       grouped.push({
         id: base, base, type: 'color-group', groupLabel: groupLabelOverrides.get(base) || `${humanizeName(base)} (RGB)`,
         channels: sorted.map(c => ({ id: c.id, name: c.name })),
@@ -3467,3 +4227,4 @@ export function createNodesPane(options = {}) {
     },
   };
 }
+

@@ -26,10 +26,50 @@ export function parseSetting(text) {
     }
   }
   if (!blocks.length) throw new Error('Could not find an Inputs block with InstanceInput entries within any macro.');
+  const rootGroup = findFirstGroupMeta(text);
   let chosen = null;
-  for (const b of blocks) {
-    const grp = findEnclosingGroupForIndex(text, b.openIndex);
-    if (grp) { chosen = { ...b, macroName: grp.name, operatorType: grp.operatorType || 'GroupOperator', groupOpen: grp.groupOpenIndex, groupClose: grp.groupCloseIndex }; break; }
+  if (rootGroup) {
+    chosen = {
+      macroName: rootGroup.name || 'Unknown',
+      operatorType: rootGroup.operatorType || 'GroupOperator',
+      groupOpen: rootGroup.groupOpenIndex,
+      groupClose: rootGroup.groupCloseIndex,
+    };
+    const macroInputs = findGroupLevelInputsBlock(text, rootGroup.groupOpenIndex, rootGroup.groupCloseIndex);
+    if (macroInputs) {
+      chosen.inputsHeaderStart = macroInputs.headerStart;
+      chosen.openIndex = macroInputs.openIndex;
+      chosen.closeIndex = macroInputs.closeIndex;
+    } else {
+      for (const b of blocks) {
+        const grp = findEnclosingGroupForIndex(text, b.openIndex);
+        if (!grp) continue;
+        if (grp.groupOpenIndex === rootGroup.groupOpenIndex && grp.groupCloseIndex === rootGroup.groupCloseIndex) {
+          chosen = {
+            ...chosen,
+            inputsHeaderStart: b.inputsHeaderStart,
+            openIndex: b.openIndex,
+            closeIndex: b.closeIndex,
+          };
+          break;
+        }
+      }
+    }
+  }
+  if (!chosen || chosen.openIndex == null || chosen.closeIndex == null) {
+    for (const b of blocks) {
+      const grp = findEnclosingGroupForIndex(text, b.openIndex);
+      if (grp) {
+        chosen = {
+          ...b,
+          macroName: grp.name,
+          operatorType: grp.operatorType || 'GroupOperator',
+          groupOpen: grp.groupOpenIndex,
+          groupClose: grp.groupCloseIndex,
+        };
+        break;
+      }
+    }
   }
   if (!chosen) chosen = { ...blocks[0], macroName: 'Unknown', operatorType: 'GroupOperator' };
   if (!chosen.macroName || chosen.macroName === 'Unknown') {
@@ -298,6 +338,25 @@ function findFirstGroupBounds(text) {
     const closeIndex = findMatchingBrace(text, openIndex);
     if (closeIndex < 0) return null;
     return { groupOpenIndex: openIndex, groupCloseIndex: closeIndex };
+  } catch (_) {
+    return null;
+  }
+}
+
+function findFirstGroupMeta(text) {
+  try {
+    const re = /([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(GroupOperator|MacroOperator)\s*\{/g;
+    const match = re.exec(text);
+    if (!match) return null;
+    const openIndex = match.index + match[0].lastIndexOf('{');
+    const closeIndex = findMatchingBrace(text, openIndex);
+    if (closeIndex < 0) return null;
+    return {
+      name: match[1] || 'Unknown',
+      operatorType: match[2] || 'GroupOperator',
+      groupOpenIndex: openIndex,
+      groupCloseIndex: closeIndex,
+    };
   } catch (_) {
     return null;
   }

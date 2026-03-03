@@ -1431,6 +1431,82 @@ export function createPublishedControls({
     return entry.page;
   }
 
+  function isGroupUserControlEntry(entry) {
+    try {
+      return !!(entry && (entry.syntheticGroupUserControl === true || entry.publishTarget === 'groupUserControl'));
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function rewriteGroupUserControlPageBody(rawBody, pageName) {
+    try {
+      const body = String(rawBody || '');
+      if (!body) return body;
+      const safePage = normalizePageName(pageName);
+      const replacement = `ICS_ControlPage = "${safePage}",`;
+      if (/ICS_ControlPage\s*=/.test(body)) {
+        return body.replace(/ICS_ControlPage\s*=\s*"([^"]*)"\s*,?/g, replacement);
+      }
+      return `\n\t${replacement}${body}`;
+    } catch (_) {
+      return rawBody;
+    }
+  }
+
+  function syncGroupUserControlPage(entry, pageName) {
+    try {
+      if (!isGroupUserControlEntry(entry) || !state.parseResult) return;
+      const controls = Array.isArray(state.parseResult.groupUserControls) ? state.parseResult.groupUserControls : [];
+      const control = controls.find((item) => item && item.id === entry.source);
+      if (control) {
+        control.page = pageName;
+        if (typeof control.rawBody === 'string') {
+          control.rawBody = rewriteGroupUserControlPageBody(control.rawBody, pageName);
+        }
+      }
+      const map = state.parseResult.groupUserControlsById;
+      if (map && typeof map.get === 'function') {
+        const mapped = map.get(entry.source);
+        if (mapped) {
+          mapped.page = pageName;
+          if (typeof mapped.rawBody === 'string') {
+            mapped.rawBody = rewriteGroupUserControlPageBody(mapped.rawBody, pageName);
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  function focusPageAfterEntryMove(pageName) {
+    try {
+      const normalized = normalizePageName(pageName);
+      activePage = normalized;
+      if (state.parseResult) state.parseResult.activePage = normalized;
+      closeIconPicker();
+      refreshPageTabsInternal({ deferRenderView: true });
+    } catch (_) {}
+  }
+
+  function moveEntriesToPageStart(entriesList, pageName) {
+    try {
+      if (!state.parseResult || !Array.isArray(state.parseResult.order) || !Array.isArray(state.parseResult.entries)) return;
+      const moved = entriesList
+        .map((entry) => state.parseResult.entries.indexOf(entry))
+        .filter((idx) => Number.isFinite(idx) && idx >= 0);
+      if (!moved.length) return;
+      const movedSet = new Set(moved);
+      const nextOrder = state.parseResult.order.filter((idx) => !movedSet.has(idx));
+      const insertAt = nextOrder.findIndex((idx) => {
+        const entry = state.parseResult.entries[idx];
+        return getEntryPage(entry) === pageName;
+      });
+      const pos = insertAt >= 0 ? insertAt : nextOrder.length;
+      nextOrder.splice(pos, 0, ...moved);
+      state.parseResult.order = nextOrder;
+    } catch (_) {}
+  }
+
   function populatePageOptions(select, current) {
     while (select.firstChild) select.removeChild(select.firstChild);
     const options = buildPageOptions();
@@ -1604,6 +1680,7 @@ export function createPublishedControls({
         if (!entry) continue;
         if (entry.page !== value) changed = true;
         entry.page = value;
+        syncGroupUserControlPage(entry, value);
         if (typeof entry.raw === 'string') {
           const updated = ensurePageProp(entry.raw, value);
           if (updated !== entry.raw) {
@@ -1612,10 +1689,12 @@ export function createPublishedControls({
           }
         }
       }
+      moveEntriesToPageStart(entriesList, value);
       ensurePageOrderIncludes(value);
       syncPageOrderFromState();
       pruneManualPageOptions();
       if (changed) {
+        focusPageAfterEntryMove(value);
         renderList(state.parseResult.entries, state.parseResult.order);
         entriesList.forEach((entry) => {
           if (!entry || !state.parseResult || !Array.isArray(state.parseResult.entries)) return;

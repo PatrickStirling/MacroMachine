@@ -440,6 +440,7 @@ import { createTextPrompt } from './src/ui/textPrompt.js';
     onCreateBlankDocument: () => handleNativeOpen(),
     onUpdateExportPathDisplay: () => updateDocExportPathDisplay(),
     onSelectCsvBatch: (doc) => selectCsvBatchDoc(doc),
+    getDocDisplayName: (doc, docs) => getDocDisplayName(doc, docs),
   });
 
   function buildDocumentSnapshot() {
@@ -1073,6 +1074,35 @@ function updateDocExportPathDisplay() {
       i++;
     }
     return entries;
+  }
+
+  function getOrderedBlockEntryType(text, entry) {
+    try {
+      if (!text || !entry || !Number.isFinite(entry.nameEnd) || !Number.isFinite(entry.blockOpen)) return '';
+      let i = entry.nameEnd;
+      while (i < entry.blockOpen && isSpace(text[i])) i++;
+      if (text[i] !== '=') return '';
+      i++;
+      while (i < entry.blockOpen && isSpace(text[i])) i++;
+      const start = i;
+      while (i < entry.blockOpen && isIdentPart(text[i])) i++;
+      return text.slice(start, i).trim();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function extractOrderedBlockEntryChunk(text, entry) {
+    try {
+      if (!text || !entry || !Number.isFinite(entry.nameStart) || !Number.isFinite(entry.blockClose)) return '';
+      let end = entry.blockClose + 1;
+      let cursor = end;
+      while (cursor < text.length && (text[cursor] === ' ' || text[cursor] === '\t')) cursor++;
+      if (text[cursor] === ',') end = cursor + 1;
+      return text.slice(entry.nameStart, end);
+    } catch (_) {
+      return '';
+    }
   }
 
   function renameToolInGroupText(text, groupOpen, groupClose, oldName, newName) {
@@ -3173,7 +3203,6 @@ function hideDetailDrawer() {
           const stillInsidePickControls = row.contains(active);
           if (!stillInsideEditor && !stillInsidePickControls) {
             hasFocus = false;
-            if (liveActive) setLiveActive(false);
           }
         }, 0);
       });
@@ -5417,7 +5446,7 @@ function hideDetailDrawer() {
     return extractControlStringProp(ctx.body, 'Expression') || '';
   }
 
-  function setEntryCurrentValue(index, value) {
+  function setEntryCurrentValue(index, value, options = {}) {
     if (!state.parseResult || !Array.isArray(state.parseResult.entries)) return;
     const entry = state.parseResult.entries[index];
     if (!entry || !state.originalText) return;
@@ -5427,7 +5456,7 @@ function hideDetailDrawer() {
     if (trimmed && isComboControl(entry) && !isTextControl(entry)) {
       const comboIndex = parseComboIndexValue(entry, trimmed);
       if (comboIndex == null) {
-        error('Combo value must be a numeric index.');
+        if (!options.silent) error('Combo value must be a numeric index.');
         return;
       }
       trimmed = String(comboIndex);
@@ -5444,11 +5473,12 @@ function hideDetailDrawer() {
       body = removeControlProp(body, 'Value');
     }
     const updated = state.originalText.slice(0, ctx.inputBlock.open + 1) + body + state.originalText.slice(ctx.inputBlock.close);
-    if (updated === state.originalText) return;
-    pushHistory('edit current value');
+    if (updated === state.originalText) return false;
+    if (!options.skipHistory) pushHistory('edit current value');
     state.originalText = updated;
-    renderActiveList();
-    markContentDirty();
+    if (!options.skipRender) renderActiveList();
+    if (!options.skipMarkDirty) markContentDirty();
+    return true;
   }
 
   function setEntryExpression(index, expression) {
@@ -5586,19 +5616,16 @@ function hideDetailDrawer() {
   function findHeaderCarrierControlBlockInText(text = state.originalText, result = state.parseResult, preferredSourceOp = '') {
     try {
       if (!text || !result) return null;
+      const groupBlock = findGroupUserControlBlockById(text, result, FMR_HEADER_LABEL_CONTROL);
+      if (groupBlock) {
+        return {
+          sourceOp: String(result.macroName || result.macroNameOriginal || '').trim(),
+          open: groupBlock.open,
+          close: groupBlock.close,
+        };
+      }
       const bounds = locateMacroGroupBounds(text, result);
       if (!bounds) return null;
-      const groupUc = findGroupUserControlsBlock(text, bounds.groupOpenIndex, bounds.groupCloseIndex);
-      if (groupUc) {
-        const groupBlock = findControlBlockInUc(text, groupUc.openIndex, groupUc.closeIndex, FMR_HEADER_LABEL_CONTROL);
-        if (groupBlock) {
-          return {
-            sourceOp: String(result.macroName || result.macroNameOriginal || '').trim(),
-            open: groupBlock.open,
-            close: groupBlock.close,
-          };
-        }
-      }
       const candidates = [];
       const seen = new Set();
       const addCandidate = (name) => {
@@ -5758,21 +5785,7 @@ function hideDetailDrawer() {
 
   function removeHeaderCarrierFromGroup(text, result) {
     try {
-      let out = text;
-      while (true) {
-        const bounds = locateMacroGroupBounds(out, result);
-        if (!bounds) break;
-        const groupUc = findGroupUserControlsBlock(out, bounds.groupOpenIndex, bounds.groupCloseIndex);
-        if (!groupUc) break;
-        const next = removeControlBlockFromUcById(
-          out,
-          { open: groupUc.openIndex, close: groupUc.closeIndex },
-          FMR_HEADER_LABEL_CONTROL
-        );
-        if (next === out) break;
-        out = next;
-      }
-      return out;
+      return removeGroupUserControlById(text, result, FMR_HEADER_LABEL_CONTROL);
     } catch (_) {
       return text;
     }
@@ -5812,17 +5825,8 @@ function hideDetailDrawer() {
     }
   }
 
-  function normalizeHeaderCarrierControlInUc(text, ucRange, eol) {
+  function normalizeHeaderCarrierControlBody(body, indent, newline) {
     try {
-      if (!text || !ucRange) return text;
-      const newline = eol || '\n';
-      const ucOpen = ucRange.open != null ? ucRange.open : ucRange.openIndex;
-      const ucClose = ucRange.close != null ? ucRange.close : ucRange.closeIndex;
-      if (ucOpen == null || ucClose == null) return text;
-      const block = findControlBlockInUc(text, ucOpen, ucClose, FMR_HEADER_LABEL_CONTROL);
-      if (!block) return text;
-      const body = text.slice(block.open + 1, block.close);
-      const indent = (getLineIndent(text, block.open) || '') + '\t';
       let next = body;
       next = upsertControlProp(next, 'LINKS_Name', '""', indent, newline);
       next = upsertControlProp(next, 'INP_Integer', 'false', indent, newline);
@@ -5840,10 +5844,9 @@ function hideDetailDrawer() {
       next = removeControlProp(next, 'LBLC_DropDownButton');
       next = removeControlProp(next, 'IC_Visible');
       next = removeControlProp(next, 'ICS_ControlPage');
-      if (next === body) return text;
-      return text.slice(0, block.open + 1) + next + text.slice(block.close);
+      return next;
     } catch (_) {
-      return text;
+      return body;
     }
   }
 
@@ -5891,18 +5894,8 @@ function hideDetailDrawer() {
 
       let workingText = state.originalText;
       workingText = removeHeaderCarrierInstanceInputs(workingText, state.parseResult);
-      let bounds = locateMacroGroupBounds(workingText, state.parseResult);
-      if (!bounds) return null;
-      const ensured = ensureGroupUserControlsBlockExists(workingText, bounds, newline, state.parseResult);
-      workingText = ensured.text || workingText;
-      const ucRange = ensured.block && ensured.block.open != null
-        ? ensured.block
-        : (ensured.block && ensured.block.openIndex != null
-          ? { open: ensured.block.openIndex, close: ensured.block.closeIndex }
-          : null);
-      if (!ucRange || ucRange.open == null || ucRange.close == null) return null;
       while (true) {
-        const next = removeControlBlockFromUcById(workingText, ucRange, FMR_HEADER_LABEL_CONTROL);
+        const next = removeGroupUserControlById(workingText, state.parseResult, FMR_HEADER_LABEL_CONTROL);
         if (next === workingText) break;
         workingText = next;
       }
@@ -5912,8 +5905,10 @@ function hideDetailDrawer() {
         labelCount: 0,
         labelDefault: 'open',
       });
-      workingText = insertUserControlBlock(workingText, ucRange, FMR_HEADER_LABEL_CONTROL, lines, newline);
-      workingText = normalizeHeaderCarrierControlInUc(workingText, ucRange, newline);
+      workingText = upsertGroupUserControl(workingText, state.parseResult, FMR_HEADER_LABEL_CONTROL, {
+        createLines: lines,
+        updateBody: (body, indent, nl) => normalizeHeaderCarrierControlBody(body, indent, nl),
+      }, newline);
       workingText = removeHeaderCarrierFromOtherTools(workingText, state.parseResult, '');
       const meta = {
         kind: 'label',
@@ -6466,6 +6461,135 @@ function hideDetailDrawer() {
     markContentDirty();
   }
 
+  // Macro/group UserControls are their own ownership plane.
+  // They belong to the macro body itself and must not be treated as published Inputs.
+  // All macro-level mutations should flow through this context + writer path rather than
+  // ad hoc text surgery elsewhere in export/rebuild code.
+  function ensureGroupUserControlsWriterContext(text, result, eol) {
+    try {
+      const normalized = normalizeGroupUserControlsBlocks(text, result, eol || '\n');
+      const bounds = locateMacroGroupBounds(normalized, result);
+      if (!bounds) return { text: normalized, bounds: null, uc: null };
+      const ensured = ensureGroupUserControlsBlockExists(normalized, bounds, eol || '\n', result);
+      const updated = ensured.text || normalized;
+      const finalBounds = ensured.bounds || locateMacroGroupBounds(updated, result) || bounds;
+      const uc = ensured.block || findGroupUserControlsBlock(updated, finalBounds.groupOpenIndex, finalBounds.groupCloseIndex);
+      return { text: updated, bounds: finalBounds, uc };
+    } catch (_) {
+      return { text, bounds: null, uc: null };
+    }
+  }
+
+  function findGroupUserControlBlockById(text, result, controlId) {
+    try {
+      if (!text || !controlId) return null;
+      const bounds = locateMacroGroupBounds(text, result);
+      if (!bounds) return null;
+      const uc = findGroupUserControlsBlock(text, bounds.groupOpenIndex, bounds.groupCloseIndex);
+      if (!uc) return null;
+      return findControlBlockInUc(text, uc.openIndex, uc.closeIndex, controlId);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function getGroupUserControlBodyById(text, result, controlId) {
+    try {
+      const block = findGroupUserControlBlockById(text, result, controlId);
+      if (!block) return null;
+      return text.slice(block.open + 1, block.close);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // Group-level controls are preserved/edited separately from published entries.
+  // Unknown controls default to preserve-only and are blocked here unless a caller
+  // explicitly opts into mutating them.
+  function upsertGroupUserControl(text, result, controlId, options, eol) {
+    try {
+      if (!text || !result || !controlId) return text;
+      const newline = eol || '\n';
+      const policy = canMutateGroupUserControl(result, controlId, {
+        ...(options || {}),
+        action: 'update',
+      });
+      if (!policy.allowed) {
+        recordGroupUserControlMutationIssue(result, {
+          control: controlId,
+          action: 'update',
+          message: policy.message,
+        });
+        return text;
+      }
+      let context;
+      if (options?.createIfMissing === false) {
+        const normalized = normalizeGroupUserControlsBlocks(text, result, newline);
+        const bounds = locateMacroGroupBounds(normalized, result);
+        const uc = bounds ? findGroupUserControlsBlock(normalized, bounds.groupOpenIndex, bounds.groupCloseIndex) : null;
+        context = { text: normalized, bounds, uc };
+      } else {
+        context = ensureGroupUserControlsWriterContext(text, result, newline);
+      }
+      let updated = context.text;
+      if (!context.bounds || !context.uc) return updated;
+      let block = findControlBlockInUc(updated, context.uc.openIndex, context.uc.closeIndex, controlId);
+      if (!block) {
+        if (options?.createIfMissing === false) return updated;
+        const lines = (typeof options?.createLines === 'function')
+          ? options.createLines()
+          : (Array.isArray(options?.createLines) ? options.createLines : []);
+        updated = insertUserControlBlock(updated, { open: context.uc.openIndex, close: context.uc.closeIndex }, controlId, lines, newline);
+        block = findGroupUserControlBlockById(updated, result, controlId);
+        if (!block) return updated;
+      }
+      const indent = (getLineIndent(updated, block.open) || '') + '\t';
+      let body = updated.slice(block.open + 1, block.close);
+      if (typeof options?.updateBody === 'function') {
+        body = options.updateBody(body, indent, newline);
+      }
+      updated = updated.slice(0, block.open + 1) + body + updated.slice(block.close);
+      return normalizeGroupUserControlsBlocks(updated, result, newline);
+    } catch (_) {
+      return text;
+    }
+  }
+
+  // Removal follows the same ownership boundary as updates: macro-level controls are
+  // never removed through the published Inputs pipeline.
+  function removeGroupUserControlById(text, result, controlId) {
+    try {
+      if (!text || !controlId) return text;
+      const newline = detectNewline(text) || '\n';
+      const policy = canMutateGroupUserControl(result, controlId, { action: 'remove' });
+      if (!policy.allowed) {
+        recordGroupUserControlMutationIssue(result, {
+          control: controlId,
+          action: 'remove',
+          message: policy.message,
+        });
+        return text;
+      }
+      const context = ensureGroupUserControlsWriterContext(text, result, newline);
+      let updated = context.text;
+      if (!context.bounds || !context.uc) return updated;
+      const block = findControlBlockInUc(updated, context.uc.openIndex, context.uc.closeIndex, controlId);
+      if (!block) return updated;
+      let start = Number.isFinite(block.idStart) ? block.idStart : block.open;
+      while (start > context.uc.openIndex && /\s/.test(updated[start - 1])) start--;
+      let end = block.close + 1;
+      while (end < context.uc.closeIndex && /\s/.test(updated[end])) end++;
+      if (updated[end] === ',') {
+        end++;
+        while (end < context.uc.closeIndex && /\s/.test(updated[end])) end++;
+      }
+      updated = updated.slice(0, start) + updated.slice(end);
+      return normalizeGroupUserControlsBlocks(updated, result, newline);
+    } catch (_) {
+      return text;
+    }
+  }
+
   function findEntryControlBlockBounds(entry) {
     try {
       if (!entry || !entry.source || !state.originalText || !state.parseResult) return null;
@@ -6484,12 +6608,44 @@ function hideDetailDrawer() {
         }
         if (cb) return cb;
       }
-      const groupUc = findUserControlsInGroup(state.originalText, bounds.groupOpenIndex, bounds.groupCloseIndex);
-      if (groupUc) {
-        const gcb = findControlBlockInUc(state.originalText, groupUc.open, groupUc.close, entry.source);
-        if (gcb) return gcb;
-      }
+      const gcb = findGroupUserControlBlockById(state.originalText, state.parseResult, entry.source);
+      if (gcb) return gcb;
       return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function findUserControlBlockForToolOrGroup(text, groupOpen, groupClose, toolName, controlId) {
+    try {
+      if (!text || controlId == null) return null;
+      if (toolName) {
+        const toolBlock = findToolBlockInGroup(text, groupOpen, groupClose, toolName);
+        if (toolBlock) {
+          const toolUc = findUserControlsInTool(text, toolBlock.open, toolBlock.close);
+          if (toolUc) {
+            const toolControl = findControlBlockInUc(text, toolUc.open, toolUc.close, controlId);
+            if (toolControl) {
+              return {
+                scope: 'tool',
+                toolBlock,
+                uc: toolUc,
+                controlBlock: toolControl,
+              };
+            }
+          }
+        }
+      }
+      const groupUc = findGroupUserControlsBlock(text, groupOpen, groupClose);
+      if (!groupUc) return null;
+      const groupControl = findControlBlockInUc(text, groupUc.openIndex, groupUc.closeIndex, controlId);
+      if (!groupControl) return null;
+      return {
+        scope: 'group',
+        toolBlock: null,
+        uc: { open: groupUc.openIndex, close: groupUc.closeIndex },
+        controlBlock: groupControl,
+      };
     } catch (_) {
       return null;
     }
@@ -6899,6 +7055,7 @@ function hideDetailDrawer() {
     requestRenameNode: (nodeName) => promptRenameNode(nodeName),
     getPendingControlMeta: (op, id) => getPendingControlMeta(op, id),
     consumePendingControlMeta: (op, id) => consumePendingControlMeta(op, id),
+    isPickSessionActive: () => !!activePickSession,
   });
 
   historyController = createHistoryController({
@@ -6930,6 +7087,7 @@ function hideDetailDrawer() {
       onImportGoogleSheet: () => importGoogleSheetFromUrl(),
       onReloadCsv: () => reloadCsvSource(),
       onGenerateFromCsv: () => generateSettingsFromCsv(),
+      onOpenPresetEngine: () => openPresetEngineModal(),
       onRefreshSession: () => refreshCurrentSession(),
       onInsertUpdateDataButton: () => insertUpdateDataButton(),
       onHeaderImageDialog: () => openHeaderImageDialog(),
@@ -7125,15 +7283,24 @@ function hideDetailDrawer() {
           error('Open failed: ' + res.error);
           return;
         }
-        const name = res.baseName || res.filePath || 'Imported.setting';
-        const text = res.content || '';
-        if (!text) {
+        const files = Array.isArray(res.files) && res.files.length
+          ? res.files
+          : [{ filePath: res.filePath || '', baseName: res.baseName || '', content: res.content || '' }];
+        let loaded = 0;
+        for (const file of files) {
+          const name = file?.baseName || file?.filePath || 'Imported.setting';
+          const text = file?.content || '';
+          if (!text) continue;
+          // eslint-disable-next-line no-await-in-loop
+          await loadSettingText(name, text);
+          setExportFolderFromFilePath(file?.filePath || '', { silent: true });
+          loaded += 1;
+        }
+        if (!loaded) {
           error('Selected file was empty or could not be read.');
           return;
         }
-        await loadSettingText(name, text);
-        setExportFolderFromFilePath(res.filePath, { silent: true });
-        info('Loaded macro from file: ' + name);
+        info(loaded === 1 ? `Loaded macro from file: ${files[0]?.baseName || files[0]?.filePath || 'Imported.setting'}` : `Loaded ${loaded} macros from files.`);
       } catch (err) {
         error('Native open failed: ' + (err?.message || err));
       }
@@ -7156,15 +7323,24 @@ function hideDetailDrawer() {
         error('Open failed: ' + res.error);
         return;
       }
-      const name = res.baseName || res.filePath || 'Imported.setting';
-      const text = res.content || '';
-      if (!text) {
+      const files = Array.isArray(res.files) && res.files.length
+        ? res.files
+        : [{ filePath: res.filePath || '', baseName: res.baseName || '', content: res.content || '' }];
+      let loaded = 0;
+      for (const file of files) {
+        const name = file?.baseName || file?.filePath || 'Imported.setting';
+        const text = file?.content || '';
+        if (!text) continue;
+        // eslint-disable-next-line no-await-in-loop
+        await loadSettingText(name, text);
+        setExportFolderFromFilePath(file?.filePath || '', { silent: true });
+        loaded += 1;
+      }
+      if (!loaded) {
         error('Selected file was empty or could not be read.');
         return;
       }
-      await loadSettingText(name, text);
-      setExportFolderFromFilePath(res.filePath, { silent: true });
-      info('Loaded macro from file: ' + name);
+      info(loaded === 1 ? `Loaded macro from file: ${files[0]?.baseName || files[0]?.filePath || 'Imported.setting'}` : `Loaded ${loaded} macros from files.`);
     } catch (err) {
       error('Native open failed: ' + (err?.message || err));
     }
@@ -7434,6 +7610,8 @@ function hideDetailDrawer() {
       state.parseResult.luaToolNames = toolNames;
       state.parseResult.luaToolTypes = toolTypes;
       state.parseResult.luaControlNames = controlNames;
+      hydrateGroupUserControlsState(state.originalText, state.parseResult);
+      syncVisibleGroupUserControlsIntoEntries(state.originalText, state.parseResult);
       state.parseResult.pageOrder = derivePageOrderFromEntries(state.parseResult.entries);
       state.parseResult.activePage = null;
       hydrateEntryPagesFromUserControls(state.originalText, state.parseResult);
@@ -7464,6 +7642,16 @@ function hideDetailDrawer() {
           state.originalFilePath = hiddenFileMeta.exportPath;
         }
       }
+      const hiddenPresetData = extractHiddenPresetData(state.originalText, state.parseResult);
+      if (hiddenPresetData && typeof hiddenPresetData === 'object') {
+        state.parseResult.presetEngine = hiddenPresetData;
+      }
+      ensurePresetEngine(state.parseResult);
+      syncPresetSelectorEntryToMacro(
+        state.parseResult,
+        resolveMacroGroupSourceOp(state.originalText, state.parseResult)
+          || String(state.parseResult.macroName || state.parseResult.macroNameOriginal || '').trim()
+      );
       updateDataMenuState();
       syncDataLinkPanel();
       syncOperatorSelect();
@@ -7796,7 +7984,13 @@ async function handleFile(file) {
       return;
     }
     try {
-      const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, { safeEditExport: true, includeDataLink: true });
+      const activeDoc = getActiveDocument();
+      const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, {
+        safeEditExport: true,
+        includeDataLink: true,
+        includePresetRuntime: true,
+        preserveAuthoredInputsBlock: !!activeDoc && !activeDoc.isDirty,
+      });
       const drfxRes = await native.saveDrfxPreset({
         sourcePath: state.originalFilePath,
         content: newContent,
@@ -7856,7 +8050,12 @@ async function handleFile(file) {
         continue;
       }
       try {
-        const content = rebuildContentWithNewOrder(snap.originalText || '', snap.parseResult, snap.newline, { includeDataLink: true });
+        const content = rebuildContentWithNewOrder(snap.originalText || '', snap.parseResult, snap.newline, {
+          includeDataLink: true,
+          includePresetRuntime: true,
+          preserveAuthoredInputsBlock: !doc.isDirty,
+          preserveAuthoredUserControls: !doc.isDirty,
+        });
         // eslint-disable-next-line no-await-in-loop
         const res = await native.saveDrfxPreset({
           sourcePath: snap.originalFilePath,
@@ -7905,9 +8104,30 @@ async function handleFile(file) {
         try {
           const res = await native.pickSavePath({ defaultPath });
           if (!res || !res.filePath) return;
-          const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, { includeDataLink: true, fileMetaPath: res.filePath });
+          const activeDoc = getActiveDocument();
+          const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, {
+            debugContext: 'export-file-native',
+            includeDataLink: true,
+            includePresetRuntime: true,
+            fileMetaPath: res.filePath,
+            preserveAuthoredInputsBlock: !!activeDoc && !activeDoc.isDirty,
+            preserveAuthoredUserControls: !!activeDoc && !activeDoc.isDirty,
+          });
           const writeRes = await native.writeSettingFile({ filePath: res.filePath, content: newContent });
           if (writeRes && writeRes.filePath) {
+            let savedFileName = '';
+            try {
+              // eslint-disable-next-line global-require
+              const path = require('path');
+              savedFileName = path.basename(writeRes.filePath || '');
+            } catch (_) {
+              savedFileName = String(writeRes.filePath || '').split(/[\\/]/).pop() || '';
+            }
+            if (savedFileName) {
+              state.originalFileName = savedFileName;
+              const doc = getActiveDocument();
+              if (doc) doc.fileName = savedFileName;
+            }
             state.lastExportPath = writeRes.filePath;
             state.originalFilePath = writeRes.filePath;
             const doc = getActiveDocument();
@@ -7920,7 +8140,14 @@ async function handleFile(file) {
           error('Native save failed: ' + (err2?.message || err2));
         }
       } else {
-        const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, { includeDataLink: true });
+        const activeDoc = getActiveDocument();
+        const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, {
+          debugContext: 'export-file-download',
+          includeDataLink: true,
+          includePresetRuntime: true,
+          preserveAuthoredInputsBlock: !!activeDoc && !activeDoc.isDirty,
+          preserveAuthoredUserControls: !!activeDoc && !activeDoc.isDirty,
+        });
         triggerDownload(outName, newContent);
         info('Exported reordered .setting');
         markActiveDocumentClean();
@@ -7983,15 +8210,28 @@ async function handleFile(file) {
                   parsed.dataLink = hiddenLink;
                   applyFmrDataLinkToEntries(parsed);
                 }
+                hydrateGroupUserControlsState(baseText, parsed);
+                const hiddenPreset = extractHiddenPresetData(baseText, parsed);
+                if (hiddenPreset && typeof hiddenPreset === 'object') {
+                  parsed.presetEngine = hiddenPreset;
+                }
+                ensurePresetEngine(parsed);
               } catch (_) {
                 parsed = null;
               }
             }
             if (parsed && !parsed.fileMeta) {
-              parsed.fileMeta = { exportPath: destPath };
+              parsed.fileMeta = { exportPath: destPath, buildMarker: FMR_BUILD_MARKER };
             }
             const newContent = parsed
-              ? rebuildContentWithNewOrder(baseText, parsed, snap.newline || '\n', { includeDataLink: true, fileMetaPath: destPath })
+              ? rebuildContentWithNewOrder(baseText, parsed, snap.newline || '\n', {
+                  debugContext: 'export-edit-bulk',
+                  includeDataLink: true,
+                  includePresetRuntime: true,
+                  fileMetaPath: destPath,
+                  preserveAuthoredInputsBlock: !doc.isDirty,
+                  preserveAuthoredUserControls: !doc.isDirty,
+                })
               : baseText;
             const finalPath = writeSettingToFolder(targetFolder, outName, newContent);
             snap.lastExportPath = finalPath;
@@ -8021,7 +8261,14 @@ async function handleFile(file) {
       }
       const outName = buildMacroExportName();
       if (!IS_ELECTRON) {
-        const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, { includeDataLink: true });
+        const activeDoc = getActiveDocument();
+        const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, {
+          debugContext: 'export-edit-download',
+          includeDataLink: true,
+          includePresetRuntime: true,
+          preserveAuthoredInputsBlock: !!activeDoc && !activeDoc.isDirty,
+          preserveAuthoredUserControls: !!activeDoc && !activeDoc.isDirty,
+        });
         triggerDownload(outName, newContent);
         info('Exported reordered .setting');
         markActiveDocumentClean();
@@ -8030,9 +8277,17 @@ async function handleFile(file) {
       const targetFolder = resolveExportFolder();
       const destPath = buildExportPath(targetFolder, outName);
       if (state.parseResult && !state.parseResult.fileMeta) {
-        state.parseResult.fileMeta = { exportPath: destPath };
+        state.parseResult.fileMeta = { exportPath: destPath, buildMarker: FMR_BUILD_MARKER };
       }
-      const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, { includeDataLink: true, fileMetaPath: destPath });
+      const activeDoc = getActiveDocument();
+      const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, {
+        debugContext: 'export-edit-single',
+        includeDataLink: true,
+        includePresetRuntime: true,
+        fileMetaPath: destPath,
+        preserveAuthoredInputsBlock: !!activeDoc && !activeDoc.isDirty,
+        preserveAuthoredUserControls: !!activeDoc && !activeDoc.isDirty,
+      });
       const finalPath = writeSettingToFolder(targetFolder, outName, newContent);
       info(`Exported to ${finalPath}`);
       state.lastExportPath = finalPath;
@@ -8048,7 +8303,14 @@ async function handleFile(file) {
   async function exportToClipboard() {
     if (!state.parseResult) return;
     try {
-      const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, { includeDataLink: true });
+      const activeDoc = getActiveDocument();
+      const newContent = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, {
+        debugContext: 'export-clipboard',
+        includeDataLink: true,
+        includePresetRuntime: true,
+        preserveAuthoredInputsBlock: !!activeDoc && !activeDoc.isDirty,
+        preserveAuthoredUserControls: !!activeDoc && !activeDoc.isDirty,
+      });
       const native = getNativeApi();
       if (native && typeof native.writeClipboard === 'function') {
         try {
@@ -8428,7 +8690,12 @@ async function handleFile(file) {
     const presetInputs = looseDocs.map((doc) => {
       const snap = doc.snapshot;
       const name = snap.parseResult?.macroName || doc.name || doc.fileName || 'Preset';
-      const content = rebuildContentWithNewOrder(snap.originalText || '', snap.parseResult, snap.newline, { includeDataLink: true });
+      const content = rebuildContentWithNewOrder(snap.originalText || '', snap.parseResult, snap.newline, {
+        includeDataLink: true,
+        includePresetRuntime: true,
+        preserveAuthoredInputsBlock: !doc.isDirty,
+        preserveAuthoredUserControls: !doc.isDirty,
+      });
       return { doc, name, content };
     });
     const presets = buildUniquePresetNames(presetInputs.map(({ name, content }) => ({ name, content })));
@@ -8832,6 +9099,7 @@ async function handleFile(file) {
         const summary = await reloadDataLinkForCurrentMacro({ summary: true, maxLines: 4 });
         const updated = rebuildContentWithNewOrder(state.originalText, state.parseResult, state.newline, {
           includeDataLink: true,
+          includePresetRuntime: true,
           fileMetaPath: pathValue,
         });
         let message = 'Overwrite the source file with these changes?';
@@ -8968,6 +9236,1395 @@ async function handleFile(file) {
       if (!Number.isFinite(result.dataLink.rowIndex)) result.dataLink.rowIndex = 1;
     }
     return result.dataLink;
+  }
+
+  function ensurePresetEngine(result) {
+    if (!result) return null;
+    if (!result.presetEngine || typeof result.presetEngine !== 'object') {
+      result.presetEngine = {
+        version: 1,
+        buildMarker: FMR_BUILD_MARKER,
+        scope: [],
+        scopeEntries: [],
+        base: {},
+        presets: {},
+        activePreset: '',
+      };
+    }
+    const engine = result.presetEngine;
+    if (!Array.isArray(engine.scope)) engine.scope = [];
+    if (!Array.isArray(engine.scopeEntries)) engine.scopeEntries = [];
+    if (!engine.base || typeof engine.base !== 'object') engine.base = {};
+    if (!engine.presets || typeof engine.presets !== 'object') engine.presets = {};
+    if (typeof engine.activePreset !== 'string') engine.activePreset = '';
+    if (typeof engine.buildMarker !== 'string' || !engine.buildMarker.trim()) engine.buildMarker = FMR_BUILD_MARKER;
+    engine.version = Math.max(2, Number(engine.version) || 1);
+    engine.scopeEntries = normalizePresetScopeEntries(result, engine.scopeEntries, engine.scope);
+    engine.scope = engine.scopeEntries.map((item) => item.key);
+    return engine;
+  }
+
+  function buildPresetScopeEntry(result, entry) {
+    try {
+      if (!entry) return null;
+      const key = String(getEntryKey(entry) || '').trim();
+      if (!key) return null;
+      const page = String(entry.page || 'Controls').trim() || 'Controls';
+      const displayName = String(entry.displayName || entry.name || `${entry.sourceOp || ''}.${entry.source || ''}`).trim() || key;
+      const inputControl = String(entry?.controlMeta?.inputControl || entry?.controlMetaOriginal?.inputControl || '').trim();
+      const dataType = String(entry?.controlMeta?.dataType || entry?.controlMetaOriginal?.dataType || '').trim();
+      const targetType = isGroupUserControlEntry(entry) ? 'groupUserControl' : 'publishedInput';
+      return {
+        key,
+        targetType,
+        sourceOp: String(entry.sourceOp || '').trim(),
+        source: String(entry.source || '').trim(),
+        entryKey: key,
+        page,
+        displayName,
+        inputControl,
+        dataType,
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function normalizePresetScopeEntry(result, raw) {
+    try {
+      if (!raw) return null;
+      const rawKey = typeof raw === 'string' ? raw : String(raw.key || raw.entryKey || '').trim();
+      if (!rawKey) return null;
+      const entries = Array.isArray(result?.entries) ? result.entries : [];
+      const matchedEntry = entries.find((entry) => getEntryKey(entry) === rawKey) || null;
+      if (matchedEntry) {
+        const derived = buildPresetScopeEntry(result, matchedEntry);
+        if (derived) return derived;
+      }
+      const sourceOp = String(raw.sourceOp || '').trim();
+      const source = String(raw.source || '').trim();
+      const targetType = String(raw.targetType || (sourceOp && source ? 'publishedInput' : 'unknown')).trim();
+      return {
+        key: rawKey,
+        targetType,
+        sourceOp,
+        source,
+        entryKey: rawKey,
+        page: String(raw.page || 'Controls').trim() || 'Controls',
+        displayName: String(raw.displayName || raw.label || rawKey).trim() || rawKey,
+        inputControl: String(raw.inputControl || '').trim(),
+        dataType: String(raw.dataType || '').trim(),
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function normalizePresetScopeEntries(result, scopeEntries, fallbackScope) {
+    try {
+      const normalized = [];
+      const seen = new Set();
+      const pushEntry = (candidate) => {
+        const entry = normalizePresetScopeEntry(result, candidate);
+        const key = String(entry?.key || '').trim();
+        if (!key || seen.has(key)) return;
+        seen.add(key);
+        normalized.push(entry);
+      };
+      if (Array.isArray(scopeEntries)) scopeEntries.forEach(pushEntry);
+      if (Array.isArray(fallbackScope)) fallbackScope.forEach(pushEntry);
+      return normalized;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function getPresetEligibleEntries(result) {
+    const out = [];
+    if (!result || !Array.isArray(result.entries)) return out;
+    const order = Array.isArray(result.order) ? result.order : result.entries.map((_, i) => i);
+    const seen = new Set();
+    order.forEach((idx) => {
+      const entry = result.entries[idx];
+      if (!entry || entry.locked || entry.isLabel) return;
+      const key = getEntryKey(entry);
+      if (!key || seen.has(key)) return;
+      if (entry.source === FMR_PRESET_SELECT_CONTROL || key === FMR_PRESET_SELECT_CONTROL || key === FMR_PRESET_DATA_CONTROL) return;
+      const inputControl = String(entry?.controlMeta?.inputControl || entry?.controlMetaOriginal?.inputControl || '').toLowerCase();
+      if (inputControl.includes('buttoncontrol') || inputControl.includes('labelcontrol')) return;
+      const display = String(entry.displayName || entry.name || `${entry.sourceOp || ''}.${entry.source || ''}`).trim();
+      out.push({
+        key,
+        index: idx,
+        label: display,
+        scopeEntry: buildPresetScopeEntry(result, entry),
+      });
+      seen.add(key);
+    });
+    return out;
+  }
+
+  function getEntryFallbackPresetValue(entry) {
+    try {
+      const profileDefault = getProfileDefaultForEntry(entry);
+      const raw = normalizeMetaValue(
+        entry?.controlMeta?.defaultValue ??
+        entry?.controlMetaOriginal?.defaultValue ??
+        profileDefault ??
+        extractInstancePropValue(entry?.raw || '', 'Default')
+      );
+      const formatted = formatDefaultForDisplay(entry, raw);
+      return formatted != null ? String(formatted) : '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function getGroupUserControlFallbackPresetValue(result, scopeEntry, control) {
+    try {
+      const groupControl = control || getParsedGroupUserControlById(result, scopeEntry?.source || scopeEntry?.key || '');
+      const raw = normalizeMetaValue(
+        groupControl?.defaultValue ??
+        extractControlPropLiteral(groupControl?.rawBody || '', 'INP_Default')
+      );
+      return raw != null ? String(raw) : '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function getProfileDefaultForEntry(entry) {
+    try {
+      if (!entry || !entry.sourceOp || !entry.source) return null;
+      const toolType = String(state.parseResult?.luaToolTypes?.get?.(entry.sourceOp) || '').trim();
+      if (!toolType) return null;
+      const candidateTypes = new Set([toolType]);
+      if (/Number$/i.test(toolType)) candidateTypes.add(toolType.replace(/Number$/i, ''));
+      if (/Point$/i.test(toolType)) candidateTypes.add(toolType.replace(/Point$/i, ''));
+      if (/Image$/i.test(toolType)) candidateTypes.add(toolType.replace(/Image$/i, ''));
+      if (/Text$/i.test(toolType)) candidateTypes.add(toolType.replace(/Text$/i, ''));
+      const nodeProfiles = nodesPane?.getNodeProfiles?.() || null;
+      const modifierProfiles = nodesPane?.getModifierProfiles?.() || null;
+      for (const candidateType of candidateTypes) {
+        const types = [
+          modifierProfiles?.types?.[candidateType],
+          nodeProfiles?.types?.[candidateType],
+        ].filter(Boolean);
+        for (const profile of types) {
+          const controls = Array.isArray(profile?.controls) ? profile.controls : [];
+          const match = controls.find((item) => String(item?.id || '') === String(entry.source || ''));
+          const raw = normalizeMetaValue(match?.defaultValue);
+          if (raw != null) return raw;
+        }
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function getToolTypeForPresetEntry(text, result, entry) {
+    try {
+      const sourceOp = String(entry?.sourceOp || '').trim();
+      if (!sourceOp) return '';
+      const cached = String(
+        result?.luaToolTypes?.get?.(sourceOp) ||
+        state.parseResult?.luaToolTypes?.get?.(sourceOp) ||
+        ''
+      ).trim();
+      if (cached) return cached;
+      if (!text) return '';
+      const esc = sourceOp.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp('(^|\\n)\\s*' + esc + '\\s*=\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\{');
+      const match = re.exec(text);
+      return String(match?.[2] || '').trim();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function getSpecialPresetFallbackForEntry(text, result, entry) {
+    try {
+      if (!entry || !result) return null;
+      const source = String(entry.source || '').trim().toLowerCase();
+      if (source !== 'source') return null;
+      const toolType = String(getToolTypeForPresetEntry(text, result, entry) || '').trim().toLowerCase();
+      if (!toolType.includes('switch')) return null;
+      return '0';
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function getPublishedPresetFallbackValue(text, result, entry) {
+    const specialFallback = getSpecialPresetFallbackForEntry(text, result, entry);
+    if (specialFallback != null) return String(specialFallback);
+    return getEntryFallbackPresetValue(entry);
+  }
+
+  function getExplicitSwitchSourcePresetValue(text, result, entry) {
+    try {
+      const toolType = String(getToolTypeForPresetEntry(text, result, entry) || '').trim().toLowerCase();
+      if (!toolType.includes('switch')) return null;
+      if (String(entry?.source || '').trim().toLowerCase() !== 'source') return null;
+      const toolBlock = findToolBlockAnywhere(text, entry.sourceOp);
+      if (!toolBlock) return '0';
+      const inputsBlock = findInputsInTool(text, toolBlock.open, toolBlock.close);
+      if (!inputsBlock) return '0';
+      const items = parseOrderedBlockEntries(text, inputsBlock.open, inputsBlock.close)
+        .filter((item) => item && item.name && getOrderedBlockEntryType(text, item) === 'Input');
+      const sourceItem = items.find((item) => String(item.name || '').trim() === 'Source');
+      if (!sourceItem) return '0';
+      const body = text.slice(sourceItem.blockOpen + 1, sourceItem.blockClose);
+      const value = extractControlPropLiteral(body, 'Value');
+      return value != null && String(value).trim() !== '' ? String(value) : '0';
+    } catch (_) {
+      return '0';
+    }
+  }
+
+  function listGroupInputEntries(text, result) {
+    try {
+      if (!text || !result) return [];
+      const bounds = locateMacroGroupBounds(text, result);
+      if (!bounds) return [];
+      let blocks = findGroupInputsBlocks(text, bounds.groupOpenIndex, bounds.groupCloseIndex);
+      if (!Array.isArray(blocks) || !blocks.length) {
+        const fallback = findPrimaryInputsBlockFallback(text, bounds.groupOpenIndex, bounds.groupCloseIndex);
+        blocks = fallback ? [fallback] : [];
+      }
+      const inputs = blocks[0];
+      if (!inputs) return [];
+      return parseOrderedBlockEntries(text, inputs.openIndex, inputs.closeIndex)
+        .filter((item) => item && item.name && getOrderedBlockEntryType(text, item) === 'Input');
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function findGroupInputBlockForScopeEntry(text, result, scopeEntry) {
+    try {
+      if (!text || !result || !scopeEntry) return null;
+      const controlId = String(scopeEntry.source || scopeEntry.key || '').trim();
+      if (!controlId) return null;
+      const bounds = locateMacroGroupBounds(text, result);
+      if (!bounds) return null;
+      let blocks = findGroupInputsBlocks(text, bounds.groupOpenIndex, bounds.groupCloseIndex);
+      if (!Array.isArray(blocks) || !blocks.length) {
+        const fallback = findPrimaryInputsBlockFallback(text, bounds.groupOpenIndex, bounds.groupCloseIndex);
+        blocks = fallback ? [fallback] : [];
+      }
+      const inputs = blocks[0];
+      if (!inputs) return null;
+      const exact = findInputBlockInInputs(text, inputs.openIndex, inputs.closeIndex, controlId);
+      if (exact) return exact;
+      const all = listGroupInputEntries(text, result);
+      const normControl = normalizeId(controlId);
+      const prefixMatches = all.filter((item) => {
+        const normName = normalizeId(item.name);
+        return normName === `${normControl}1` || normName.startsWith(`${normControl}_`) || normName.startsWith(`${normControl}.`);
+      });
+      if (prefixMatches.length === 1) {
+        return { open: prefixMatches[0].blockOpen, close: prefixMatches[0].blockClose };
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function resolvePresetScopeTarget(result, scopeCandidate) {
+    try {
+      if (!result || !scopeCandidate) return null;
+      const scopeEntry = normalizePresetScopeEntry(result, scopeCandidate);
+      if (!scopeEntry) return null;
+      const entries = Array.isArray(result.entries) ? result.entries : [];
+      const resolvedEntry = entries.find((entry) => getEntryKey(entry) === scopeEntry.key) || null;
+      const groupControl = scopeEntry.targetType === 'groupUserControl'
+        ? getParsedGroupUserControlById(result, scopeEntry.source || scopeEntry.key)
+        : null;
+      return {
+        scopeEntry,
+        entry: resolvedEntry,
+        groupControl,
+        targetType: scopeEntry.targetType || (groupControl ? 'groupUserControl' : 'publishedInput'),
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function getPresetScopeValueFromSnapshot(snapshot, result, scopeCandidate) {
+    try {
+      const resolved = resolvePresetScopeTarget(result, scopeCandidate);
+      if (!resolved || !result) return '';
+      const entry = resolved.entry;
+      const text = String(snapshot?.originalText || '');
+      if (!text) {
+        return resolved.targetType === 'groupUserControl'
+          ? getGroupUserControlFallbackPresetValue(result, resolved.scopeEntry, resolved.groupControl)
+          : getEntryFallbackPresetValue(entry);
+      }
+      let body = '';
+      if (resolved.targetType === 'groupUserControl') {
+        const inputBlock = findGroupInputBlockForScopeEntry(text, result, resolved.scopeEntry);
+        if (inputBlock) {
+          body = text.slice(inputBlock.open + 1, inputBlock.close);
+        } else {
+          return getGroupUserControlFallbackPresetValue(result, resolved.scopeEntry, resolved.groupControl);
+        }
+      } else {
+        if (!entry) return '';
+        // Switch-family Source controls act as branch selectors and must be captured
+        // from the authored switch tool itself instead of the published proxy input.
+        const explicitSwitchSource = getExplicitSwitchSourcePresetValue(text, result, entry);
+        if (explicitSwitchSource != null) return explicitSwitchSource;
+        const bounds = locateMacroGroupBounds(text, result);
+        if (!bounds) return getPublishedPresetFallbackValue(text, result, entry);
+        const toolBlock = findToolBlockInGroup(text, bounds.groupOpenIndex, bounds.groupCloseIndex, entry.sourceOp);
+        if (!toolBlock) return getPublishedPresetFallbackValue(text, result, entry);
+        const inputsBlock = findInputsInTool(text, toolBlock.open, toolBlock.close);
+        if (!inputsBlock) return getPublishedPresetFallbackValue(text, result, entry);
+        const inputBlock = findInputBlockInInputs(text, inputsBlock.open, inputsBlock.close, entry.source);
+        if (!inputBlock) return getPublishedPresetFallbackValue(text, result, entry);
+        body = text.slice(inputBlock.open + 1, inputBlock.close);
+      }
+      let value = extractControlPropLiteral(body, 'Value') || '';
+      if (isTextControl(entry)) {
+        const directPlain = extractStyledTextPlainTextFromInput(body);
+        if (directPlain != null) value = directPlain;
+        const styled = extractStyledTextBlockFromInput(body);
+        if (styled) {
+          const plain = extractStyledTextPlainText(styled);
+          if (plain != null) value = plain;
+        }
+        if (/^StyledText\b/.test(String(value).trim())) {
+          const plain = extractStyledTextPlainText(String(value).trim());
+          if (plain != null) value = plain;
+        }
+        value = stripDefaultQuotes(value);
+      }
+      if (value == null || String(value).trim() === '') {
+        return resolved.targetType === 'groupUserControl'
+          ? getGroupUserControlFallbackPresetValue(result, resolved.scopeEntry, resolved.groupControl)
+          : getPublishedPresetFallbackValue(text, result, entry);
+      }
+      return String(value);
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function captureScopeValuesFromSnapshot(snapshot, result, scopeTargets) {
+    const values = {};
+    if (!result || !Array.isArray(scopeTargets) || !scopeTargets.length) return values;
+    scopeTargets.forEach((target) => {
+      const resolved = resolvePresetScopeTarget(result, target);
+      const key = String(resolved?.scopeEntry?.key || '').trim();
+      if (!key) return;
+      values[key] = getPresetScopeValueFromSnapshot(snapshot, result, resolved.scopeEntry);
+    });
+    return values;
+  }
+
+  function buildPresetScopeEntriesForKeys(result, scopeKeys) {
+    try {
+      if (!result || !Array.isArray(scopeKeys) || !scopeKeys.length) return [];
+      const keyToEntry = new Map();
+      (result.entries || []).forEach((entry) => {
+        const key = getEntryKey(entry);
+        if (!key || keyToEntry.has(key)) return;
+        keyToEntry.set(key, entry);
+      });
+      return scopeKeys
+        .map((key) => {
+          const entry = keyToEntry.get(key);
+          return entry ? buildPresetScopeEntry(result, entry) : normalizePresetScopeEntry(result, key);
+        })
+        .filter(Boolean);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function makeUniquePresetName(rawName, used) {
+    const base = String(rawName || '').trim() || 'Preset';
+    if (!used.has(base)) {
+      used.add(base);
+      return base;
+    }
+    let n = 2;
+    while (used.has(`${base} ${n}`)) n += 1;
+    const next = `${base} ${n}`;
+    used.add(next);
+    return next;
+  }
+
+  function escapeLuaString(value) {
+    return String(value || '')
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\r/g, '\\r')
+      .replace(/\n/g, '\\n');
+  }
+
+  function serializePresetLuaValue(entry, rawValue) {
+    const raw = rawValue == null ? '' : String(rawValue);
+    const trimmed = raw.trim();
+    const inputControl = normalizeInputControlValue(
+      entry?.controlMeta?.inputControl || entry?.controlMetaOriginal?.inputControl || entry?.inputControl
+    );
+    const dataType = String(entry?.controlMeta?.dataType || entry?.controlMetaOriginal?.dataType || entry?.dataType || '')
+      .replace(/"/g, '')
+      .trim()
+      .toLowerCase();
+    const textLike = (!!inputControl && /text/i.test(inputControl))
+      || String(entry?.source || entry?.id || '').toLowerCase().includes('styledtext')
+      || dataType === 'text'
+      || dataType === 'string'
+      || dataType.includes('text')
+      || isTextControl(entry);
+    if (textLike) {
+      return `"${escapeLuaString(raw)}"`;
+    }
+    if (!trimmed) return '0';
+    if (/^(?:-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|nil)$/i.test(trimmed)) {
+      return trimmed;
+    }
+    const fuIdMatch = /^FuID\s*\{\s*"((?:\\.|[^"])*)"\s*\}$/.exec(trimmed);
+    if (fuIdMatch) {
+      return `FuID("${escapeLuaString(unescapeSettingString(fuIdMatch[1]))}")`;
+    }
+    if (
+      trimmed.startsWith('{') ||
+      /^[A-Za-z_][A-Za-z0-9_]*\s*\{/.test(trimmed) ||
+      /^[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(trimmed) ||
+      (trimmed.startsWith('"') && trimmed.endsWith('"'))
+    ) {
+      return trimmed;
+    }
+    return `"${escapeLuaString(raw)}"`;
+  }
+
+  function resolvePresetRuntimeTargets(result, scopeCandidates) {
+    try {
+      const targets = [];
+      const seen = new Set();
+      const scopeEntries = normalizePresetScopeEntries(result, scopeCandidates, []);
+      scopeEntries.forEach((scopeEntry) => {
+        const resolved = resolvePresetScopeTarget(result, scopeEntry);
+        if (!resolved) return;
+        const runtimeId = resolved.targetType === 'groupUserControl'
+          ? String(resolved.scopeEntry?.source || resolved.groupControl?.id || '').trim()
+          : String(resolved.entry?.key || '').trim();
+        const valueMeta = resolved.entry || {
+          source: String(resolved.scopeEntry?.source || resolved.groupControl?.id || '').trim(),
+          inputControl: String(resolved.groupControl?.inputControl || resolved.scopeEntry?.inputControl || '').trim(),
+          dataType: String(resolved.groupControl?.dataType || resolved.scopeEntry?.dataType || '').trim(),
+          id: String(resolved.groupControl?.id || resolved.scopeEntry?.source || '').trim(),
+        };
+        const key = String(resolved.scopeEntry?.key || '').trim();
+        if (!key || !runtimeId || seen.has(key)) return;
+        seen.add(key);
+        targets.push({
+          key,
+          runtimeId,
+          targetType: resolved.targetType,
+          valueMeta,
+        });
+      });
+      return targets;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function buildPresetApplyOnChangeScript(result, payload, selectorInputId = FMR_PRESET_SELECT_CONTROL) {
+    try {
+      const scopeEntries = Array.isArray(payload?.scopeEntries) ? payload.scopeEntries : [];
+      const presetObj = payload?.presets && typeof payload.presets === 'object' ? payload.presets : {};
+      const presetNames = Object.keys(presetObj);
+      if (!scopeEntries.length || !presetNames.length) return '';
+      const runtimeTargets = resolvePresetRuntimeTargets(result, scopeEntries);
+      if (!runtimeTargets.length) return '';
+      const variationByKey = new Map();
+      runtimeTargets.forEach((target) => {
+        const seen = new Set();
+        presetNames.forEach((name) => {
+          const values = presetObj?.[name] || {};
+          if (Object.prototype.hasOwnProperty.call(values, target.key)) {
+            seen.add(String(values[target.key]));
+          }
+        });
+        variationByKey.set(target.key, seen.size > 1);
+      });
+      const lines = [];
+      lines.push(`local preset = math.floor(tonumber(tool:GetInput("${escapeLuaString(selectorInputId || FMR_PRESET_SELECT_CONTROL)}")) or 0)`);
+      presetNames.forEach((name, idx) => {
+        const values = presetObj?.[name] || {};
+        lines.push(`${idx === 0 ? 'if' : 'elseif'} preset == ${idx} then`);
+        runtimeTargets.forEach((target) => {
+          if (!Object.prototype.hasOwnProperty.call(values, target.key)) return;
+          const literal = serializePresetLuaValue(target.valueMeta, values[target.key]);
+          const variesAcrossPresets = !!variationByKey.get(target.key);
+          const isConstructorLike = /^[A-Za-z_][A-Za-z0-9_]*\s*[\(\{]/.test(String(literal || '').trim());
+          if (isConstructorLike && !variesAcrossPresets) return;
+          lines.push(`  tool["${escapeLuaString(target.runtimeId)}"] = ${literal}`);
+        });
+      });
+      lines.push('end');
+      return lines.join('\n').trim();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function appendControlListEntries(body, prop, values, indent, eol) {
+    try {
+      let next = String(body || '');
+      const items = Array.isArray(values) ? values : [];
+      items.forEach((value) => {
+        const escaped = escapeQuotes(String(value || '').trim());
+        if (!escaped) return;
+        const trimmed = next.replace(/\s+$/g, '');
+        if (trimmed && !trimmed.endsWith(',')) {
+          next = trimmed + ',' + next.slice(trimmed.length);
+        }
+        const needsBreak = next.trim().length && !next.endsWith(eol);
+        next += (needsBreak ? eol : '') + indent + `{ ${prop} = "${escaped}" },`;
+      });
+      return next;
+    } catch (_) {
+      return body;
+    }
+  }
+
+  function upsertPresetSelectorControl(text, result, presetNames, script, eol, defaultIndex = 0) {
+    try {
+      const safeDefaultIndex = Math.max(0, Number(defaultIndex) || 0);
+      const lines = buildControlDefinitionLines('combo', {
+        name: 'Preset',
+        page: 'Controls',
+        comboOptions: presetNames,
+      });
+      lines.push(`INP_Default = ${safeDefaultIndex},`);
+      if (script && script.trim()) {
+        lines.push(`INPS_ExecuteOnChange = "${escapeSettingString(script)}",`);
+      }
+      return upsertGroupUserControl(text, result, FMR_PRESET_SELECT_CONTROL, {
+        createLines: lines,
+        updateBody: (body, indent, newline) => {
+          let next = body;
+          next = upsertControlProp(next, 'LINKS_Name', '"Preset"', indent, newline);
+          next = upsertControlProp(next, 'LINKID_DataType', '"Number"', indent, newline);
+          next = upsertControlProp(next, 'INP_Integer', 'false', indent, newline);
+          next = upsertControlProp(next, 'INP_Default', String(safeDefaultIndex), indent, newline);
+          next = upsertControlProp(next, 'INPID_InputControl', '"ComboControl"', indent, newline);
+          next = upsertControlProp(next, 'ICS_ControlPage', '"Controls"', indent, newline);
+          next = removeControlListPropEntries(next, 'CCS_AddString');
+          next = appendControlListEntries(next, 'CCS_AddString', presetNames, indent, newline);
+          next = script && script.trim()
+            ? upsertControlProp(next, 'INPS_ExecuteOnChange', `"${escapeSettingString(script)}"`, indent, newline)
+            : removeControlProp(next, 'INPS_ExecuteOnChange');
+          return next;
+        },
+      }, eol || '\n');
+    } catch (_) {
+      return text;
+    }
+  }
+
+  function syncPresetSelectorEntryToMacro(result, macroSourceOp) {
+    try {
+      if (!result || !macroSourceOp) return null;
+      result.entries = Array.isArray(result.entries) ? result.entries : [];
+      result.order = Array.isArray(result.order) ? result.order : result.entries.map((_, i) => i);
+      const engine = ensurePresetEngine(result);
+      const presetNames = Object.keys(engine?.presets || {}).filter((name) => String(name || '').trim());
+      const hasPack = presetNames.length > 0 && Array.isArray(engine?.scopeEntries) && engine.scopeEntries.length > 0;
+      const removeEntryAtIndex = (removeIdx) => {
+        if (!Number.isFinite(removeIdx) || removeIdx < 0 || removeIdx >= result.entries.length) return;
+        result.entries.splice(removeIdx, 1);
+        result.order = (Array.isArray(result.order) ? result.order : [])
+          .filter((idx) => idx !== removeIdx)
+          .map((idx) => (idx > removeIdx ? idx - 1 : idx));
+      };
+      let idx = result.entries.findIndex((e) => e && e.source === FMR_PRESET_SELECT_CONTROL);
+      if (!hasPack) {
+        if (idx >= 0) removeEntryAtIndex(idx);
+        return null;
+      }
+      const activeName = String(engine?.activePreset || presetNames[0] || '').trim();
+      const defaultIndex = Math.max(0, presetNames.indexOf(activeName));
+      const targetPage = 'Controls';
+      const meta = {
+        page: targetPage,
+        inputControl: 'ComboControl',
+        defaultValue: String(defaultIndex),
+        choiceOptions: presetNames,
+        publishTarget: 'groupUserControl',
+      };
+      if (idx < 0) {
+        idx = ensurePublishedInResult(result, macroSourceOp, FMR_PRESET_SELECT_CONTROL, 'Preset', meta);
+      } else {
+        applyNodeControlMeta(result.entries[idx], meta);
+      }
+      if (!Number.isFinite(idx) || idx < 0 || !result.entries[idx]) return null;
+      const entry = result.entries[idx];
+      const key = makeUniqueKey(`${macroSourceOp}_${FMR_PRESET_SELECT_CONTROL}`);
+      entry.key = key;
+      entry.sourceOp = macroSourceOp;
+      entry.source = FMR_PRESET_SELECT_CONTROL;
+      entry.name = 'Preset';
+      entry.displayName = 'Preset';
+      entry.displayNameOriginal = 'Preset';
+      entry.displayNameDirty = false;
+      entry.page = targetPage;
+      entry.raw = buildInstanceInputRaw(key, macroSourceOp, FMR_PRESET_SELECT_CONTROL, 'Preset', targetPage, null);
+      entry.syntheticUserControlOnly = true;
+      entry.publishTarget = 'groupUserControl';
+      entry.syntheticGroupUserControl = true;
+      entry.controlMeta = entry.controlMeta || {};
+      entry.controlMetaOriginal = entry.controlMetaOriginal || {};
+      entry.controlMeta.choiceOptions = [...presetNames];
+      entry.controlMeta.inputControl = '"ComboControl"';
+      entry.controlMeta.defaultValue = String(defaultIndex);
+      entry.controlMetaOriginal.choiceOptions = [...presetNames];
+      entry.controlMetaOriginal.inputControl = '"ComboControl"';
+      entry.controlMetaOriginal.defaultValue = String(defaultIndex);
+      result.order = result.order.filter((orderIdx) => orderIdx !== idx);
+      const insertAt = result.order.findIndex((orderIdx) => {
+        const current = result.entries[orderIdx];
+        return String(current?.page || 'Controls').trim() === targetPage;
+      });
+      result.order.splice(insertAt >= 0 ? insertAt : 0, 0, idx);
+      return idx;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function isGroupUserControlEntry(entry) {
+    try {
+      return !!(entry && (entry.syntheticGroupUserControl === true || entry.publishTarget === 'groupUserControl'));
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function buildGroupUserControlEntry(result, sourceOp, source, displayName, meta) {
+    const metaPage = (meta && meta.page && String(meta.page).trim()) ? String(meta.page).trim() : '';
+    const targetPage = metaPage || result.activePage || 'Controls';
+    const entry = {
+      key: makeUniqueKey(`${sourceOp}_${source}`),
+      name: displayName || null,
+      page: targetPage,
+      sourceOp,
+      source,
+      displayName: displayName || `${sourceOp}.${source}`,
+      raw: '',
+      controlGroup: null,
+      onChange: '',
+      buttonExecute: '',
+      syntheticGroupUserControl: true,
+      publishTarget: 'groupUserControl',
+    };
+    applyNodeControlMeta(entry, meta);
+    return entry;
+  }
+
+  function parseTruthyGroupControlVisible(value) {
+    try {
+      if (value == null || value === '') return true;
+      const raw = String(value).replace(/"/g, '').trim().toLowerCase();
+      if (!raw) return true;
+      return !(raw === 'false' || raw === '0' || raw === 'no');
+    } catch (_) {
+      return true;
+    }
+  }
+
+  function syncVisibleGroupUserControlsIntoEntries(text, result) {
+    try {
+      if (!result || !Array.isArray(result.groupUserControls) || !result.groupUserControls.length) return;
+      result.entries = Array.isArray(result.entries) ? result.entries : [];
+      result.order = Array.isArray(result.order) ? result.order : result.entries.map((_, i) => i);
+      const inserted = [];
+      const macroSourceOp = resolveMacroGroupSourceOp(text, result) || String(result.macroName || result.macroNameOriginal || '').trim();
+      if (!macroSourceOp) return;
+      result.groupUserControls.forEach((control) => {
+        if (!control || !control.id) return;
+        if (control.kind === 'system') return;
+        if (!String(control.inputControl || '').trim()) return;
+        if (!parseTruthyGroupControlVisible(control.visible)) return;
+        const inputControl = String(control.inputControl || '').trim();
+        const lowerInput = inputControl.toLowerCase();
+        const displayName = extractQuotedProp(control.rawBody || '', 'LINKS_Name') || humanizeName(control.id);
+        const meta = {
+          kind: lowerInput === 'buttoncontrol' ? 'button' : (lowerInput === 'labelcontrol' ? 'label' : ''),
+          page: control.page || 'Controls',
+          inputControl,
+          labelCount: Number.isFinite(control.labelCount) ? Number(control.labelCount) : null,
+          dataType: control.dataType || '',
+          defaultValue: control.defaultValue != null ? control.defaultValue : '',
+          choiceOptions: Array.isArray(control.choiceOptions) ? [...control.choiceOptions] : [],
+          textLines: extractControlPropValue(control.rawBody || '', 'TEC_Lines'),
+          integer: extractControlPropValue(control.rawBody || '', 'INP_Integer'),
+          minAllowed: extractControlPropValue(control.rawBody || '', 'INP_MinAllowed'),
+          maxAllowed: extractControlPropValue(control.rawBody || '', 'INP_MaxAllowed'),
+          minScale: extractControlPropValue(control.rawBody || '', 'INP_MinScale'),
+          maxScale: extractControlPropValue(control.rawBody || '', 'INP_MaxScale'),
+          publishTarget: 'groupUserControl',
+        };
+        const idx = ensurePublishedInResult(result, macroSourceOp, control.id, displayName, meta);
+        if (!Number.isFinite(idx) || idx < 0 || !result.entries[idx]) return;
+        const entry = result.entries[idx];
+        entry.displayName = displayName;
+        entry.displayNameOriginal = displayName;
+        entry.displayNameDirty = false;
+        entry.page = meta.page || entry.page || 'Controls';
+        entry.syntheticGroupUserControl = true;
+        entry.publishTarget = 'groupUserControl';
+        entry.sortIndex = -900000 + Number(control.orderIndex || 0);
+        inserted.push({ index: idx, page: entry.page || 'Controls', orderIndex: Number(control.orderIndex || 0) });
+      });
+      if (inserted.length) {
+        const baseOrder = Array.isArray(result.order) ? [...result.order] : result.entries.map((_, i) => i);
+        const moved = new Set(inserted.map((item) => item.index));
+        let nextOrder = baseOrder.filter((idx) => !moved.has(idx));
+        const grouped = new Map();
+        inserted
+          .slice()
+          .sort((a, b) => {
+            const pageCmp = String(a.page || '').localeCompare(String(b.page || ''));
+            if (pageCmp !== 0) return pageCmp;
+            if (a.orderIndex !== b.orderIndex) return a.orderIndex - b.orderIndex;
+            return a.index - b.index;
+          })
+          .forEach((item) => {
+            const page = String(item.page || 'Controls').trim() || 'Controls';
+            if (!grouped.has(page)) grouped.set(page, []);
+            grouped.get(page).push(item.index);
+          });
+        grouped.forEach((indices, page) => {
+          const insertAt = nextOrder.findIndex((idx) => {
+            const entry = result.entries[idx];
+            const entryPage = (entry?.page && String(entry.page).trim()) ? String(entry.page).trim() : 'Controls';
+            return entryPage === page;
+          });
+          const pos = insertAt >= 0 ? insertAt : nextOrder.length;
+          nextOrder.splice(pos, 0, ...indices);
+        });
+        result.order = nextOrder;
+      }
+    } catch (_) {}
+  }
+
+  function ensurePublishedInResult(result, sourceOp, source, displayName, meta) {
+    if (!result) return null;
+    let idx = (result.entries || []).findIndex((e) => e && e.sourceOp === sourceOp && e.source === source);
+    if (idx < 0 && source === FMR_PRESET_SELECT_CONTROL) {
+      idx = (result.entries || []).findIndex((e) => e && e.source === source);
+      if (idx >= 0) {
+        const key = makeUniqueKey(`${sourceOp}_${source}`);
+        const metaPage = (meta && meta.page && String(meta.page).trim()) ? String(meta.page).trim() : '';
+        const targetPage = metaPage || result.activePage || 'Controls';
+        const entry = result.entries[idx];
+        entry.key = key;
+        entry.name = displayName || entry.name || null;
+        entry.page = targetPage;
+        entry.sourceOp = sourceOp;
+        entry.source = source;
+        entry.displayName = displayName || entry.displayName || `${sourceOp}.${source}`;
+        entry.raw = buildInstanceInputRaw(key, sourceOp, source, displayName, targetPage, null);
+      }
+    }
+    if (idx < 0) {
+      const entry = (meta && meta.publishTarget === 'groupUserControl')
+        ? buildGroupUserControlEntry(result, sourceOp, source, displayName, meta)
+        : (() => {
+            const key = makeUniqueKey(`${sourceOp}_${source}`);
+            const metaPage = (meta && meta.page && String(meta.page).trim()) ? String(meta.page).trim() : '';
+            const targetPage = metaPage || result.activePage || 'Controls';
+            const raw = buildInstanceInputRaw(key, sourceOp, source, displayName, targetPage, null);
+            return {
+              key,
+              name: displayName || null,
+              page: targetPage,
+              sourceOp,
+              source,
+              displayName: displayName || `${sourceOp}.${source}`,
+              raw,
+              controlGroup: null,
+              onChange: '',
+              buttonExecute: '',
+            };
+          })();
+      result.entries.push(entry);
+      idx = result.entries.length - 1;
+      result.order = Array.isArray(result.order) ? result.order : result.entries.map((_, i) => i);
+      result.order.push(idx);
+    }
+    applyNodeControlMeta(result.entries[idx], meta);
+    return idx;
+  }
+
+  function openPresetEngineModal() {
+    const active = getActiveDocument();
+    if (active) storeDocumentSnapshot(active);
+    const allDocs = documents.filter((doc) => doc && !doc.isCsvBatch && doc.snapshot && doc.snapshot.parseResult);
+    const docHasPresetPack = (doc) => {
+      try {
+        const result = doc?.snapshot?.parseResult;
+        const engine = ensurePresetEngine(result);
+        const presetCount = Object.keys(engine?.presets || {}).filter((name) => String(name || '').trim()).length;
+        const scopeCount = Array.isArray(engine?.scopeEntries) ? engine.scopeEntries.length : 0;
+        return presetCount > 0 && scopeCount > 0;
+      } catch (_) {
+        return false;
+      }
+    };
+    const selectedDocs = allDocs.filter((doc) => !!doc.selected);
+    const candidateDocs = selectedDocs.length >= 2 ? selectedDocs : allDocs;
+    if (!candidateDocs.length) {
+      error('Load a macro before opening the presets engine.');
+      return;
+    }
+    if (candidateDocs.length < 2 && !candidateDocs.some(docHasPresetPack)) {
+      error('Select at least two macro tabs (root + variants) to build a preset pack.');
+      return;
+    }
+    let rootDocId = String((candidateDocs.find((doc) => doc.id === activeDocId) || candidateDocs[0]).id || '');
+    const overlay = document.createElement('div');
+    overlay.className = 'add-control-modal csv-modal';
+    const modal = document.createElement('form');
+    modal.className = 'add-control-form';
+    modal.classList.add('preset-engine-modal');
+    const header = document.createElement('header');
+    const headerText = document.createElement('div');
+    const eyebrow = document.createElement('div');
+    eyebrow.className = 'eyebrow';
+    eyebrow.textContent = 'Presets';
+    const title = document.createElement('h3');
+    title.textContent = 'Presets Engine';
+    headerText.appendChild(eyebrow);
+    headerText.appendChild(title);
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.innerHTML = '&times;';
+    header.appendChild(headerText);
+    header.appendChild(closeBtn);
+
+    const body = document.createElement('div');
+    body.className = 'form-body';
+    body.classList.add('preset-engine-body');
+
+    const leftCol = document.createElement('div');
+    leftCol.className = 'preset-engine-column preset-engine-column-main';
+
+    const rightCol = document.createElement('div');
+    rightCol.className = 'preset-engine-column preset-engine-column-scope';
+
+    const status = document.createElement('p');
+    status.className = 'form-hint';
+    status.textContent = candidateDocs.length >= 2
+      ? 'Choose a root tab, choose variant tabs, select value scope, then build.'
+      : 'Review or remove the existing preset pack on this macro. Load more tabs to build a new one.';
+    body.appendChild(status);
+
+    const rootLabel = document.createElement('label');
+    rootLabel.textContent = 'Root / Base tab';
+    const rootSelect = document.createElement('select');
+    candidateDocs.forEach((doc) => {
+      const opt = document.createElement('option');
+      opt.value = doc.id;
+      opt.textContent = getDocDisplayName(doc, candidateDocs) || doc.id;
+      rootSelect.appendChild(opt);
+    });
+    rootSelect.value = rootDocId;
+    rootLabel.appendChild(rootSelect);
+    leftCol.appendChild(rootLabel);
+
+    const baseNameLabel = document.createElement('label');
+    baseNameLabel.className = 'preset-engine-field';
+    baseNameLabel.textContent = 'Base preset name';
+    const baseNameInput = document.createElement('input');
+    baseNameInput.type = 'text';
+    baseNameInput.className = 'preset-engine-variant-name';
+    baseNameInput.placeholder = 'Default';
+    baseNameLabel.appendChild(baseNameInput);
+
+    const builtState = document.createElement('section');
+    builtState.className = 'preset-engine-state';
+    builtState.hidden = true;
+    const builtStateHeader = document.createElement('div');
+    builtStateHeader.className = 'preset-engine-state-header';
+    const builtStateTitle = document.createElement('div');
+    builtStateTitle.className = 'preset-engine-state-title';
+    builtStateTitle.textContent = 'Current root preset pack';
+    const builtStateToggle = document.createElement('button');
+    builtStateToggle.type = 'button';
+    builtStateToggle.className = 'preset-engine-state-toggle';
+    builtStateToggle.textContent = 'Show details';
+    const builtStateMeta = document.createElement('div');
+    builtStateMeta.className = 'preset-engine-state-meta';
+    const builtStatePresets = document.createElement('div');
+    builtStatePresets.className = 'preset-engine-state-presets';
+    const builtStateScope = document.createElement('div');
+    builtStateScope.className = 'preset-engine-state-scope';
+    const builtStateDetails = document.createElement('div');
+    builtStateDetails.className = 'preset-engine-state-details';
+    const builtStateActions = document.createElement('div');
+    builtStateActions.className = 'preset-engine-state-actions';
+    const clearBuiltBtn = document.createElement('button');
+    clearBuiltBtn.type = 'button';
+    clearBuiltBtn.textContent = 'Remove Preset Pack';
+    let builtStateExpanded = false;
+    builtStateHeader.appendChild(builtStateTitle);
+    builtStateHeader.appendChild(builtStateToggle);
+    builtState.appendChild(builtStateHeader);
+    builtState.appendChild(builtStateMeta);
+    builtStateDetails.appendChild(builtStatePresets);
+    builtStateDetails.appendChild(builtStateScope);
+    builtState.appendChild(builtStateDetails);
+    builtStateActions.appendChild(clearBuiltBtn);
+    builtState.appendChild(builtStateActions);
+
+    const variantLabel = document.createElement('label');
+    variantLabel.className = 'preset-engine-field';
+    variantLabel.textContent = 'Variant tabs (presets)';
+    const variantWrap = document.createElement('div');
+    variantWrap.className = 'detail-combo-options-input preset-engine-list preset-engine-variant-list';
+    variantLabel.appendChild(variantWrap);
+    leftCol.appendChild(variantLabel);
+    leftCol.appendChild(builtState);
+
+    const scopeLabel = document.createElement('label');
+    scopeLabel.className = 'preset-engine-field';
+    scopeLabel.textContent = 'Value scope';
+    const scopeWrap = document.createElement('div');
+    scopeWrap.className = 'detail-combo-options-input preset-engine-list preset-engine-scope-list';
+    scopeLabel.appendChild(scopeWrap);
+    rightCol.appendChild(scopeLabel);
+
+    let currentRoot = null;
+    let rootEligible = [];
+    let scopeSelection = new Set();
+    let variantRows = [];
+
+    const setBuiltStateExpanded = (expanded) => {
+      builtStateExpanded = !!expanded;
+      builtState.classList.toggle('expanded', builtStateExpanded);
+      builtStateToggle.textContent = builtStateExpanded ? 'Hide details' : 'Show details';
+    };
+
+    const renderBuiltState = () => {
+      builtStateMeta.innerHTML = '';
+      builtStatePresets.innerHTML = '';
+      builtStateScope.innerHTML = '';
+      const rootId = String(rootSelect.value || '');
+      const rootDoc = candidateDocs.find((doc) => doc.id === rootId) || null;
+      const rootResult = rootDoc?.snapshot?.parseResult || null;
+      const engine = ensurePresetEngine(rootResult);
+      const presetNames = Object.keys(engine?.presets || {});
+      const scopeEntries = Array.isArray(engine?.scopeEntries) ? engine.scopeEntries : [];
+      const targetCounts = new Map();
+      scopeEntries.forEach((item) => {
+        const key = String(item?.targetType || 'unknown').trim() || 'unknown';
+        targetCounts.set(key, (targetCounts.get(key) || 0) + 1);
+      });
+      const addMeta = (label, value) => {
+        const chip = document.createElement('div');
+        chip.className = 'preset-engine-state-chip';
+        chip.textContent = `${label}: ${value}`;
+        builtStateMeta.appendChild(chip);
+      };
+      addMeta('Root', getDocDisplayName(rootDoc, candidateDocs) || rootId || 'Unknown');
+      addMeta('Presets', presetNames.length);
+      addMeta('Scope', scopeEntries.length);
+      if (engine?.activePreset) addMeta('Default', engine.activePreset);
+      if (targetCounts.size) {
+        targetCounts.forEach((count, key) => {
+          const label = key === 'groupUserControl' ? 'Macro-root' : (key === 'publishedInput' ? 'Published' : key);
+          addMeta(label, count);
+        });
+      }
+      if (!presetNames.length) {
+        builtState.hidden = true;
+        clearBuiltBtn.disabled = true;
+        builtState.classList.add('is-empty');
+        setBuiltStateExpanded(false);
+        const empty = document.createElement('div');
+        empty.className = 'preset-engine-state-empty';
+        empty.textContent = 'No preset pack built on this root yet.';
+        builtStatePresets.appendChild(empty);
+        return;
+      }
+      builtState.hidden = false;
+      builtState.classList.remove('is-empty');
+      clearBuiltBtn.disabled = false;
+      setBuiltStateExpanded(false);
+      presetNames.forEach((name) => {
+        const pill = document.createElement('span');
+        pill.className = 'preset-engine-preset-pill';
+        if (name === engine.activePreset) pill.classList.add('active');
+        pill.textContent = name;
+        builtStatePresets.appendChild(pill);
+      });
+      scopeEntries.forEach((item) => {
+        const row = document.createElement('div');
+        row.className = 'preset-engine-state-scope-row';
+        const name = document.createElement('span');
+        name.className = 'preset-engine-state-scope-name';
+        name.textContent = item.displayName || item.key;
+        const meta = document.createElement('span');
+        meta.className = 'preset-engine-state-scope-meta';
+        const target = item.targetType === 'groupUserControl' ? 'Macro-root' : (item.targetType === 'publishedInput' ? 'Published' : String(item.targetType || 'unknown'));
+        const page = String(item.page || 'Controls').trim() || 'Controls';
+        meta.textContent = `${target} • ${page}`;
+        row.appendChild(name);
+        row.appendChild(meta);
+        builtStateScope.appendChild(row);
+      });
+    };
+
+    const renderVariants = () => {
+      variantWrap.innerHTML = '';
+      variantRows = [];
+      const rootId = String(rootSelect.value || '');
+      const rootDoc = candidateDocs.find((doc) => doc.id === rootId) || null;
+
+      const rootRow = document.createElement('div');
+      rootRow.className = 'preset-engine-variant-row';
+      const rootFlag = document.createElement('input');
+      rootFlag.type = 'checkbox';
+      rootFlag.checked = true;
+      rootFlag.disabled = true;
+      const rootSource = document.createElement('span');
+      rootSource.className = 'preset-engine-variant-source';
+      rootSource.textContent = `Root / Base: ${getDocDisplayName(rootDoc, candidateDocs) || rootId}`;
+      rootSource.title = rootSource.textContent;
+      rootRow.appendChild(rootFlag);
+      rootRow.appendChild(rootSource);
+      rootRow.appendChild(baseNameInput);
+      variantWrap.appendChild(rootRow);
+
+      candidateDocs.forEach((doc) => {
+        if (doc.id === rootId) return;
+        const row = document.createElement('div');
+        row.className = 'preset-engine-variant-row';
+
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = true;
+        const source = document.createElement('span');
+        source.className = 'preset-engine-variant-source';
+        source.textContent = getDocDisplayName(doc, candidateDocs) || doc.id;
+        source.title = source.textContent;
+        const nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.className = 'preset-engine-variant-name';
+        nameInput.value = getDocDisplayName(doc, candidateDocs) || 'Preset';
+        nameInput.placeholder = 'Preset name';
+        row.appendChild(cb);
+        row.appendChild(source);
+        row.appendChild(nameInput);
+        variantWrap.appendChild(row);
+        variantRows.push({ doc, cb, nameInput });
+      });
+      if (!variantRows.length) {
+        const empty = document.createElement('div');
+        empty.className = 'preset-engine-state-empty';
+        empty.textContent = 'No variant tabs loaded. Load additional tabs to build a new preset pack.';
+        variantWrap.appendChild(empty);
+      }
+      buildBtn.disabled = variantRows.length === 0;
+    };
+
+    const renderScope = () => {
+      scopeWrap.innerHTML = '';
+      const rootId = String(rootSelect.value || '');
+      currentRoot = candidateDocs.find((doc) => doc.id === rootId) || null;
+      const rootResult = currentRoot?.snapshot?.parseResult || null;
+      const rootEngine = ensurePresetEngine(rootResult);
+      const existingPresetNames = Object.keys(rootResult?.presetEngine?.presets || {});
+      const existingBaseName =
+        String(rootResult?.presetEngine?.activePreset || '').trim() ||
+        String(existingPresetNames[0] || '').trim();
+      baseNameInput.value = existingBaseName || 'Default';
+      rootEligible = getPresetEligibleEntries(rootResult);
+      const existingScope = new Set(
+        ((Array.isArray(rootEngine?.scopeEntries) && rootEngine.scopeEntries.length)
+          ? rootEngine.scopeEntries.map((item) => item?.key)
+          : (rootResult?.presetEngine?.scope || []))
+          .filter((key) => rootEligible.some((item) => item.key === key))
+      );
+      scopeSelection = existingScope.size
+        ? existingScope
+        : new Set(rootEligible.map((item) => item.key));
+      rootEligible.forEach((item) => {
+        const row = document.createElement('label');
+        row.className = 'preset-engine-scope-item';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = scopeSelection.has(item.key);
+        cb.addEventListener('change', () => {
+          if (cb.checked) scopeSelection.add(item.key);
+          else scopeSelection.delete(item.key);
+        });
+        const textWrap = document.createElement('span');
+        textWrap.className = 'preset-engine-scope-text';
+        const txt = document.createElement('span');
+        txt.className = 'preset-engine-scope-label';
+        txt.textContent = item.label;
+        const meta = document.createElement('span');
+        meta.className = 'preset-engine-scope-key';
+        meta.textContent = item.key;
+        textWrap.appendChild(txt);
+        textWrap.appendChild(meta);
+        row.appendChild(cb);
+        row.appendChild(textWrap);
+        scopeWrap.appendChild(row);
+      });
+      if (!rootEligible.length) {
+        status.textContent = 'Root tab has no eligible controls for presets.';
+      } else {
+        status.textContent = 'Choose a root tab, choose variant tabs, select value scope, then build.';
+      }
+      renderBuiltState();
+    };
+
+    const scopeActions = document.createElement('div');
+    scopeActions.className = 'detail-actions';
+    const selectAllBtn = document.createElement('button');
+    selectAllBtn.type = 'button';
+    selectAllBtn.textContent = 'Select all';
+    selectAllBtn.addEventListener('click', () => {
+      scopeWrap.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+        cb.checked = true;
+      });
+      rootEligible.forEach((item) => {
+        scopeSelection.add(item.key);
+      });
+    });
+    const clearAllBtn = document.createElement('button');
+    clearAllBtn.type = 'button';
+    clearAllBtn.textContent = 'Select none';
+    clearAllBtn.addEventListener('click', () => {
+      scopeWrap.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+        cb.checked = false;
+      });
+      rootEligible.forEach((item) => {
+        scopeSelection.delete(item.key);
+      });
+    });
+    scopeActions.appendChild(selectAllBtn);
+    scopeActions.appendChild(clearAllBtn);
+    rightCol.appendChild(scopeActions);
+
+    body.appendChild(leftCol);
+    body.appendChild(rightCol);
+
+    const actions = document.createElement('footer');
+    actions.className = 'modal-actions';
+    const closeActionBtn = document.createElement('button');
+    closeActionBtn.type = 'button';
+    closeActionBtn.textContent = 'Close';
+    const buildBtn = document.createElement('button');
+    buildBtn.type = 'button';
+    buildBtn.className = 'primary';
+    buildBtn.textContent = 'Build Preset Pack';
+
+    buildBtn.addEventListener('click', () => {
+      const rootId = String(rootSelect.value || '');
+      const rootDoc = candidateDocs.find((doc) => doc.id === rootId);
+      const rootSnap = rootDoc?.snapshot;
+      const rootResult = rootSnap?.parseResult;
+      if (!rootDoc || !rootSnap || !rootResult) {
+        status.textContent = 'Root tab is invalid.';
+        return;
+      }
+      const scopeKeys = rootEligible
+        .map((item) => item.key)
+        .filter((key) => scopeSelection.has(key));
+      if (!scopeKeys.length) {
+        status.textContent = 'Select at least one scope control.';
+        return;
+      }
+      const selectedVariants = variantRows.filter((row) => row.cb.checked);
+      if (!selectedVariants.length) {
+        status.textContent = 'Select at least one variant tab.';
+        return;
+      }
+      const rootPosByKey = new Map(rootEligible.map((item, idx) => [item.key, idx]));
+      const scopeEntries = buildPresetScopeEntriesForKeys(rootResult, scopeKeys);
+      const base = captureScopeValuesFromSnapshot(rootSnap, rootResult, scopeEntries);
+      const presets = {};
+      const usedPresetNames = new Set();
+      const warnings = [];
+      const requestedBasePresetName = String(baseNameInput.value || '').trim() || 'Default';
+      const defaultPresetName = makeUniquePresetName(requestedBasePresetName, usedPresetNames);
+      presets[defaultPresetName] = { ...base };
+      selectedVariants.forEach((row) => {
+        const variantSnap = row.doc?.snapshot;
+        const variantResult = variantSnap?.parseResult;
+        if (!variantSnap || !variantResult) return;
+        const variantEligible = getPresetEligibleEntries(variantResult);
+        const variantByKey = new Map();
+        variantEligible.forEach((item) => {
+          if (item?.scopeEntry) variantByKey.set(item.key, item.scopeEntry);
+        });
+        const values = {};
+        let matched = 0;
+        scopeEntries.forEach((scopeEntry) => {
+          const key = String(scopeEntry?.key || '').trim();
+          if (!key) return;
+          let variantScopeEntry = variantByKey.get(key) || null;
+          if (!variantScopeEntry) {
+            const rootPos = rootPosByKey.get(key);
+            if (Number.isFinite(rootPos) && rootPos >= 0 && rootPos < variantEligible.length) {
+              variantScopeEntry = variantEligible[rootPos].scopeEntry || null;
+            }
+          }
+          if (!variantScopeEntry) {
+            values[key] = base[key];
+            return;
+          }
+          values[key] = getPresetScopeValueFromSnapshot(variantSnap, variantResult, variantScopeEntry);
+          matched += 1;
+        });
+        const presetName = makeUniquePresetName(row.nameInput.value || getDocDisplayName(row.doc, candidateDocs), usedPresetNames);
+        presets[presetName] = values;
+        if (matched < scopeKeys.length) {
+          const fallbackCount = scopeKeys.length - matched;
+          warnings.push(`${presetName}: ${fallbackCount} scope control${fallbackCount === 1 ? '' : 's'} used base fallback.`);
+        }
+      });
+      const presetNames = Object.keys(presets);
+      if (!presetNames.length) {
+        status.textContent = 'No presets could be built from selected variants.';
+        return;
+      }
+      rootResult.presetEngine = {
+        version: 2,
+        buildMarker: FMR_BUILD_MARKER,
+        scope: scopeKeys,
+        scopeEntries,
+        base,
+        presets,
+        activePreset: defaultPresetName,
+      };
+      ensurePresetEngine(rootResult);
+      syncPresetSelectorEntryToMacro(
+        rootResult,
+        resolveMacroGroupSourceOp(rootSnap.originalText, rootResult)
+          || String(rootResult.macroName || rootResult.macroNameOriginal || '').trim()
+      );
+      rootSnap.parseResult = rootResult;
+      rootSnap.newline = rootSnap.newline || detectNewline(rootSnap.originalText || '');
+      if (rootDoc.id === activeDocId) {
+        state.parseResult = rootResult;
+        state.newline = rootSnap.newline;
+        renderActiveList();
+        refreshPageTabs?.();
+        updateRemoveSelectedState();
+        nodesPane?.parseAndRenderNodes?.();
+        const activeDoc = getActiveDocument();
+        if (activeDoc) storeDocumentSnapshot(activeDoc);
+      } else {
+        rootDoc.snapshot = rootSnap;
+      }
+      renderDocTabs();
+      renderBuiltState();
+      try {
+        builtState.hidden = false;
+        builtState.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      } catch (_) {}
+      const warningText = warnings.length ? ` Warnings: ${warnings.slice(0, 3).join(' | ')}${warnings.length > 3 ? ' ...' : ''}` : '';
+      const rootLabel = getDocDisplayName(rootDoc, candidateDocs) || rootDoc.id;
+      status.textContent = `Built ${presetNames.length} preset${presetNames.length === 1 ? '' : 's'} on "${rootLabel}".${warningText}`;
+      info(`Preset pack built: ${presetNames.length} preset(s) attached to ${rootLabel}.`);
+    });
+
+    clearBuiltBtn.addEventListener('click', () => {
+      const rootId = String(rootSelect.value || '');
+      const rootDoc = candidateDocs.find((doc) => doc.id === rootId);
+      const rootSnap = rootDoc?.snapshot;
+      const rootResult = rootSnap?.parseResult;
+      if (!rootDoc || !rootSnap || !rootResult) {
+        status.textContent = 'Root tab is invalid.';
+        return;
+      }
+      rootResult.presetEngine = {
+        version: 2,
+        buildMarker: FMR_BUILD_MARKER,
+        scope: [],
+        scopeEntries: [],
+        base: {},
+        presets: {},
+        activePreset: '',
+      };
+      ensurePresetEngine(rootResult);
+      syncPresetSelectorEntryToMacro(
+        rootResult,
+        resolveMacroGroupSourceOp(rootSnap.originalText, rootResult)
+          || String(rootResult.macroName || rootResult.macroNameOriginal || '').trim()
+      );
+      rootSnap.parseResult = rootResult;
+      if (rootDoc.id === activeDocId) {
+        state.parseResult = rootResult;
+        state.newline = rootSnap.newline || state.newline || detectNewline(rootSnap.originalText || '');
+        renderActiveList();
+        refreshPageTabs?.();
+        updateRemoveSelectedState();
+        nodesPane?.parseAndRenderNodes?.();
+        const activeDoc = getActiveDocument();
+        if (activeDoc) storeDocumentSnapshot(activeDoc);
+      } else {
+        rootDoc.snapshot = rootSnap;
+      }
+      renderScope();
+      renderDocTabs();
+      renderBuiltState();
+      const rootLabel = getDocDisplayName(rootDoc, candidateDocs) || rootDoc.id;
+      status.textContent = `Removed preset pack from "${rootLabel}".`;
+      info(`Preset pack removed from ${rootLabel}.`);
+    });
+    builtStateToggle.addEventListener('click', () => {
+      if (builtState.classList.contains('is-empty')) return;
+      setBuiltStateExpanded(!builtStateExpanded);
+    });
+    setBuiltStateExpanded(false);
+
+    const close = () => {
+      try { overlay.remove(); } catch (_) {}
+    };
+    let overlayPointerDown = false;
+    closeActionBtn.addEventListener('click', close);
+    closeBtn.addEventListener('click', close);
+    overlay.addEventListener('mousedown', (ev) => {
+      overlayPointerDown = ev.target === overlay;
+    });
+    overlay.addEventListener('click', (ev) => {
+      if (ev.target === overlay && overlayPointerDown) close();
+      overlayPointerDown = false;
+    });
+    modal.addEventListener('submit', (ev) => ev.preventDefault());
+    rootSelect.addEventListener('change', () => {
+      rootDocId = String(rootSelect.value || '');
+      renderVariants();
+      renderScope();
+    });
+
+    actions.appendChild(closeActionBtn);
+    actions.appendChild(buildBtn);
+    modal.appendChild(header);
+    modal.appendChild(body);
+    modal.appendChild(actions);
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    renderVariants();
+    renderScope();
   }
 
   function resolveRowFromLink(rows, link) {
@@ -9299,7 +10956,7 @@ async function handleFile(file) {
         updated = upsertHiddenDataLinkControl(updated, state.parseResult, dataLink, eol);
       }
       if (fileMetaPath) {
-        updated = upsertHiddenFileMetaControl(updated, state.parseResult, { exportPath: fileMetaPath }, eol);
+        updated = upsertHiddenFileMetaControl(updated, state.parseResult, { exportPath: fileMetaPath, buildMarker: FMR_BUILD_MARKER }, eol);
         updated = rewriteUpdateDataProtocolPaths(updated, fileMetaPath);
       }
     }
@@ -9710,26 +11367,100 @@ async function handleFile(file) {
 
   function getColorGroupBlockByIndexFrom(entries, order, idx) {
     const entry = entries[idx];
-    if (!entry || !entry.sourceOp || !Number.isFinite(entry.controlGroup)) return null;
-    const key = `${entry.sourceOp}::${entry.controlGroup}`;
+    if (!entry || !entry.sourceOp) return null;
     const startPos = order.indexOf(idx);
     if (startPos < 0) return null;
-    let first = startPos;
-    let last = startPos;
-    for (let p = startPos - 1; p >= 0; p--) {
-      const e2 = entries[order[p]];
-      if (!e2 || e2.isLabel || !Number.isFinite(e2.controlGroup) || e2.sourceOp !== entry.sourceOp) break;
-      if (`${e2.sourceOp}::${e2.controlGroup}` !== key) break;
-      first = p;
+
+    if (Number.isFinite(entry.controlGroup)) {
+      const key = `${entry.sourceOp}::${entry.controlGroup}`;
+      let first = startPos;
+      let last = startPos;
+      for (let p = startPos - 1; p >= 0; p--) {
+        const e2 = entries[order[p]];
+        if (!e2 || e2.isLabel || !Number.isFinite(e2.controlGroup) || e2.sourceOp !== entry.sourceOp) break;
+        if (`${e2.sourceOp}::${e2.controlGroup}` !== key) break;
+        first = p;
+      }
+      for (let p = startPos + 1; p < order.length; p++) {
+        const e2 = entries[order[p]];
+        if (!e2 || e2.isLabel || !Number.isFinite(e2.controlGroup) || e2.sourceOp !== entry.sourceOp) break;
+        if (`${e2.sourceOp}::${e2.controlGroup}` !== key) break;
+        last = p;
+      }
+      const indices = order.slice(first, last + 1);
+      return { firstIndex: order[first], lastIndex: order[last], indices, count: indices.length, key };
     }
-    for (let p = startPos + 1; p < order.length; p++) {
-      const e2 = entries[order[p]];
-      if (!e2 || e2.isLabel || !Number.isFinite(e2.controlGroup) || e2.sourceOp !== entry.sourceOp) break;
-      if (`${e2.sourceOp}::${e2.controlGroup}` !== key) break;
-      last = p;
+
+    const base = deriveGroupBase(entry.source);
+    if (!base) return null;
+    const key = `${entry.sourceOp}::base:${base}`;
+    const indices = order.filter((orderIdx) => {
+      const e2 = entries[orderIdx];
+      if (!e2 || e2.isLabel || e2.sourceOp !== entry.sourceOp) return false;
+      const b2 = deriveGroupBase(e2.source);
+      return !!b2 && b2 === base;
+    });
+    if (!indices.length) return null;
+    return {
+      firstIndex: indices[0],
+      lastIndex: indices[indices.length - 1],
+      indices,
+      count: indices.length,
+      key,
+    };
+  }
+
+  function cleanDocLabelValue(value) {
+    return String(value || '').replace(/\s+\*$/, '').trim();
+  }
+
+  function getFileLabelBase(fileName) {
+    const raw = cleanDocLabelValue(fileName);
+    if (!raw) return '';
+    const leaf = raw.split(/[\\/]/).pop() || raw;
+    return leaf.replace(/\.[^.]+$/, '').trim();
+  }
+
+  function isPlaceholderMacroName(name) {
+    const value = cleanDocLabelValue(name).toLowerCase();
+    if (!value) return true;
+    return /^(new\s*macro|newmacro|clipboard|untitled|unknown|imported)$/.test(value);
+  }
+
+  function getDocDisplayName(doc, docs = documents) {
+    if (!doc) return 'Untitled';
+    if (doc.isCsvBatch) return cleanDocLabelValue(doc.name) || 'CSV Batch';
+    const name = cleanDocLabelValue(doc.name);
+    const fileLabel = getFileLabelBase(doc.fileName || doc?.snapshot?.originalFileName || '');
+    const hasRealName = !!name && !isPlaceholderMacroName(name);
+    if (hasRealName) {
+      const duplicate = (docs || []).filter((item) => cleanDocLabelValue(item?.name).toLowerCase() === name.toLowerCase()).length > 1;
+      if (duplicate && fileLabel && fileLabel.toLowerCase() !== name.toLowerCase()) {
+        return `${name} - ${fileLabel}`;
+      }
+      return name;
     }
-    const indices = order.slice(first, last + 1);
-    return { firstIndex: order[first], lastIndex: order[last], indices, count: indices.length, key };
+    if (fileLabel) return fileLabel;
+    if (name) return name;
+    return 'Untitled';
+  }
+
+  function deriveMacroNameFromFileName(fileName) {
+    const base = getFileLabelBase(fileName);
+    if (!base) return '';
+    return base.replace(/[_-]+/g, ' ').trim();
+  }
+
+  function resolveExportMacroName(result, fileMetaPath = '') {
+    const currentName = cleanDocLabelValue(result?.macroName || '');
+    const originalName = cleanDocLabelValue(result?.macroNameOriginal || '');
+    if (currentName && !isPlaceholderMacroName(currentName)) return currentName;
+    if (!currentName && originalName && !isPlaceholderMacroName(originalName)) return originalName;
+    const fallbackFile = fileMetaPath
+      || state.originalFilePath
+      || state.originalFileName
+      || '';
+    return deriveMacroNameFromFileName(fallbackFile) || currentName || originalName || '';
   }
 
   function getColorGroupComponentsFrom(entries, cgBlock) {
@@ -10486,23 +12217,7 @@ async function handleFile(file) {
       if (!text || !macroName) return text;
       const re = /ActiveTool\s*=\s*"([^"]*)"/;
       if (re.test(text)) return text.replace(re, `ActiveTool = "${macroName}"`);
-      const nl = newline || detectNewline(text) || '\n';
-      const trimmed = text.replace(/\s+$/, '');
-      const lastBrace = trimmed.lastIndexOf('}');
-      if (lastBrace >= 0) {
-        const indent = getLineIndent(trimmed, lastBrace) || '\t';
-        let before = trimmed.slice(0, lastBrace);
-        let needsComma = true;
-        for (let i = before.length - 1; i >= 0; i--) {
-          const ch = before[i];
-          if (isSpace(ch)) continue;
-          if (ch === ',') needsComma = false;
-          break;
-        }
-        const insertion = `${needsComma ? ',' : ''}${nl}${indent}ActiveTool = "${macroName}"${nl}`;
-        return `${before}${insertion}${trimmed.slice(lastBrace)}`;
-      }
-      return `${trimmed}${nl}ActiveTool = "${macroName}"${nl}`;
+      return text;
     } catch (_) {
       return text;
     }
@@ -10602,17 +12317,20 @@ async function handleFile(file) {
 
   const FMR_DATA_LINK_CONTROL = 'FMR_DataLink';
   const FMR_FILE_META_CONTROL = 'FMR_FileMeta';
+  const FMR_PRESET_DATA_CONTROL = 'FMR_PresetData';
+  const FMR_PRESET_SCRIPT_CONTROL = 'FMR_PresetScript';
+  const FMR_PRESET_SELECT_CONTROL = 'FMR_Preset';
+  const FMR_BUILD_MARKER = 'preset-debug-2026-02-28-a';
 
   function extractHiddenDataLink(text, result) {
     try {
+      const parsedLinkControl = getParsedGroupUserControlById(result, FMR_DATA_LINK_CONTROL);
+      if (parsedLinkControl && typeof parsedLinkControl.defaultValue === 'string' && parsedLinkControl.defaultValue.trim()) {
+        return JSON.parse(parsedLinkControl.defaultValue);
+      }
       if (!text) return null;
-      const bounds = locateMacroGroupBounds(text, result);
-      if (!bounds) return null;
-      const uc = findGroupUserControlsBlock(text, bounds.groupOpenIndex, bounds.groupCloseIndex);
-      if (!uc) return null;
-      const block = findControlBlockInUc(text, uc.openIndex, uc.closeIndex, FMR_DATA_LINK_CONTROL);
-      if (!block) return null;
-      const body = text.slice(block.open + 1, block.close);
+      const body = getGroupUserControlBodyById(text, result, FMR_DATA_LINK_CONTROL);
+      if (!body) return null;
       const raw = extractControlPropValue(body, 'INP_Default');
       if (!raw) return null;
       let json = raw.trim();
@@ -10652,14 +12370,36 @@ async function handleFile(file) {
 
   function extractHiddenFileMeta(text, result) {
     try {
+      const parsedMetaControl = getParsedGroupUserControlById(result, FMR_FILE_META_CONTROL);
+      if (parsedMetaControl && typeof parsedMetaControl.defaultValue === 'string' && parsedMetaControl.defaultValue.trim()) {
+        return JSON.parse(parsedMetaControl.defaultValue);
+      }
       if (!text) return null;
-      const bounds = locateMacroGroupBounds(text, result);
-      if (!bounds) return null;
-      const uc = findGroupUserControlsBlock(text, bounds.groupOpenIndex, bounds.groupCloseIndex);
-      if (!uc) return null;
-      const block = findControlBlockInUc(text, uc.openIndex, uc.closeIndex, FMR_FILE_META_CONTROL);
-      if (!block) return null;
-      const body = text.slice(block.open + 1, block.close);
+      const body = getGroupUserControlBodyById(text, result, FMR_FILE_META_CONTROL);
+      if (!body) return null;
+      const raw = extractControlPropValue(body, 'INP_Default');
+      if (!raw) return null;
+      let json = raw.trim();
+      if (json.startsWith('"') && json.endsWith('"')) {
+        json = unescapeSettingString(json.slice(1, -1));
+      }
+      json = (json || '').trim();
+      if (!json) return null;
+      return JSON.parse(json);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function extractHiddenPresetData(text, result) {
+    try {
+      const parsedPresetControl = getParsedGroupUserControlById(result, FMR_PRESET_DATA_CONTROL);
+      if (parsedPresetControl && typeof parsedPresetControl.defaultValue === 'string' && parsedPresetControl.defaultValue.trim()) {
+        return JSON.parse(parsedPresetControl.defaultValue);
+      }
+      if (!text) return null;
+      const body = getGroupUserControlBodyById(text, result, FMR_PRESET_DATA_CONTROL);
+      if (!body) return null;
       const raw = extractControlPropValue(body, 'INP_Default');
       if (!raw) return null;
       let json = raw.trim();
@@ -10676,38 +12416,27 @@ async function handleFile(file) {
 
   function upsertHiddenFileMetaControl(text, result, meta, eol) {
     try {
-      if (!text) return text;
-      const bounds = locateMacroGroupBounds(text, result);
-      if (!bounds) return text;
-      const ensured = ensureGroupUserControlsBlockExists(text, bounds, eol || '\n', result);
-      let updated = ensured.text;
-      const uc = ensured.block || findGroupUserControlsBlock(updated, bounds.groupOpenIndex, bounds.groupCloseIndex);
-      if (!uc) return updated;
-      let block = findControlBlockInUc(updated, uc.openIndex, uc.closeIndex, FMR_FILE_META_CONTROL);
-      if (!block) {
-        const defaultJson = meta ? JSON.stringify(meta) : '';
-        const safeJson = `"${escapeSettingString(defaultJson)}"`;
-        const lines = [
-          `LINKS_Name = "FMR File Meta",`,
-          `INPID_InputControl = "TextEditControl",`,
-          `ICS_ControlPage = "Controls",`,
-          `IC_Visible = false,`,
-          `INP_Default = ${safeJson},`,
-        ];
-        updated = insertUserControlBlock(updated, { open: uc.openIndex, close: uc.closeIndex }, FMR_FILE_META_CONTROL, lines, eol || '\n');
-        block = findControlBlockInUc(updated, uc.openIndex, uc.closeIndex, FMR_FILE_META_CONTROL);
-        if (!block) return updated;
-      }
-      const indent = (getLineIndent(updated, block.open) || '') + '\t';
-      let body = updated.slice(block.open + 1, block.close);
-      body = upsertControlProp(body, 'IC_Visible', 'false', indent, eol || '\n');
-      if (meta) {
-        const safeJson = `"${escapeSettingString(JSON.stringify(meta))}"`;
-        body = upsertControlProp(body, 'INP_Default', safeJson, indent, eol || '\n');
-      } else {
-        body = removeControlProp(body, 'INP_Default');
-      }
-      return updated.slice(0, block.open + 1) + body + updated.slice(block.close);
+      const safeJson = meta ? `"${escapeSettingString(JSON.stringify(meta))}"` : '';
+      return upsertGroupUserControl(text, result, FMR_FILE_META_CONTROL, {
+        createLines: [
+          'LINKS_Name = "FMR File Meta",',
+          'INPID_InputControl = "TextEditControl",',
+          'ICS_ControlPage = "Controls",',
+          'IC_Visible = false,',
+          `INP_Default = ${safeJson || '""'},`,
+        ],
+        updateBody: (body, indent, newline) => {
+          let next = body;
+          next = upsertControlProp(next, 'LINKS_Name', '"FMR File Meta"', indent, newline);
+          next = upsertControlProp(next, 'INPID_InputControl', '"TextEditControl"', indent, newline);
+          next = upsertControlProp(next, 'ICS_ControlPage', '"Controls"', indent, newline);
+          next = upsertControlProp(next, 'IC_Visible', 'false', indent, newline);
+          next = meta
+            ? upsertControlProp(next, 'INP_Default', safeJson, indent, newline)
+            : removeControlProp(next, 'INP_Default');
+          return next;
+        },
+      }, eol || '\n');
     } catch (_) {
       return text;
     }
@@ -10715,39 +12444,102 @@ async function handleFile(file) {
 
   function upsertHiddenDataLinkControl(text, result, link, eol) {
     try {
-      if (!text) return text;
-      const bounds = locateMacroGroupBounds(text, result);
-      if (!bounds) return text;
-      const ensured = ensureGroupUserControlsBlockExists(text, bounds, eol || '\n', result);
-      let updated = ensured.text;
-      const uc = ensured.block || findGroupUserControlsBlock(updated, bounds.groupOpenIndex, bounds.groupCloseIndex);
-      if (!uc) return updated;
       const controlId = FMR_DATA_LINK_CONTROL;
-      let block = findControlBlockInUc(updated, uc.openIndex, uc.closeIndex, controlId);
-      if (!block) {
-        const defaultJson = link ? JSON.stringify(link) : '';
-        const safeJson = `"${escapeSettingString(defaultJson)}"`;
-        const lines = [
-          `LINKS_Name = "FMR Data Link",`,
-          `INPID_InputControl = "TextEditControl",`,
-          `ICS_ControlPage = "Controls",`,
-          `IC_Visible = false,`,
-          `INP_Default = ${safeJson},`,
-        ];
-        updated = insertUserControlBlock(updated, { open: uc.openIndex, close: uc.closeIndex }, controlId, lines, eol || '\n');
-        block = findControlBlockInUc(updated, uc.openIndex, uc.closeIndex, controlId);
-        if (!block) return updated;
-      }
-      const indent = (getLineIndent(updated, block.open) || '') + '\t';
-      let body = updated.slice(block.open + 1, block.close);
-      body = upsertControlProp(body, 'IC_Visible', 'false', indent, eol || '\n');
-      if (link) {
-        const safeJson = `"${escapeSettingString(JSON.stringify(link))}"`;
-        body = upsertControlProp(body, 'INP_Default', safeJson, indent, eol || '\n');
-      } else {
-        body = removeControlProp(body, 'INP_Default');
-      }
-      return updated.slice(0, block.open + 1) + body + updated.slice(block.close);
+      const safeJson = link ? `"${escapeSettingString(JSON.stringify(link))}"` : '';
+      return upsertGroupUserControl(text, result, controlId, {
+        createLines: [
+          'LINKS_Name = "FMR Data Link",',
+          'INPID_InputControl = "TextEditControl",',
+          'ICS_ControlPage = "Controls",',
+          'IC_Visible = false,',
+          `INP_Default = ${safeJson || '""'},`,
+        ],
+        updateBody: (body, indent, newline) => {
+          let next = body;
+          next = upsertControlProp(next, 'LINKS_Name', '"FMR Data Link"', indent, newline);
+          next = upsertControlProp(next, 'INPID_InputControl', '"TextEditControl"', indent, newline);
+          next = upsertControlProp(next, 'ICS_ControlPage', '"Controls"', indent, newline);
+          next = upsertControlProp(next, 'IC_Visible', 'false', indent, newline);
+          next = link
+            ? upsertControlProp(next, 'INP_Default', safeJson, indent, newline)
+            : removeControlProp(next, 'INP_Default');
+          return next;
+        },
+      }, eol || '\n');
+    } catch (_) {
+      return text;
+    }
+  }
+
+  function upsertHiddenPresetDataControl(text, result, data, eol) {
+    try {
+      const safeJson = data ? `"${escapeSettingString(JSON.stringify(data))}"` : '';
+      return upsertGroupUserControl(text, result, FMR_PRESET_DATA_CONTROL, {
+        createLines: [
+          'LINKS_Name = "FMR Preset Data",',
+          'INPID_InputControl = "TextEditControl",',
+          'ICS_ControlPage = "Controls",',
+          'IC_Visible = false,',
+          `INP_Default = ${safeJson || '""'},`,
+        ],
+        updateBody: (body, indent, newline) => {
+          let next = body;
+          next = upsertControlProp(next, 'LINKS_Name', '"FMR Preset Data"', indent, newline);
+          next = upsertControlProp(next, 'INPID_InputControl', '"TextEditControl"', indent, newline);
+          next = upsertControlProp(next, 'ICS_ControlPage', '"Controls"', indent, newline);
+          next = upsertControlProp(next, 'IC_Visible', 'false', indent, newline);
+          next = data
+            ? upsertControlProp(next, 'INP_Default', safeJson, indent, newline)
+            : removeControlProp(next, 'INP_Default');
+          return next;
+        },
+      }, eol || '\n');
+    } catch (_) {
+      return text;
+    }
+  }
+
+  function upsertHiddenPresetScriptControl(text, result, script, eol) {
+    try {
+      const defaultText = script && script.trim() ? `"${escapeSettingString(script)}"` : '';
+      return upsertGroupUserControl(text, result, FMR_PRESET_SCRIPT_CONTROL, {
+        createLines: [
+          'LINKS_Name = "FMR Preset Script",',
+          'INPID_InputControl = "TextEditControl",',
+          'LINKID_DataType = "Text",',
+          'ICS_ControlPage = "Controls",',
+          'IC_Visible = false,',
+          `INP_Default = ${defaultText || '""'},`,
+        ],
+        updateBody: (body, indent, newline) => {
+          let next = body;
+          next = upsertControlProp(next, 'LINKS_Name', '"FMR Preset Script"', indent, newline);
+          next = upsertControlProp(next, 'INPID_InputControl', '"TextEditControl"', indent, newline);
+          next = upsertControlProp(next, 'LINKID_DataType', '"Text"', indent, newline);
+          next = upsertControlProp(next, 'ICS_ControlPage', '"Controls"', indent, newline);
+          next = upsertControlProp(next, 'IC_Visible', 'false', indent, newline);
+          next = script && script.trim()
+            ? upsertControlProp(next, 'INP_Default', defaultText, indent, newline)
+            : removeControlProp(next, 'INP_Default');
+          return next;
+        },
+      }, eol || '\n');
+    } catch (_) {
+      return text;
+    }
+  }
+
+  function removeUserControlBlockById(text, result, controlId) {
+    return removeGroupUserControlById(text, result, controlId);
+  }
+
+  function removePresetRuntimeControls(text, result) {
+    try {
+      let next = String(text || '');
+      next = removeUserControlBlockById(next, result, FMR_PRESET_SELECT_CONTROL);
+      next = removeUserControlBlockById(next, result, FMR_PRESET_DATA_CONTROL);
+      next = removeUserControlBlockById(next, result, FMR_PRESET_SCRIPT_CONTROL);
+      return next;
     } catch (_) {
       return text;
     }
@@ -10861,7 +12653,7 @@ async function handleFile(file) {
   }
 
   function buildMacroExportName() {
-    const macroName = (state.parseResult?.macroName || state.parseResult?.macroNameOriginal || '').trim();
+    const macroName = resolveExportMacroName(state.parseResult, state.originalFilePath || state.originalFileName);
     if (macroName) {
       const safe = sanitizeFileBaseName(macroName);
       return (safe || 'Macro') + '.setting';
@@ -10873,7 +12665,13 @@ async function handleFile(file) {
     if (snap?.csvGenerated && snap?.originalFileName) {
       return sanitizeFileBaseName(String(snap.originalFileName));
     }
-    const macroName = (snap?.parseResult?.macroName || snap?.parseResult?.macroNameOriginal || '').trim();
+    const macroName = (() => {
+      const currentName = cleanDocLabelValue(snap?.parseResult?.macroName || '');
+      const originalName = cleanDocLabelValue(snap?.parseResult?.macroNameOriginal || '');
+      if (currentName && !isPlaceholderMacroName(currentName)) return currentName;
+      if (!currentName && originalName && !isPlaceholderMacroName(originalName)) return originalName;
+      return deriveMacroNameFromFileName(snap?.originalFilePath || snap?.originalFileName || '') || currentName || originalName || '';
+    })();
     if (macroName) {
       const safe = sanitizeFileBaseName(macroName);
       return (safe || 'Macro') + '.setting';
@@ -10944,51 +12742,126 @@ async function handleFile(file) {
     // Prefer rebuilding into the GroupOperator-level Inputs block (or inserting one)
     const baseText = applyToolRenameMap(original, result);
     let updated = baseText;
-      const dataLink = (options.includeDataLink !== false) ? buildFmrDataLinkPayload(result) : null;
+    const dataLink = (options.includeDataLink !== false) ? buildFmrDataLinkPayload(result) : null;
+    const presetRuntime = options.includePresetRuntime === true
+      ? buildPresetRuntimeState(result)
+      : null;
+    const hasUpdateDataButton = !!(result && Array.isArray(result.entries) && result.entries.some((entry) => isUpdateDataButtonEntry(entry)));
     const fileMetaPath = options.fileMetaPath
       || result?.fileMeta?.exportPath
       || state.originalFilePath
       || (state.exportFolder ? buildExportPath(state.exportFolder, buildMacroExportName()) : '');
-      const fileMeta = fileMetaPath ? { exportPath: fileMetaPath } : null;
-      if (fileMetaPath && result && Array.isArray(result.entries)) {
-        const overrides = result.buttonOverrides instanceof Map
-          ? new Map(result.buttonOverrides)
-          : (result.buttonOverrides ? new Map(result.buttonOverrides) : new Map());
-        const url = buildUpdateDataUrl(fileMetaPath);
-        result.entries.forEach((entry) => {
-          if (!entry || !entry.sourceOp || !entry.source) return;
-          if (!isUpdateDataButtonEntry(entry)) return;
-          overrides.set(`${entry.sourceOp}.${entry.source}`, url);
-        });
-        if (overrides.size) result.buttonOverrides = overrides;
-      }
-      const safeEditExport = options.safeEditExport === true;
-      if (!safeEditExport) {
-        updated = applyLabelCountEdits(updated, result, eol);
-        updated = applyLabelVisibilityEdits(updated, result, eol);
-        updated = applyLabelDefaultStateEdits(updated, result, eol);
-        updated = applyUserControlPages(updated, result, eol, options);
-        // Safety: strip BTNCS_Execute from managed buttons unless explicitly clicked
-        updated = stripUnclickedBtncs(updated, result, eol);
-        // Insert exact launcher only for explicitly clicked controls
-        updated = ensureExactLauncherInserted(updated, result, eol);
+    const exportMacroName = resolveExportMacroName(result, fileMetaPath);
+    const shouldPersistFileMeta = !!(fileMetaPath && (dataLink || hasUpdateDataButton));
+    const fileMeta = shouldPersistFileMeta ? { exportPath: fileMetaPath, buildMarker: FMR_BUILD_MARKER } : null;
+    // Clean exports for authored macros should preserve existing tool/user-control
+    // blocks verbatim unless MM is explicitly managing a helper system that needs
+    // to rewrite them (for example data-link/update-button wiring).
+    const preserveUntouchedUserControls = options.preserveAuthoredUserControls === true && !dataLink && !hasUpdateDataButton;
+    const refreshGroupUserControlState = (textValue) => {
+      try {
+        hydrateGroupUserControlsState(textValue, result);
+      } catch (_) {}
+      return textValue;
+    };
+    if (fileMetaPath && result && Array.isArray(result.entries)) {
+      const overrides = result.buttonOverrides instanceof Map
+        ? new Map(result.buttonOverrides)
+        : (result.buttonOverrides ? new Map(result.buttonOverrides) : new Map());
+      const url = buildUpdateDataUrl(fileMetaPath);
+      result.entries.forEach((entry) => {
+        if (!entry || !entry.sourceOp || !entry.source) return;
+        if (!isUpdateDataButtonEntry(entry)) return;
+        overrides.set(`${entry.sourceOp}.${entry.source}`, url);
+      });
+      if (overrides.size) result.buttonOverrides = overrides;
+    }
+    const safeEditExport = options.safeEditExport === true;
+    if (!safeEditExport && !preserveUntouchedUserControls) {
+      updated = applyLabelCountEdits(updated, result, eol);
+      updated = applyLabelVisibilityEdits(updated, result, eol);
+      updated = applyLabelDefaultStateEdits(updated, result, eol);
+      updated = applyUserControlPages(updated, result, eol, options);
+      // Safety: strip BTNCS_Execute from managed buttons unless explicitly clicked
+      updated = stripUnclickedBtncs(updated, result, eol);
+      // Insert exact launcher only for explicitly clicked controls
+      updated = ensureExactLauncherInserted(updated, result, eol);
       updated = stripLegacyLauncherArtifacts(updated);
       updated = applyCanonicalLaunchSnippets(updated, result, eol);
       updated = rewriteUpdateDataProtocolPaths(updated, fileMetaPath);
     }
-      updated = applyMacroNameRename(updated, result);
-      updated = ensureGroupInputsBlock(updated, result, eol);
-      updated = rewritePrimaryInputsBlock(updated, result, eol);
-      updated = ensureActiveToolName(updated, (result?.macroName || result?.macroNameOriginal || '').trim(), eol);
-      if (options.includeDataLink !== false) {
-        updated = stripFmrDataLinkBlock(updated);
-        updated = upsertHiddenDataLinkControl(updated, result, dataLink, eol);
+    updated = applyMacroNameRename(updated, result, exportMacroName);
+    updated = normalizeGroupUserControlsBlocks(updated, result, eol);
+    refreshGroupUserControlState(updated);
+    updated = ensureGroupInputsBlock(updated, result, eol);
+    updated = rewritePrimaryInputsBlock(updated, result, eol, options);
+    updated = ensureActiveToolName(updated, exportMacroName || (result?.macroName || result?.macroNameOriginal || '').trim(), eol);
+    updated = normalizeGroupUserControlsBlocks(updated, result, eol);
+    refreshGroupUserControlState(updated);
+    if (options.includePresetRuntime === true) {
+      updated = removePresetRuntimeControls(updated, result);
+      refreshGroupUserControlState(updated);
+      if (presetRuntime) {
+        updated = upsertHiddenPresetDataControl(updated, result, presetRuntime.payload, eol);
+        refreshGroupUserControlState(updated);
+        updated = upsertPresetSelectorControl(
+          updated,
+          result,
+          presetRuntime.presetNames,
+          presetRuntime.script,
+          eol,
+          presetRuntime.defaultIndex,
+        );
+        refreshGroupUserControlState(updated);
       }
-      if (fileMeta) {
-        updated = upsertHiddenFileMetaControl(updated, result, fileMeta, eol);
-      }
-      return updated;
     }
+    if (options.includeDataLink !== false && dataLink) {
+      updated = stripFmrDataLinkBlock(updated);
+      updated = upsertHiddenDataLinkControl(updated, result, dataLink, eol);
+      refreshGroupUserControlState(updated);
+    }
+    if (fileMeta) {
+      updated = upsertHiddenFileMetaControl(updated, result, fileMeta, eol);
+      refreshGroupUserControlState(updated);
+    }
+    updated = normalizeGroupUserControlsBlocks(updated, result, eol);
+    updated = stripEmptyGroupUserControls(updated, result);
+    refreshGroupUserControlState(updated);
+    const exportStructure = validateGroupUserControlsStructure(updated, result);
+    try {
+      if (typeof logDiag === 'function') {
+        const emptyUcMatches = updated.match(/\n\s*UserControls\s*=\s*ordered\(\)\s*\{\s*\},/g);
+        const emptyUcCount = Array.isArray(emptyUcMatches) ? emptyUcMatches.length : 0;
+        const hasPresetSelector = updated.includes(`${FMR_PRESET_SELECT_CONTROL} = {`);
+        const hasBuildMarker = updated.includes(FMR_BUILD_MARKER);
+        const hasFileMetaMarker = updated.includes(`"buildMarker":"${FMR_BUILD_MARKER}"`);
+        const engine = result?.presetEngine && typeof result.presetEngine === 'object' ? result.presetEngine : null;
+        const scopeLen = Array.isArray(engine?.scope) ? engine.scope.length : 0;
+        const presetLen = engine?.presets && typeof engine.presets === 'object'
+          ? Object.keys(engine.presets).length
+          : 0;
+        const debugContext = String(options?.debugContext || 'generic');
+        const hasEngine = engine ? 1 : 0;
+        const hasFileMetaPath = fileMetaPath ? 1 : 0;
+        const groupUcBlocks = Number(exportStructure?.parsed?.blockCount || 0);
+        const groupUcControls = Array.isArray(exportStructure?.parsed?.controls) ? exportStructure.parsed.controls.length : 0;
+        const groupUcDupes = Array.isArray(exportStructure?.parsed?.duplicateIds) ? exportStructure.parsed.duplicateIds.length : 0;
+        const groupUcUnknown = Array.isArray(exportStructure?.parsed?.controls)
+          ? exportStructure.parsed.controls.filter((control) => control?.kind === 'unknown').length
+          : 0;
+        const groupUcIssues = Array.isArray(exportStructure?.issues) ? exportStructure.issues.length : 0;
+        const groupUcMutationIssues = Array.isArray(result?.groupUserControlMutationIssues) ? result.groupUserControlMutationIssues.length : 0;
+        logDiag(`[Export debug:${debugContext}] engine=${hasEngine}, scope=${scopeLen}, presets=${presetLen}, fileMetaPath=${hasFileMetaPath}, marker=${hasBuildMarker ? 1 : 0}, fileMetaMarker=${hasFileMetaMarker ? 1 : 0}, presetControl=${hasPresetSelector ? 1 : 0}, emptyGroupUc=${emptyUcCount}, groupUcBlocks=${groupUcBlocks}, groupUcControls=${groupUcControls}, groupUcDupes=${groupUcDupes}, groupUcUnknown=${groupUcUnknown}, groupUcIssues=${groupUcIssues}, groupUcMutationIssues=${groupUcMutationIssues}`);
+        (exportStructure?.issues || []).forEach((issue) => {
+          logDiag(`[Export structure] ${issue.message}`);
+        });
+        (result?.groupUserControlMutationIssues || []).forEach((issue) => {
+          logDiag(`[Export structure] ${issue.message}`);
+        });
+      }
+    } catch (_) {}
+    return updated;
+  }
 
   function ensureGroupInputsBlock(text, result, eol) {
     try {
@@ -11022,7 +12895,7 @@ async function handleFile(file) {
     }
   }
 
-  function rewritePrimaryInputsBlock(text, result, eol) {
+  function rewritePrimaryInputsBlock(text, result, eol, options = {}) {
     try {
       if (!text || !result || !Array.isArray(result.entries) || !result.entries.length) return text;
       const exportOrder = getOrderedEntryIndices(result);
@@ -11053,10 +12926,19 @@ async function handleFile(file) {
       const innerIndent = blockIndent + '\t';
       const entryIndent = innerIndent + '\t';
       const newline = eol || detectNewline(text) || '\n';
+      const existingEntries = parseOrderedBlockEntries(text, braceOpen, braceClose) || [];
+      // Some authored macros intentionally mix helper Input blocks with normal
+      // published InstanceInputs. For untouched docs, preserve that block
+      // verbatim instead of canonicalizing it into MM's generated format.
+      const preserveAuthoredInputsBlock = options?.preserveAuthoredInputsBlock === true;
+      if (preserveAuthoredInputsBlock && existingEntries.some((entry) => getOrderedBlockEntryType(text, entry) !== 'InstanceInput')) {
+        return text;
+      }
       const segments = [];
       exportOrder.forEach(i => {
         const entry = result.entries[i];
         if (!entry) return;
+        if (entry.syntheticUserControlOnly || entry.source === FMR_PRESET_SELECT_CONTROL || isGroupUserControlEntry(entry)) return;
         let raw = applyEntryOverrides(entry, applyNameIfEdited(entry, eol), eol);
         raw = ensureInstanceInputKey(raw, entry);
         let chunk = reindent(raw, entryIndent, eol);
@@ -11064,8 +12946,33 @@ async function handleFile(file) {
         chunk = ensureTrailingComma(chunk);
         segments.push({ index: i, chunk });
       });
+      // Preserve the original Inputs block verbatim when the published order and
+      // effective InstanceInput payloads are unchanged. This avoids no-op export
+      // churn from purely formatting-driven rewrites.
+      if (canPreservePrimaryInputsBlock(text, result, segments, newline)) {
+        return text;
+      }
+      let outputSegments = segments.slice();
+      if (existingEntries.length) {
+        const generatedQueue = segments.slice();
+        outputSegments = [];
+        existingEntries.forEach((current) => {
+          const type = getOrderedBlockEntryType(text, current);
+          if (type === 'InstanceInput') {
+            const nextGenerated = generatedQueue.shift();
+            if (nextGenerated) outputSegments.push(nextGenerated);
+            return;
+          }
+          const preservedRaw = extractOrderedBlockEntryChunk(text, current);
+          const preservedChunk = ensureTrailingComma(reindent(preservedRaw, entryIndent, eol));
+          if (preservedChunk && preservedChunk.trim().length) {
+            outputSegments.push({ index: null, chunk: preservedChunk });
+          }
+        });
+        while (generatedQueue.length) outputSegments.push(generatedQueue.shift());
+      }
       const header = `${blockIndent}Inputs = ordered() {`;
-      const inner = segments.length ? newline + newline + segments.map(seg => seg.chunk).join(newline) + newline + innerIndent : '';
+      const inner = outputSegments.length ? newline + newline + outputSegments.map(seg => seg.chunk).join(newline) + newline + innerIndent : '';
       let replacement = `${header}${inner}${blockIndent}}`;
       if (hasComma) replacement += ',';
       replacement += trailingWhitespace || newline;
@@ -11081,6 +12988,59 @@ async function handleFile(file) {
       return text.slice(0, idx) + replacement + text.slice(after);
     } catch (_) {
       return text;
+    }
+  }
+
+  function canPreservePrimaryInputsBlock(text, result, segments, eol) {
+    try {
+      if (!text || !result || !Array.isArray(segments)) return false;
+      const bounds = locateMacroGroupBounds(text, result);
+      if (!bounds) return false;
+      let blocks = findGroupInputsBlocks(text, bounds.groupOpenIndex, bounds.groupCloseIndex);
+      if (!Array.isArray(blocks) || !blocks.length) {
+        const fallback = findPrimaryInputsBlockFallback(text, bounds.groupOpenIndex, bounds.groupCloseIndex);
+        blocks = fallback ? [fallback] : [];
+      }
+      if (!Array.isArray(blocks) || !blocks.length) return false;
+      const inputs = blocks[0];
+      if (!inputs) return false;
+      const currentEntries = parseOrderedBlockEntries(text, inputs.openIndex, inputs.closeIndex)
+        .filter((item) => item && item.name && getOrderedBlockEntryType(text, item) === 'InstanceInput');
+      if (currentEntries.length !== segments.length) return false;
+      for (let i = 0; i < segments.length; i++) {
+        const current = currentEntries[i];
+        const desired = segments[i];
+        if (!current || !desired) return false;
+        const desiredKeyMatch = String(desired.chunk || '').match(/^\s*([^\s=]+)\s*=\s*InstanceInput\b/);
+        const desiredKey = desiredKeyMatch && desiredKeyMatch[1] ? desiredKeyMatch[1] : '';
+        if (!desiredKey || current.name !== desiredKey) return false;
+        const currentRaw = text.slice(current.nameStart, current.blockClose + 1);
+        const currentNorm = normalizeInstanceInputChunkForCompare(currentRaw);
+        const desiredNorm = normalizeInstanceInputChunkForCompare(desired.chunk, eol);
+        if (currentNorm !== desiredNorm) return false;
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function normalizeInstanceInputChunkForCompare(raw, eol) {
+    try {
+      if (raw == null) return '';
+      const normalizedEol = eol || '\n';
+      let out = String(raw).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      const lines = out.split('\n');
+      while (lines.length && lines[0].trim() === '') lines.shift();
+      while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
+      out = lines
+        .map((line) => line.trim())
+        .filter((line, idx, arr) => line.length > 0 || (idx > 0 && idx < arr.length - 1))
+        .join(normalizedEol);
+      out = out.replace(/,\s*$/, '');
+      return out.trim();
+    } catch (_) {
+      return String(raw || '').trim();
     }
   }
 
@@ -11105,7 +13065,7 @@ async function handleFile(file) {
       while (i < groupClose) {
         const ch = text[i];
         if (inStr) {
-          if (ch === '"' && text[i - 1] !== '\\') inStr = false;
+          if (ch === '"' && !isQuoteEscaped(text, i)) inStr = false;
           i++;
           continue;
         }
@@ -11142,15 +13102,13 @@ async function handleFile(file) {
 
   function findGroupUserControlsBlock(text, groupOpen, groupClose) {
     try {
-      const toolsPos = text.indexOf('Tools = ordered()', groupOpen);
-      const limit = (toolsPos >= 0 && toolsPos < groupClose) ? toolsPos : groupClose;
       let i = groupOpen + 1;
       let depth = 1;
       let inStr = false;
-      while (i < limit) {
+      while (i < groupClose) {
         const ch = text[i];
         if (inStr) {
-          if (ch === '"' && text[i - 1] !== '\\') inStr = false;
+          if (ch === '"' && !isQuoteEscaped(text, i)) inStr = false;
           i++;
           continue;
         }
@@ -11159,15 +13117,15 @@ async function handleFile(file) {
         if (ch === '}') { depth--; if (depth <= 0) break; i++; continue; }
         if (depth === 1 && text.slice(i, i + 12) === 'UserControls') {
           let j = i + 12;
-          while (j < limit && isSpace(text[j])) j++;
+          while (j < groupClose && isSpace(text[j])) j++;
           if (text[j] !== '=') { i++; continue; }
           j++;
-          while (j < limit && isSpace(text[j])) j++;
+          while (j < groupClose && isSpace(text[j])) j++;
           if (text.slice(j, j + 8) === 'ordered(') {
             j += 8;
-            while (j < limit && text[j] !== ')') j++;
+            while (j < groupClose && text[j] !== ')') j++;
             if (text[j] === ')') j++;
-            while (j < limit && isSpace(text[j])) j++;
+            while (j < groupClose && isSpace(text[j])) j++;
           }
           if (text[j] !== '{') { i++; continue; }
           const openIndex = j;
@@ -11348,14 +13306,41 @@ async function handleFile(file) {
           if (!uc) uc = findUserControlsInGroup(out, grp.groupOpenIndex, grp.groupCloseIndex);
           if (uc) {
             const cb = findControlBlockInUc(out, uc.open, uc.close, e.source);
-            if (cb) out = removeBtncsExecuteInRange(out, cb.open, cb.close);
+            if (cb) {
+              const isGroupLevel = !tb;
+              if (isGroupLevel) {
+                const policy = canMutateGroupUserControl(result, e.source, { action: 'update' });
+                if (!policy.allowed) {
+                  recordGroupUserControlMutationIssue(result, {
+                    control: e.source,
+                    action: 'update',
+                    message: policy.message,
+                  });
+                } else {
+                  out = removeBtncsExecuteInRange(out, cb.open, cb.close);
+                }
+              } else {
+                out = removeBtncsExecuteInRange(out, cb.open, cb.close);
+              }
+            }
           }
           // group-level
           try {
             const ucg = findUserControlsInGroup(out, grp.groupOpenIndex, grp.groupCloseIndex);
             if (ucg) {
               const cb2 = findControlBlockInUc(out, ucg.open, ucg.close, e.source);
-              if (cb2) out = removeBtncsExecuteInRange(out, cb2.open, cb2.close);
+              if (cb2) {
+                const policy = canMutateGroupUserControl(result, e.source, { action: 'update' });
+                if (!policy.allowed) {
+                  recordGroupUserControlMutationIssue(result, {
+                    control: e.source,
+                    action: 'update',
+                    message: policy.message,
+                  });
+                } else {
+                  out = removeBtncsExecuteInRange(out, cb2.open, cb2.close);
+                }
+              }
             }
           } catch(_) {}
         } catch(_) {}
@@ -11481,13 +13466,9 @@ async function handleFile(file) {
   }
   function isButtonControl(original, groupOpen, groupClose, toolName, controlId) {
     try {
-      const tb = findToolBlockInGroup(original, groupOpen, groupClose, toolName);
-      let uc = tb ? findUserControlsInTool(original, tb.open, tb.close) : null;
-      if (!uc) uc = findUserControlsInGroup(original, groupOpen, groupClose);
-      if (!uc) return false;
-      const cb = findControlBlockInUc(original, uc.open, uc.close, controlId);
-      if (!cb) return false;
-      const slice = original.slice(cb.open, Math.min(cb.close + 1, original.length));
+      const resolved = findUserControlBlockForToolOrGroup(original, groupOpen, groupClose, toolName, controlId);
+      if (!resolved || !resolved.controlBlock) return false;
+      const slice = original.slice(resolved.controlBlock.open, Math.min(resolved.controlBlock.close + 1, original.length));
       return /INPID_InputControl\s*=\s*"ButtonControl"/.test(slice);
     } catch(_) { return false; }
   }
@@ -11503,12 +13484,9 @@ async function handleFile(file) {
           if (state.parseResult.insertClickedKeys instanceof Set && state.parseResult.insertClickedKeys.has(key)) return true;
         }
       } catch(_) {}
-      const tb = findToolBlockInGroup(original, groupOpen, groupClose, toolName);
-      let uc = tb ? findUserControlsInTool(original, tb.open, tb.close) : findUserControlsInGroup(original, groupOpen, groupClose);
-      if (!uc) return false;
-      const cb = findControlBlockInUc(original, uc.open, uc.close, controlId);
-      if (!cb) return false;
-      const propLine = extractBtncsExecuteString(original, uc.open, uc.close, controlId);
+      const resolved = findUserControlBlockForToolOrGroup(original, groupOpen, groupClose, toolName, controlId);
+      if (!resolved || !resolved.uc || !resolved.controlBlock) return false;
+      const propLine = extractBtncsExecuteString(original, resolved.uc.open, resolved.uc.close, controlId);
       if (!propLine) return true;
       const firstQ = propLine.indexOf('"');
       const lastQ = propLine.lastIndexOf('"');
@@ -11531,26 +13509,22 @@ async function handleFile(file) {
       // Only honor explicit UI clicks stored in insertClickedKeys
       const req = (result && result.insertClickedKeys instanceof Set) ? result.insertClickedKeys : null;
       if (!req || req.size === 0) return resultText;
-      const grp = locateMacroGroupBounds(resultText, result);
-      if (!grp) return resultText;
       let out = resultText;
       try { logDiag(`[Launcher] queue size: ${req.size}`); } catch(_) {}
       // Attempt to source template from an existing YouTubeButton control under same tool or any tool
       const entries = Array.isArray(result?.entries) ? result.entries : [];
       req.forEach((key) => {
         try {
+          const grp = locateMacroGroupBounds(out, result);
+          if (!grp) return;
           const dot = String(key).indexOf('.'); if (dot < 0) return;
           const tool = key.slice(0, dot); const ctrl = key.slice(dot + 1);
           const entry = entries.find(e => e && e.sourceOp === tool && e.source === ctrl) || null;
           const pageName = entry && entry.page ? entry.page : 'Controls';
           try { logDiag(`[Launcher] processing ${tool}.${ctrl}`); } catch(_) {}
           // find target control block
-          const tbTarget = findToolBlockInGroup(out, grp.groupOpenIndex, grp.groupCloseIndex, tool);
-          let ucTarget = tbTarget ? findUserControlsInTool(out, tbTarget.open, tbTarget.close) : null;
-          if (!ucTarget) ucTarget = findUserControlsInGroup(out, grp.groupOpenIndex, grp.groupCloseIndex);
-          if (!ucTarget) return;
-          const cbTarget = findControlBlockInUc(out, ucTarget.open, ucTarget.close, ctrl);
-          if (!cbTarget) return;
+          const resolvedTarget = findUserControlBlockForToolOrGroup(out, grp.groupOpenIndex, grp.groupCloseIndex, tool, ctrl);
+          if (!resolvedTarget || !resolvedTarget.controlBlock || !resolvedTarget.uc) return;
           // Prefer a user-provided URL from the insert UI
           let templateLine = null;
           let customUrl = null;
@@ -11561,8 +13535,8 @@ async function handleFile(file) {
           }
           // Otherwise try template from YouTubeButton either under same tool or any
           // same tool first
-          if (!templateLine && tbTarget) {
-            templateLine = extractBtncsExecuteString(out, ucTarget.open, ucTarget.close, 'YouTubeButton');
+          if (!templateLine && resolvedTarget.scope === 'tool') {
+            templateLine = extractBtncsExecuteString(out, resolvedTarget.uc.open, resolvedTarget.uc.close, 'YouTubeButton');
           }
           // scan all tools if not found
           if (!templateLine) {
@@ -11578,14 +13552,371 @@ async function handleFile(file) {
             try { logDiag(`[Launcher] Using built-in template for ${tool}.${ctrl}`); } catch(_) {}
           }
           // Insert into tool-level control
-          out = insertExactYouTubeLauncher(out, cbTarget.open, cbTarget.close, eol, templateLine, pageName);
+          out = insertExactYouTubeLauncher(out, resolvedTarget.controlBlock.open, resolvedTarget.controlBlock.close, eol, templateLine, pageName);
           try { logDiag(`[Launcher] Inserted for ${tool}.${ctrl} at tool-level`); } catch(_) {}
           // Also ensure a macro GroupOperator.UserControls control exists and has launcher
-          try { out = ensureGroupControlHasLauncher(out, grp.groupOpenIndex, grp.groupCloseIndex, ctrl, templateLine, eol, pageName); } catch(_) {}
+          try {
+            const grpAfterInsert = locateMacroGroupBounds(out, result);
+            if (grpAfterInsert) {
+              out = ensureGroupControlHasLauncher(out, grpAfterInsert.groupOpenIndex, grpAfterInsert.groupCloseIndex, ctrl, templateLine, eol, pageName);
+            }
+          } catch(_) {}
         } catch(_) {}
       });
       return out;
     } catch(_) { return resultText; }
+  }
+
+  function findAllGroupUserControlsBlocks(text, groupOpen, groupClose) {
+    try {
+      const blocks = [];
+      let i = groupOpen + 1;
+      let depth = 1;
+      let inStr = false;
+      while (i < groupClose) {
+        const ch = text[i];
+        if (inStr) {
+          if (ch === '"' && !isQuoteEscaped(text, i)) inStr = false;
+          i++;
+          continue;
+        }
+        if (ch === '"') { inStr = true; i++; continue; }
+        if (ch === '{') { depth++; i++; continue; }
+        if (ch === '}') { depth--; if (depth <= 0) break; i++; continue; }
+        if (depth === 1 && text.slice(i, i + 12) === 'UserControls') {
+          const declStart = i;
+          let j = i + 12;
+          while (j < groupClose && isSpace(text[j])) j++;
+          if (text[j] !== '=') { i++; continue; }
+          j++;
+          while (j < groupClose && isSpace(text[j])) j++;
+          if (text.slice(j, j + 8) === 'ordered(') {
+            j += 8;
+            while (j < groupClose && text[j] !== ')') j++;
+            if (text[j] === ')') j++;
+            while (j < groupClose && isSpace(text[j])) j++;
+          }
+          if (text[j] !== '{') { i++; continue; }
+          const openIndex = j;
+          const closeIndex = findMatchingBrace(text, openIndex);
+          if (closeIndex < 0 || closeIndex > groupClose) return blocks;
+          let endIndex = closeIndex + 1;
+          while (endIndex < groupClose && /[ \t]/.test(text[endIndex])) endIndex++;
+          if (text[endIndex] === ',') endIndex++;
+          blocks.push({ declStart, openIndex, closeIndex, endIndex });
+          i = endIndex;
+          continue;
+        }
+        i++;
+      }
+      if (!blocks.length) {
+        const groupText = text.slice(groupOpen, groupClose);
+        const match = /Inputs\s*=\s*(?:ordered\(\))?\s*\{/m.exec(groupText);
+        if (match) {
+          const openIndex = groupOpen + match.index + match[0].lastIndexOf('{');
+          const closeIndex = findMatchingBrace(text, openIndex);
+          if (closeIndex > openIndex && closeIndex <= groupClose) {
+            blocks.push({ inputsHeaderStart: groupOpen + match.index, openIndex, closeIndex });
+          }
+        }
+      }
+      return blocks;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function findPrimaryInputsBlockFallback(text, groupOpen, groupClose) {
+    try {
+      if (!text) return null;
+      const start = Number.isFinite(groupOpen) ? groupOpen : 0;
+      const end = Number.isFinite(groupClose) ? groupClose : text.length;
+      const toolsPos = text.indexOf('Tools = ordered()', start);
+      const searchEnd = (toolsPos >= 0 && toolsPos < end) ? toolsPos : end;
+      const segment = text.slice(start, searchEnd);
+      const match = /Inputs\s*=\s*(?:ordered\(\))?\s*\{/m.exec(segment);
+      if (!match) return null;
+      const openIndex = start + match.index + match[0].lastIndexOf('{');
+      const closeIndex = findMatchingBrace(text, openIndex);
+      if (closeIndex > openIndex && closeIndex <= end) {
+        return { inputsHeaderStart: start + match.index, openIndex, closeIndex };
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function parseGroupUserControlValueLiteral(body, prop) {
+    try {
+      const literal = extractControlPropLiteral(body, prop);
+      if (!literal) return null;
+      const trimmed = String(literal).trim();
+      if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+        return unescapeSettingString(trimmed.slice(1, -1));
+      }
+      return trimmed;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function normalizeGroupUserControlInputControl(value) {
+    try {
+      return String(value || '').trim().toLowerCase();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function isKnownGroupUserControlInputControl(value) {
+    const known = new Set([
+      'buttoncontrol',
+      'checkboxcontrol',
+      'combocontrol',
+      'colorcontrol',
+      'labelcontrol',
+      'multibuttoncontrol',
+      'offsetcontrol',
+      'screwcontrol',
+      'slidercontrol',
+      'texteditcontrol',
+    ]);
+    return known.has(normalizeGroupUserControlInputControl(value));
+  }
+
+  function classifyGroupUserControl(control) {
+    try {
+      const id = String(control?.id || '').trim();
+      const inputControl = String(control?.inputControl || '').trim();
+      const hiddenSystem = isMacroLayerOnlyControlId(id);
+      const knownType = isKnownGroupUserControlInputControl(inputControl);
+      return {
+        kind: hiddenSystem ? 'system' : (knownType ? 'known' : 'unknown'),
+        preserveOnly: !hiddenSystem && !knownType,
+      };
+    } catch (_) {
+      return { kind: 'unknown', preserveOnly: true };
+    }
+  }
+
+  function getParsedGroupUserControlById(result, controlId) {
+    try {
+      if (!result || !controlId) return null;
+      const map = result.groupUserControlsById instanceof Map ? result.groupUserControlsById : null;
+      if (map && map.has(controlId)) return map.get(controlId) || null;
+      const controls = Array.isArray(result.groupUserControls) ? result.groupUserControls : [];
+      return controls.find((control) => control && control.id === controlId) || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function recordGroupUserControlMutationIssue(result, issue) {
+    try {
+      if (!result || !issue) return;
+      if (!Array.isArray(result.groupUserControlMutationIssues)) {
+        result.groupUserControlMutationIssues = [];
+      }
+      result.groupUserControlMutationIssues.push({
+        control: issue.control || '',
+        action: issue.action || '',
+        message: issue.message || '',
+      });
+      try {
+        if (issue.message) logDiag(`[Group UC mutate] ${issue.message}`);
+      } catch (_) {}
+    } catch (_) {}
+  }
+
+  function canMutateGroupUserControl(result, controlId, options = {}) {
+    try {
+      const existing = getParsedGroupUserControlById(result, controlId);
+      if (!existing) return { allowed: true, control: null };
+      if (existing.preserveOnly && options.allowPreserveOnlyMutation !== true) {
+        return {
+          allowed: false,
+          control: existing,
+          message: `Blocked ${options.action || 'mutation'} of preserve-only macro-level control "${controlId}".`,
+        };
+      }
+      return { allowed: true, control: existing };
+    } catch (_) {
+      return { allowed: true, control: null };
+    }
+  }
+
+  function applyGroupUserControlMeta(control, meta) {
+    try {
+      if (!control || !meta) return meta;
+      meta.inputControl = meta.inputControl || control.inputControl || '';
+      meta.dataType = meta.dataType || control.dataType || '';
+      if (!Number.isFinite(meta.labelCount) && Number.isFinite(control.labelCount)) {
+        meta.labelCount = Number(control.labelCount);
+      }
+      if (meta.defaultValue == null || meta.defaultValue === '') meta.defaultValue = control.defaultValue;
+      meta.textLines = meta.textLines || extractControlPropValue(control.rawBody, 'TEC_Lines');
+      meta.integer = meta.integer || extractControlPropValue(control.rawBody, 'INP_Integer');
+      meta.minAllowed = meta.minAllowed || extractControlPropValue(control.rawBody, 'INP_MinAllowed');
+      meta.maxAllowed = meta.maxAllowed || extractControlPropValue(control.rawBody, 'INP_MaxAllowed');
+      meta.minScale = meta.minScale || extractControlPropValue(control.rawBody, 'INP_MinScale');
+      meta.maxScale = meta.maxScale || extractControlPropValue(control.rawBody, 'INP_MaxScale');
+      if (!Array.isArray(meta.choiceOptions) || !meta.choiceOptions.length) {
+        meta.choiceOptions = Array.isArray(control.choiceOptions) ? [...control.choiceOptions] : [];
+      }
+      return meta;
+    } catch (_) {
+      return meta;
+    }
+  }
+
+  function parseGroupUserControls(text, result) {
+    try {
+      if (!text || !result) {
+        return { blocks: [], controls: [], duplicateIds: [], blockCount: 0 };
+      }
+      const bounds = locateMacroGroupBounds(text, result);
+      if (!bounds) {
+        return { blocks: [], controls: [], duplicateIds: [], blockCount: 0 };
+      }
+      const blocks = findAllGroupUserControlsBlocks(text, bounds.groupOpenIndex, bounds.groupCloseIndex);
+      const controls = [];
+      const seenIds = new Map();
+      const duplicateIds = new Set();
+      blocks.forEach((block, blockIndex) => {
+        const segments = collectUserControlSegments(text, block.openIndex, block.closeIndex);
+        segments.forEach((segment, orderIndex) => {
+          const body = text.slice(segment.blockOpen + 1, segment.blockClose);
+          const control = {
+            id: String(segment.name || '').trim(),
+            inputControl: extractControlPropValue(body, 'INPID_InputControl') || '',
+            dataType: extractControlPropValue(body, 'LINKID_DataType') || '',
+            page: extractQuotedProp(body, 'ICS_ControlPage') || '',
+            visible: extractControlPropValue(body, 'IC_Visible'),
+            labelCount: (() => {
+              const labelCountMatch = body.match(/LBLC_NumInputs\s*=\s*([0-9]+)/i);
+              return labelCountMatch ? parseInt(labelCountMatch[1], 10) : null;
+            })(),
+            defaultValue: parseGroupUserControlValueLiteral(body, 'INP_Default'),
+            onChange: parseGroupUserControlValueLiteral(body, 'INPS_ExecuteOnChange'),
+            buttonExecute: parseGroupUserControlValueLiteral(body, 'BTNCS_Execute'),
+            choiceOptions: extractChoiceOptionsFromBody(body),
+            rawBody: body,
+            rawText: text.slice(segment.start, segment.end),
+            blockIndex,
+            orderIndex,
+            range: {
+              start: segment.start,
+              end: segment.end,
+              open: segment.blockOpen,
+              close: segment.blockClose,
+            },
+          };
+          const classification = classifyGroupUserControl(control);
+          control.kind = classification.kind;
+          control.preserveOnly = classification.preserveOnly;
+          if (control.id) {
+            if (seenIds.has(control.id)) duplicateIds.add(control.id);
+            else seenIds.set(control.id, true);
+          }
+          controls.push(control);
+        });
+      });
+      return {
+        blocks,
+        controls,
+        duplicateIds: Array.from(duplicateIds),
+        blockCount: blocks.length,
+      };
+    } catch (_) {
+      return { blocks: [], controls: [], duplicateIds: [], blockCount: 0 };
+    }
+  }
+
+  function hydrateGroupUserControlsState(text, result) {
+    try {
+      if (!result) return;
+      const parsed = parseGroupUserControls(text, result);
+      result.groupUserControls = Array.isArray(parsed.controls) ? parsed.controls : [];
+      result.groupUserControlsById = new Map();
+      result.groupUserControls.forEach((control) => {
+        if (!control || !control.id || result.groupUserControlsById.has(control.id)) return;
+        result.groupUserControlsById.set(control.id, control);
+      });
+      result.groupUserControlsBlocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
+      const unknownControls = result.groupUserControls.filter((control) => control?.kind === 'unknown');
+      result.groupUserControlIssues = {
+        blockCount: Number(parsed.blockCount || 0),
+        duplicateIds: Array.isArray(parsed.duplicateIds) ? [...parsed.duplicateIds] : [],
+        unknownControls: unknownControls.map((control) => ({
+          id: control.id,
+          inputControl: control.inputControl || '',
+        })),
+      };
+      result.groupUserControlMutationIssues = [];
+      try {
+        logDiag(`[Group UC] blocks=${result.groupUserControlIssues.blockCount}, controls=${result.groupUserControls.length}, duplicateIds=${result.groupUserControlIssues.duplicateIds.length}, unknown=${result.groupUserControlIssues.unknownControls.length}`);
+      } catch (_) {}
+    } catch (_) {
+      result.groupUserControls = [];
+      result.groupUserControlsById = new Map();
+      result.groupUserControlsBlocks = [];
+      result.groupUserControlIssues = { blockCount: 0, duplicateIds: [], unknownControls: [] };
+      result.groupUserControlMutationIssues = [];
+    }
+  }
+
+  function isMacroLayerOnlyControlId(controlId) {
+    try {
+      const id = String(controlId || '').trim();
+      if (!id) return false;
+      return id === FMR_FILE_META_CONTROL
+        || id === FMR_DATA_LINK_CONTROL
+        || id === FMR_PRESET_DATA_CONTROL
+        || id === FMR_PRESET_SCRIPT_CONTROL
+        || id === FMR_PRESET_SELECT_CONTROL;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function validateGroupUserControlsStructure(text, result) {
+    try {
+      const parsed = parseGroupUserControls(text, result);
+      const issues = [];
+      if (Number(parsed.blockCount || 0) > 1) {
+        issues.push({
+          type: 'multiple-group-usercontrols',
+          message: `Macro has ${parsed.blockCount} top-level UserControls blocks. Expected at most 1.`,
+        });
+      }
+      (Array.isArray(parsed.duplicateIds) ? parsed.duplicateIds : []).forEach((id) => {
+        issues.push({
+          type: 'duplicate-group-usercontrol-id',
+          control: id,
+          message: `Macro-level UserControls contains duplicate control id "${id}".`,
+        });
+      });
+      const leakedMacroIds = [];
+      (result?.entries || []).forEach((entry) => {
+        if (!entry) return;
+        if (!isMacroLayerOnlyControlId(entry.source)) return;
+        leakedMacroIds.push(String(entry.source));
+      });
+      leakedMacroIds.forEach((id) => {
+        issues.push({
+          type: 'macro-control-leaked-into-inputs',
+          control: id,
+          message: `Macro-layer control "${id}" is present in published Inputs/entries and should remain group-owned.`,
+        });
+      });
+      return {
+        issues,
+        parsed,
+      };
+    } catch (_) {
+      return { issues: [], parsed: { blocks: [], controls: [], duplicateIds: [], blockCount: 0 } };
+    }
   }
 
   // Build a launcher property line for a specific URL
@@ -11619,7 +13950,7 @@ async function handleFile(file) {
       if (!ucGroup) {
         const indent = (getLineIndent(out, groupOpen) || '') + '\t';
         const block = eol + indent + 'UserControls = ordered() {' + eol + indent + '},' + eol;
-        out = out.slice(0, groupOpen + 1) + block + out.slice(groupOpen + 1);
+        out = out.slice(0, groupClose) + block + out.slice(groupClose);
         // Re-locate positions after insertion
         const grp2Close = findMatchingBrace(out, groupOpen);
         ucGroup = findUserControlsInGroup(out, groupOpen, grp2Close >= 0 ? grp2Close : groupClose) || null;
@@ -11628,6 +13959,15 @@ async function handleFile(file) {
       // If control exists, insert launcher there; else create minimal control with launcher
       let cb = findControlBlockInUc(out, ucGroup.open, ucGroup.close, ctrl);
       if (cb) {
+        const policy = canMutateGroupUserControl(state.parseResult, ctrl, { action: 'update' });
+        if (!policy.allowed) {
+          recordGroupUserControlMutationIssue(state.parseResult, {
+            control: ctrl,
+            action: 'update',
+            message: policy.message,
+          });
+          return out;
+        }
         out = insertExactYouTubeLauncher(out, cb.open, cb.close, eol, templateLine, pageName);
         try { logDiag(`[Launcher] Inserted for Group.${ctrl} at group-level`); } catch(_) {}
         return out;
@@ -11648,7 +13988,8 @@ async function handleFile(file) {
     try {
       if (!result) return text;
       const originalName = (result.macroNameOriginal || '').trim();
-      const newName = (result.macroName || '').trim();
+      const requestedName = arguments.length > 2 ? String(arguments[2] || '').trim() : '';
+      const newName = requestedName || (result.macroName || '').trim();
       const targetName = newName || originalName;
       if (!originalName || !targetName) return text;
       let safeName = sanitizeIdent(targetName);
@@ -11681,14 +14022,21 @@ async function handleFile(file) {
           if (dot < 0) return;
           const tool = key.slice(0, dot);
           const ctrl = key.slice(dot + 1);
-          let tb = findToolBlockInGroup(out, grp.groupOpenIndex, grp.groupCloseIndex, tool);
-          let uc = tb ? findUserControlsInTool(out, tb.open, tb.close)
-                      : findUserControlsInGroup(out, grp.groupOpenIndex, grp.groupCloseIndex);
-          if (!uc) return;
-          const cb = findControlBlockInUc(out, uc.open, uc.close, ctrl);
-          if (!cb) return;
+          const resolved = findUserControlBlockForToolOrGroup(out, grp.groupOpenIndex, grp.groupCloseIndex, tool, ctrl);
+          if (!resolved || !resolved.controlBlock) return;
+          if (resolved.scope === 'group') {
+            const policy = canMutateGroupUserControl(result, ctrl, { action: 'update' });
+            if (!policy.allowed) {
+              recordGroupUserControlMutationIssue(result, {
+                control: ctrl,
+                action: 'update',
+                message: policy.message,
+              });
+              return;
+            }
+          }
           const before = out;
-          out = rewriteBtncsExecuteInRange(out, cb.open, cb.close, v, eol);
+          out = rewriteBtncsExecuteInRange(out, resolved.controlBlock.open, resolved.controlBlock.close, v, eol);
           if (out !== before) { try { logDiag(`[URL override] ${key} -> rewritten canonical`); } catch(_) {} }
         } catch(_) {}
       });
@@ -11730,9 +14078,7 @@ async function handleFile(file) {
       let i = groupOpen + 1;
       let depth = 1;
       let inStr = false;
-      const toolsPos = text.indexOf('Tools = ordered()', groupOpen);
-      const limit = (toolsPos >= 0 && toolsPos < groupClose) ? toolsPos : groupClose;
-      while (i < limit) {
+      while (i < groupClose) {
         const ch = text[i];
         if (inStr) {
           if (ch === '"' && text[i - 1] !== '\\') inStr = false;
@@ -11744,15 +14090,15 @@ async function handleFile(file) {
         if (ch === '}') { depth--; i++; if (depth <= 0) break; continue; }
         if (depth === 1 && text.slice(i, i + 12) === 'UserControls') {
           let j = i + 12;
-          while (j < limit && isSpace(text[j])) j++;
+          while (j < groupClose && isSpace(text[j])) j++;
           if (text[j] !== '=') { i++; continue; }
           j++;
-          while (j < limit && isSpace(text[j])) j++;
+          while (j < groupClose && isSpace(text[j])) j++;
           if (text.slice(j, j + 8) === 'ordered(') {
             j += 8;
-            while (j < limit && text[j] !== ')') j++;
+            while (j < groupClose && text[j] !== ')') j++;
             if (text[j] === ')') j++;
-            while (j < limit && isSpace(text[j])) j++;
+            while (j < groupClose && isSpace(text[j])) j++;
           }
           if (text[j] !== '{') { i++; continue; }
           const ucOpen = j;
@@ -11871,7 +14217,7 @@ async function handleFile(file) {
           const cClose = findMatchingBrace(text, cOpen);
           if (cClose < 0) break;
           if (String(norm) === String(controlId)) {
-            return { open: cOpen, close: cClose };
+            return { idStart, open: cOpen, close: cClose };
           }
           i = cClose + 1; continue;
         }
@@ -11950,7 +14296,7 @@ async function handleFile(file) {
 
     try {
 
-      const labels = (result.entries || []).filter(x => x && x.isLabel && Number.isFinite(x.labelCount));
+      const labels = (result.entries || []).filter((x) => x && x.isLabel && Number.isFinite(x.labelCount) && (x.headerCarrierSynthetic || x.controlMetaDirty));
 
       if (!labels.length) return text;
 
@@ -12142,6 +14488,8 @@ async function handleFile(file) {
 
           } else {
 
+            if (!Number(newCount)) { i = cClose + 1; continue; }
+
             const insert = `${eol}LBLC_NumInputs = ${newCount},`;
 
             newCBody = insert + cBody;
@@ -12171,7 +14519,7 @@ async function handleFile(file) {
   function applyLabelVisibilityEdits(text, result, eol) {
     try {
       if (!result || !Array.isArray(result.entries)) return text;
-      const labels = result.entries.filter(e => e && e.isLabel && typeof e.labelHidden === 'boolean');
+      const labels = result.entries.filter(e => e && e.isLabel && typeof e.labelHidden === 'boolean' && !!e.controlMetaDirty);
       if (!labels.length) return text;
       const bounds = locateMacroGroupBounds(text, result);
       if (!bounds) return text;
@@ -12206,6 +14554,7 @@ async function handleFile(file) {
     try {
       const indent = (getLineIndent(text, openIndex) || '') + '\t';
       let body = text.slice(openIndex + 1, closeIndex);
+      if (!hidden && !/IC_Visible\s*=/.test(body)) return text;
       if (hidden) {
         body = upsertControlProp(body, 'IC_Visible', 'false', indent, eol);
       } else {
@@ -12226,6 +14575,7 @@ async function handleFile(file) {
       let updated = text;
       for (const entry of result.entries) {
         if (!entry || !entry.isLabel || !entry.sourceOp || !entry.source) continue;
+        if (!entry.controlMetaDirty && !entry.headerCarrierSynthetic) continue;
         const desired = normalizeLabelStateValue(entry);
         if (desired == null) continue;
         if (typeof entry.raw === 'string') {
@@ -12474,11 +14824,18 @@ async function handleFile(file) {
       for (const entry of result.entries) {
         if (!entry || !entry.sourceOp || !entry.source) continue;
         const uc = getUcForTool(entry.sourceOp);
-        if (!uc) continue;
-        const block = findControlBlockInUc(text, uc.open, uc.close, entry.source);
-        if (!block) continue;
-        const body = text.slice(block.open + 1, block.close);
-        const page = extractQuotedProp(body, 'ICS_ControlPage');
+        let page = null;
+        if (uc) {
+          const block = findControlBlockInUc(text, uc.open, uc.close, entry.source);
+          if (block) {
+            const body = text.slice(block.open + 1, block.close);
+            page = extractQuotedProp(body, 'ICS_ControlPage');
+          }
+        }
+        if (!page) {
+          const groupControl = getParsedGroupUserControlById(result, entry.source);
+          if (groupControl && groupControl.page) page = groupControl.page;
+        }
         if (page && (!entry.page || entry.page === 'Controls')) entry.page = page;
       }
     } catch (_) {}
@@ -12500,40 +14857,19 @@ async function handleFile(file) {
   function hydrateControlPageIcons(text, result) {
     try {
       if (!text || !result) return;
-      const bounds = locateMacroGroupBounds(text, result);
-      if (!bounds) { result.pageIcons = new Map(); return; }
-      const uc = findGroupUserControlsBlock(text, bounds.groupOpenIndex, bounds.groupCloseIndex);
       const map = new Map();
-      if (!uc) { result.pageIcons = map; return; }
-      let i = uc.openIndex + 1;
-      while (i < uc.closeIndex) {
-        let nameStart = i;
-        while (nameStart < uc.closeIndex && /\s/.test(text[nameStart])) nameStart++;
-        if (nameStart >= uc.closeIndex) break;
-        if (!isIdentStart(text[nameStart])) { i = nameStart + 1; continue; }
-        let nameEnd = nameStart + 1;
-        while (nameEnd < uc.closeIndex && isIdentPart(text[nameEnd])) nameEnd++;
-        const pageName = text.slice(nameStart, nameEnd);
-        let cursor = nameEnd;
-        while (cursor < uc.closeIndex && isSpace(text[cursor])) cursor++;
-        if (text[cursor] !== '=') { i = cursor + 1; continue; }
-        cursor++;
-        while (cursor < uc.closeIndex && isSpace(text[cursor])) cursor++;
-        if (text[cursor] === 'C' && text.slice(cursor, cursor + 'ControlPage'.length) === 'ControlPage') {
-          cursor += 'ControlPage'.length;
-          while (cursor < uc.closeIndex && isSpace(text[cursor])) cursor++;
-          if (text[cursor] !== '{') { i = cursor + 1; continue; }
-          const open = cursor;
-          const close = findMatchingBrace(text, open);
-          if (close < 0 || close > uc.closeIndex) break;
-          const body = text.slice(open + 1, close);
-          const iconId = extractQuotedProp(body, 'CTID_DIB_ID');
-          if (iconId) map.set(normalizePageNameGlobal(pageName), iconId);
-          i = close + 1;
-        } else {
-          i = cursor + 1;
-        }
+      const controls = Array.isArray(result.groupUserControls) ? result.groupUserControls : [];
+      if (!controls.length) {
+        result.pageIcons = map;
+        return;
       }
+      controls.forEach((control) => {
+        if (!control || !control.id || !control.rawBody) return;
+        if (control.inputControl) return;
+        if (!/\bCTID_DIB_ID\b/.test(control.rawBody)) return;
+        const iconId = extractQuotedProp(control.rawBody, 'CTID_DIB_ID');
+        if (iconId) map.set(normalizePageNameGlobal(control.id), iconId);
+      });
       result.pageIcons = map;
     } catch (_) { /* ignore */ }
   }
@@ -12558,6 +14894,22 @@ async function handleFile(file) {
     } catch (_) { return null; }
   }
 
+  function extractControlPropLiteral(body, prop) {
+    try {
+      if (!body || !prop) return null;
+      const range = findControlPropRange(body, prop);
+      if (!range) return null;
+      const line = body.slice(range.start, range.end);
+      const eq = line.indexOf('=');
+      if (eq < 0) return null;
+      let value = line.slice(eq + 1).trim();
+      if (value.endsWith(',')) value = value.slice(0, -1).trim();
+      return value || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   function extractControlStringProp(body, prop) {
     try {
       if (!body || !prop) return null;
@@ -12573,6 +14925,84 @@ async function handleFile(file) {
         return unescapeSettingString(value.slice(1, -1));
       }
       return value;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function buildPresetEnginePayload(result) {
+    try {
+      const engine = ensurePresetEngine(result);
+      if (!engine || typeof engine !== 'object') return null;
+      const scopeEntries = Array.isArray(engine.scopeEntries) ? engine.scopeEntries : [];
+      const scope = Array.isArray(engine.scope)
+        ? engine.scope.map((key) => String(key || '').trim()).filter(Boolean)
+        : [];
+      const presets = {};
+      const presetObj = engine.presets && typeof engine.presets === 'object' ? engine.presets : {};
+      Object.keys(presetObj).forEach((name) => {
+        const cleanName = String(name || '').trim();
+        if (!cleanName) return;
+        const values = presetObj[name];
+        if (!values || typeof values !== 'object') return;
+        const cleanValues = {};
+        scope.forEach((key) => {
+          if (values[key] == null) return;
+          cleanValues[key] = String(values[key]);
+        });
+        if (Object.keys(cleanValues).length) {
+          presets[cleanName] = cleanValues;
+        }
+      });
+      const base = {};
+      const baseObj = engine.base && typeof engine.base === 'object' ? engine.base : {};
+      scope.forEach((key) => {
+        if (baseObj[key] == null) return;
+        base[key] = String(baseObj[key]);
+      });
+      if (!scope.length && !Object.keys(presets).length) return null;
+      const activePreset = String(engine.activePreset || '').trim();
+      return {
+        version: Math.max(2, Number(engine.version) || 1),
+        buildMarker: String(engine.buildMarker || FMR_BUILD_MARKER),
+        scope,
+        scopeEntries: scopeEntries.length ? scopeEntries.map((item) => ({ ...item })) : undefined,
+        base: Object.keys(base).length ? base : undefined,
+        presets,
+        activePreset: activePreset || undefined,
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function buildPresetRuntimeState(result) {
+    try {
+      const payload = buildPresetEnginePayload(result);
+      if (!payload) return null;
+      const scopeEntries = normalizePresetScopeEntries(result, payload.scopeEntries, payload.scope);
+      const presetNames = payload.presets && typeof payload.presets === 'object'
+        ? Object.keys(payload.presets).filter((name) => String(name || '').trim())
+        : [];
+      if (!scopeEntries.length || !presetNames.length) return null;
+      const runtimeTargets = resolvePresetRuntimeTargets(result, scopeEntries);
+      if (!runtimeTargets.length) return null;
+      const defaultPresetName = String(payload.activePreset || presetNames[0] || '').trim();
+      const defaultIndex = Math.max(0, presetNames.indexOf(defaultPresetName));
+      const script = buildPresetApplyOnChangeScript(result, {
+        ...payload,
+        scopeEntries,
+      }, FMR_PRESET_SELECT_CONTROL);
+      if (!script) return null;
+      return {
+        payload: {
+          ...payload,
+          scopeEntries,
+        },
+        presetNames,
+        defaultIndex,
+        script,
+      };
     } catch (_) {
       return null;
     }
@@ -12829,26 +15259,11 @@ async function handleFile(file) {
                   }
                 }
               }
-            }
+          }
           if (!meta.inputControl) {
-            const groupUc = findUserControlsInGroup(text, bounds.groupOpenIndex, bounds.groupCloseIndex);
-            if (groupUc) {
-              const gBlock = findControlBlockInUc(text, groupUc.open, groupUc.close, entry.source);
-              if (gBlock) {
-                const body = text.slice(gBlock.open + 1, gBlock.close);
-                meta.inputControl = meta.inputControl || extractControlPropValue(body, 'INPID_InputControl');
-                meta.dataType = meta.dataType || extractControlPropValue(body, 'LINKID_DataType');
-                meta.defaultValue = meta.defaultValue || extractControlPropValue(body, 'INP_Default');
-                meta.textLines = meta.textLines || extractControlPropValue(body, 'TEC_Lines');
-                meta.integer = meta.integer || extractControlPropValue(body, 'INP_Integer');
-                meta.minAllowed = meta.minAllowed || extractControlPropValue(body, 'INP_MinAllowed');
-                meta.maxAllowed = meta.maxAllowed || extractControlPropValue(body, 'INP_MaxAllowed');
-                meta.minScale = meta.minScale || extractControlPropValue(body, 'INP_MinScale');
-                meta.maxScale = meta.maxScale || extractControlPropValue(body, 'INP_MaxScale');
-                if (!Array.isArray(meta.choiceOptions) || !meta.choiceOptions.length) {
-                  meta.choiceOptions = extractChoiceOptionsFromBody(body);
-                }
-              }
+            const groupControl = getParsedGroupUserControlById(result, entry.source);
+            if (groupControl) {
+              applyGroupUserControlMeta(groupControl, meta);
             }
           }
         }
@@ -12874,6 +15289,12 @@ async function handleFile(file) {
           choiceOptions: Array.isArray(meta.choiceOptions) ? [...meta.choiceOptions] : [],
         };
         entry.controlMetaDirty = false;
+        if (meta.inputControl && /labelcontrol/i.test(meta.inputControl)) {
+          entry.isLabel = true;
+          entry.labelCount = Number.isFinite(meta.labelCount)
+            ? Number(meta.labelCount)
+            : (Number.isFinite(entry.labelCount) ? Number(entry.labelCount) : 0);
+        }
         if (meta.inputControl && /buttoncontrol/i.test(meta.inputControl)) {
           entry.isButton = true;
         }
@@ -13051,14 +15472,16 @@ async function handleFile(file) {
         .filter(entry => entry && entry.sourceOp && entry.source);
       for (const entry of iterableEntries) {
         if (!entry || !entry.sourceOp || !entry.source) continue;
-        if (!perToolOrder.has(entry.sourceOp)) perToolOrder.set(entry.sourceOp, []);
-        const arr = perToolOrder.get(entry.sourceOp);
-        const normName = normalizeId(entry.source);
-        if (!arr.some(n => normalizeId(n) === normName)) arr.push(entry.source);
         const pageName = (entry.page && String(entry.page).trim()) ? String(entry.page).trim() : 'Controls';
-        if (!perTool.has(entry.sourceOp)) perTool.set(entry.sourceOp, new Map());
-        perTool.get(entry.sourceOp).set(entry.source, pageName);
         groupControls.set(entry.source, pageName);
+        if (!isGroupUserControlEntry(entry)) {
+          if (!perToolOrder.has(entry.sourceOp)) perToolOrder.set(entry.sourceOp, []);
+          const arr = perToolOrder.get(entry.sourceOp);
+          const normName = normalizeId(entry.source);
+          if (!arr.some(n => normalizeId(n) === normName)) arr.push(entry.source);
+          if (!perTool.has(entry.sourceOp)) perTool.set(entry.sourceOp, new Map());
+          perTool.get(entry.sourceOp).set(entry.source, pageName);
+        }
         if (!pageDefinitions.has(pageName)) {
           const isCommon = pageName === 'Common';
           pageDefinitions.set(pageName, {
@@ -13069,18 +15492,18 @@ async function handleFile(file) {
         const cfg = pageDefinitions.get(pageName);
         const iconId = pageIcons.get(normalizePageNameGlobal(pageName));
         if (iconId) cfg.iconId = iconId;
-        const isBlend = String(entry.source).toLowerCase() === 'blend';
+        const isBlend = !isGroupUserControlEntry(entry) && String(entry.source).toLowerCase() === 'blend';
         const isToggle = entry.isBlendToggle || ensureBlendToggleSet(result).has(getEntryKey(entry));
         if (isBlend && isToggle) {
           entry.isBlendToggle = true;
           blendTargets.set(entry.sourceOp, (blendTargets.get(entry.sourceOp) || new Set()).add(entry.source));
         }
-        const script = (entry.onChange && String(entry.onChange).trim()) ? String(entry.onChange).trim() : '';
+        const script = !isGroupUserControlEntry(entry) && (entry.onChange && String(entry.onChange).trim()) ? String(entry.onChange).trim() : '';
         if (script) {
           if (!onChangeTargets.has(entry.sourceOp)) onChangeTargets.set(entry.sourceOp, []);
           onChangeTargets.get(entry.sourceOp).push({ control: entry.source, script });
         }
-        if (entry.isButton) {
+        if (!isGroupUserControlEntry(entry) && entry.isButton) {
           const execScript = (entry.buttonExecute && String(entry.buttonExecute).trim()) ? String(entry.buttonExecute).trim() : '';
           if (execScript) {
             if (!buttonExecuteTargets.has(entry.sourceOp)) buttonExecuteTargets.set(entry.sourceOp, []);
@@ -13091,13 +15514,6 @@ async function handleFile(file) {
         if (entry.pendingMetaDiff) delete entry.pendingMetaDiff;
         if (metaDiff) {
           metaOverrideEntries.push({ entry, diff: metaDiff });
-        } else {
-          const fallbackInput = normalizeInputControlValue(
-            entry?.controlMeta?.inputControl || entry?.controlMetaOriginal?.inputControl
-          );
-          if (fallbackInput) {
-            metaOverrideEntries.push({ entry, diff: { inputControl: fallbackInput } });
-          }
         }
       }
       let out = text;
@@ -13105,7 +15521,8 @@ async function handleFile(file) {
         if (!toolName || !controls.size) continue;
         out = rewriteToolUserControls(out, toolName, controls, bounds, eol, result);
       }
-      out = rewriteGroupUserControls(out, groupControls, bounds, eol);
+      bounds = locateMacroGroupBounds(out, result) || bounds;
+      out = rewriteGroupUserControls(out, groupControls, bounds, eol, result);
       const orderedPages = derivePageOrderFromEntries(result.entries, result.pageOrder);
       result.pageOrder = orderedPages;
       const priorityMap = new Map();
@@ -13121,6 +15538,7 @@ async function handleFile(file) {
       });
       const onlyControlsPage = pageDefinitions.size === 1 && pageDefinitions.has('Controls');
       if (!onlyControlsPage) {
+        bounds = locateMacroGroupBounds(out, result) || bounds;
         out = ensureControlPagesDeclared(out, bounds, pageDefinitions, eol, result);
       }
       bounds = locateMacroGroupBounds(out, result);
@@ -13138,7 +15556,12 @@ async function handleFile(file) {
         }
       }
       bounds = metaBounds || bounds;
-      out = reorderToolUserControlsBlocks(out, bounds, perToolOrder, eol, result);
+      // Preserve authored tool-level UserControls order by default.
+      // Reordering tool custom controls to mirror macro published order is not
+      // a no-op-safe transformation and has caused structural drift on real macros.
+      if (options.reorderToolUserControls === true) {
+        out = reorderToolUserControlsBlocks(out, bounds, perToolOrder, eol, result);
+      }
       blendTargets.forEach((controls, toolName) => {
         out = applyBlendCheckboxesToTool(out, bounds, toolName, Array.from(controls), eol);
       });
@@ -13165,13 +15588,23 @@ async function handleFile(file) {
       let updated = text;
       let currentBounds = bounds || locateMacroGroupBounds(updated, resultRef);
       if (!currentBounds) return updated;
-      let ensureRes = ensureToolUserControlsBlock(updated, currentBounds, toolName, newline);
-      updated = ensureRes.text;
-      currentBounds = locateMacroGroupBounds(updated, resultRef) || currentBounds;
-      let toolBlock = ensureRes.toolBlock || findToolBlockInGroup(updated, currentBounds.groupOpenIndex, currentBounds.groupCloseIndex, toolName);
+      let toolBlock = findToolBlockInGroup(updated, currentBounds.groupOpenIndex, currentBounds.groupCloseIndex, toolName);
       if (!toolBlock) return updated;
-      let uc = ensureRes.ucBlock || findUserControlsInTool(updated, toolBlock.open, toolBlock.close);
-      if (!uc) return updated;
+      let uc = findUserControlsInTool(updated, toolBlock.open, toolBlock.close);
+      if (!uc) {
+        const needsUserControlsBlock = Array.from(controlMap.values()).some((pageName) => {
+          const normalizedPage = normalizePageNameGlobal(pageName || 'Controls');
+          return normalizedPage !== 'Controls';
+        });
+        if (!needsUserControlsBlock) return updated;
+        const ensureRes = ensureToolUserControlsBlock(updated, currentBounds, toolName, newline);
+        updated = ensureRes.text;
+        currentBounds = locateMacroGroupBounds(updated, resultRef) || currentBounds;
+        toolBlock = ensureRes.toolBlock || findToolBlockInGroup(updated, currentBounds.groupOpenIndex, currentBounds.groupCloseIndex, toolName);
+        if (!toolBlock) return updated;
+        uc = ensureRes.ucBlock || findUserControlsInTool(updated, toolBlock.open, toolBlock.close);
+        if (!uc) return updated;
+      }
       for (const [controlName, pageName] of controlMap.entries()) {
         const normalizedPage = normalizePageNameGlobal(pageName || 'Controls');
         let block = findControlBlockInUc(updated, uc.open, uc.close, controlName);
@@ -13186,6 +15619,10 @@ async function handleFile(file) {
           if (!block && uc) block = findControlBlockInUc(updated, uc.open, uc.close, controlName);
         }
         if (!block) continue;
+        if (normalizedPage === 'Controls') {
+          const body = updated.slice(block.open + 1, block.close);
+          if (!/ICS_ControlPage\s*=/.test(body)) continue;
+        }
         updated = rewriteControlBlockPage(updated, block.open, block.close, normalizedPage, newline);
         currentBounds = locateMacroGroupBounds(updated, resultRef) || currentBounds;
         toolBlock = findToolBlockInGroup(updated, currentBounds.groupOpenIndex, currentBounds.groupCloseIndex, toolName);
@@ -13198,23 +15635,28 @@ async function handleFile(file) {
     }
   }
 
-  function rewriteGroupUserControls(text, controlMap, bounds, eol) {
+  function rewriteGroupUserControls(text, controlMap, bounds, eol, resultRef) {
     try {
       if (!controlMap || !controlMap.size) return text;
-      const groupOpen = bounds?.groupOpenIndex ?? 0;
-      const groupClose = bounds?.groupCloseIndex ?? text.length;
-      const uc = findGroupUserControlsBlock(text, groupOpen, groupClose);
-      if (!uc) return text;
-      const segments = [];
-      controlMap.forEach((pageName, controlName) => {
-        const block = findControlBlockInUc(text, uc.openIndex, uc.closeIndex, controlName);
-        if (block) segments.push({ open: block.open, close: block.close, pageName });
-      });
-      if (!segments.length) return text;
-      segments.sort((a, b) => b.open - a.open);
       let updated = text;
-      for (const seg of segments) {
-        updated = rewriteControlBlockPage(updated, seg.open, seg.close, seg.pageName, eol);
+      const newline = eol || '\n';
+      for (const [controlName, pageName] of controlMap.entries()) {
+        updated = upsertGroupUserControl(updated, resultRef, controlName, {
+          createIfMissing: false,
+          updateBody: (body, indent) => {
+            const safePage = normalizePageNameGlobal(pageName || 'Controls');
+            const parsed = getParsedGroupUserControlById(resultRef, controlName);
+            const parsedBody = typeof parsed?.rawBody === 'string' ? parsed.rawBody : '';
+            if (parsedBody.trim()) {
+              body = parsedBody;
+            }
+            const replacement = `ICS_ControlPage = "${escapeQuotes(safePage)}",`;
+            if (/ICS_ControlPage\s*=/.test(body)) {
+              return body.replace(/ICS_ControlPage\s*=\s*"([^"]*)"\s*,?/g, replacement);
+            }
+            return `${newline}${indent}${replacement}${body}`;
+          }
+        }, newline);
       }
       return updated;
     } catch (_) {
@@ -13274,11 +15716,19 @@ async function handleFile(file) {
         segments.forEach(seg => {
           if (!used.has(seg)) finalOrder.push(seg);
         });
+        const orderChanged = finalOrder.length === segments.length && finalOrder.some((seg, idx) => seg !== segments[idx]);
+        if (!orderChanged) return;
+        const ucIndent = getLineIndent(updated, uc.open) || '';
+        const entryIndent = ucIndent + '\t';
         const chunks = finalOrder.map((seg, idx) => {
           const needsComma = idx < finalOrder.length - 1;
-          return ensureSegmentComma(updated.slice(seg.start, seg.end), needsComma);
+          const rawSegment = updated.slice(seg.start, seg.end).trim();
+          const normalizedSegment = reindent(rawSegment, entryIndent, newline);
+          return ensureSegmentComma(normalizedSegment, needsComma);
         });
-        const inner = chunks.join('');
+        const inner = chunks.length
+          ? `${newline}${chunks.join(newline)}${newline}${ucIndent}`
+          : '';
         updated = updated.slice(0, uc.open + 1) + inner + updated.slice(uc.close);
         const delta = inner.length - (uc.close - (uc.open + 1));
         uc.close += delta;
@@ -13448,14 +15898,17 @@ async function handleFile(file) {
               if (ucClose > ucOpen && ucClose < toolClose) {
                 const body = text.slice(ucOpen + 1, ucClose);
                 if (body.trim().length === 0) {
+                  let start = ucPos;
+                  while (start > toolOpen && /[ \t]/.test(text[start - 1])) start--;
+                  if (start > toolOpen && (text[start - 1] === '\n' || text[start - 1] === '\r')) start--;
                   let end = ucClose + 1;
                   if (text[end] === ',') end++;
                   while (end < text.length && /\s/.test(text[end])) {
                     const c = text[end];
                     end++;
-                    if (c === '\\n' || c === '\\r') break;
+                    if (c === '\n' || c === '\r') break;
                   }
-                  removals.push({ start: ucPos, end });
+                  removals.push({ start, end });
                 }
               }
             }
@@ -13572,6 +16025,30 @@ async function handleFile(file) {
       let currentBounds = bounds || locateMacroGroupBounds(text, resultRef);
       for (const entry of result.entries) {
         if (!entry || !entry.sourceOp || !entry.source) continue;
+        if (isGroupUserControlEntry(entry)) {
+          const desired = entry.displayName || entry.displayNameOriginal;
+          const original = entry.displayNameOriginal || desired;
+          if (!desired || desired === original) {
+            if (commitChanges) entry.displayNameDirty = false;
+            continue;
+          }
+          let currentBoundsForGroup = currentBounds || locateMacroGroupBounds(updated, resultRef);
+          if (!currentBoundsForGroup) continue;
+          const block = findGroupUserControlBlockById(updated, resultRef, entry.source);
+          if (!block) continue;
+          const indent = (getLineIndent(updated, block.open) || '') + '\t';
+          const newline = eol || '\n';
+          let body = updated.slice(block.open + 1, block.close);
+          if (desired) body = upsertControlProp(body, 'LINKS_Name', `"${escapeQuotes(desired)}"`, indent, newline);
+          else body = removeControlProp(body, 'LINKS_Name');
+          updated = updated.slice(0, block.open + 1) + body + updated.slice(block.close);
+          currentBounds = locateMacroGroupBounds(updated, resultRef) || currentBoundsForGroup;
+          if (commitChanges) {
+            entry.displayNameOriginal = desired;
+            entry.displayNameDirty = false;
+          }
+          continue;
+        }
         if (entry.isLabel) {
           const isHeaderCarrier = entry.source === FMR_HEADER_LABEL_CONTROL;
           const fallbackText = entry.displayName || entry.displayNameOriginal || entry.name || entry.source || `${entry.sourceOp}.${entry.source}`;
@@ -13719,9 +16196,92 @@ async function handleFile(file) {
     }
   }
 
+  function normalizeControlMetaDefaultLiteral(value) {
+    try {
+      if (value == null) return null;
+      let out = String(value).trim();
+      if (!out) return null;
+      if (out.startsWith('"') && out.endsWith('"')) out = out.slice(1, -1);
+      if (/^true$/i.test(out)) return '1';
+      if (/^false$/i.test(out)) return '0';
+      return out;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function ensureCheckboxMetaProps(body, diff, entry, indent, eol) {
+    try {
+      let nextBody = body;
+      const hasControlProp = (prop) => {
+        try { return new RegExp(`${prop}\\s*=`, 'i').test(nextBody); } catch (_) { return false; }
+      };
+      const inputControl = Object.prototype.hasOwnProperty.call(diff, 'inputControl')
+        ? diff.inputControl
+        : extractControlPropValue(nextBody, 'INPID_InputControl');
+      const normalizedInput = normalizeInputControlValue(inputControl);
+      if (!normalizedInput || normalizedInput.toLowerCase() !== 'checkboxcontrol') return nextBody;
+      const fallbackDefault = normalizeControlMetaDefaultLiteral(
+        Object.prototype.hasOwnProperty.call(diff, 'defaultValue')
+          ? diff.defaultValue
+          : (entry?.controlMeta?.defaultValue ?? entry?.controlMetaOriginal?.defaultValue ?? extractInstancePropValue(entry.raw, 'Default') ?? '0')
+      ) || '0';
+      nextBody = upsertControlProp(nextBody, 'INPID_InputControl', '"CheckboxControl"', indent, eol);
+      if (!hasControlProp('INP_Integer')) nextBody = upsertControlProp(nextBody, 'INP_Integer', 'false', indent, eol);
+      if (!hasControlProp('INP_Default')) nextBody = upsertControlProp(nextBody, 'INP_Default', fallbackDefault, indent, eol);
+      if (!hasControlProp('INP_MinScale')) nextBody = upsertControlProp(nextBody, 'INP_MinScale', '0', indent, eol);
+      if (!hasControlProp('INP_MaxScale')) nextBody = upsertControlProp(nextBody, 'INP_MaxScale', '1', indent, eol);
+      if (!hasControlProp('INP_MinAllowed')) nextBody = upsertControlProp(nextBody, 'INP_MinAllowed', '0', indent, eol);
+      if (!hasControlProp('INP_MaxAllowed')) nextBody = upsertControlProp(nextBody, 'INP_MaxAllowed', '1', indent, eol);
+      if (!hasControlProp('CBC_TriState')) nextBody = upsertControlProp(nextBody, 'CBC_TriState', 'false', indent, eol);
+      if (!hasControlProp('LINKID_DataType')) nextBody = upsertControlProp(nextBody, 'LINKID_DataType', '"Number"', indent, eol);
+      return nextBody;
+    } catch (_) {
+      return body;
+    }
+  }
+
+  function applyControlMetaPropsToBody(body, diff, entry, indent, eol) {
+    try {
+      let nextBody = body;
+      if (Object.prototype.hasOwnProperty.call(diff, 'defaultValue')) {
+        const val = diff.defaultValue;
+        if (val == null) nextBody = removeControlProp(nextBody, 'INP_Default');
+        else nextBody = upsertControlProp(nextBody, 'INP_Default', val, indent, eol);
+      }
+      if (Object.prototype.hasOwnProperty.call(diff, 'minScale')) {
+        const val = diff.minScale;
+        if (val == null) nextBody = removeControlProp(nextBody, 'INP_MinScale');
+        else nextBody = upsertControlProp(nextBody, 'INP_MinScale', val, indent, eol);
+      }
+      if (Object.prototype.hasOwnProperty.call(diff, 'maxScale')) {
+        const val = diff.maxScale;
+        if (val == null) nextBody = removeControlProp(nextBody, 'INP_MaxScale');
+        else nextBody = upsertControlProp(nextBody, 'INP_MaxScale', val, indent, eol);
+      }
+      if (Object.prototype.hasOwnProperty.call(diff, 'inputControl')) {
+        const val = diff.inputControl;
+        if (val == null) nextBody = removeControlProp(nextBody, 'INPID_InputControl');
+        else nextBody = upsertControlProp(nextBody, 'INPID_InputControl', `"${escapeQuotes(val)}"`, indent, eol);
+      }
+      nextBody = ensureCheckboxMetaProps(nextBody, diff, entry, indent, eol);
+      return nextBody;
+    } catch (_) {
+      return body;
+    }
+  }
+
   function applyControlMetaOverride(text, entry, diff, bounds, eol, resultRef) {
     try {
       if (!entry || !entry.sourceOp || !entry.source || !diff) return { text, bounds };
+      if (isGroupUserControlEntry(entry)) {
+        const updated = upsertGroupUserControl(text, resultRef, entry.source, {
+          createIfMissing: false,
+          updateBody: (body, indent, newline) => applyControlMetaPropsToBody(body, diff, entry, indent, newline),
+        }, eol || '\n');
+        const newBounds = locateMacroGroupBounds(updated, resultRef) || bounds || locateMacroGroupBounds(text, resultRef);
+        return { text: updated, bounds: newBounds };
+      }
       let currentBounds = bounds || locateMacroGroupBounds(text, resultRef);
       if (!currentBounds) return { text, bounds };
       let toolBlock = findToolBlockInGroup(text, currentBounds.groupOpenIndex, currentBounds.groupCloseIndex, entry.sourceOp);
@@ -13742,58 +16302,7 @@ async function handleFile(file) {
       if (!block) return { text, bounds: currentBounds };
       const indent = (getLineIndent(text, block.open) || '') + '\t';
       let body = text.slice(block.open + 1, block.close);
-      if (Object.prototype.hasOwnProperty.call(diff, 'defaultValue')) {
-        const val = diff.defaultValue;
-        if (val == null) body = removeControlProp(body, 'INP_Default');
-        else body = upsertControlProp(body, 'INP_Default', val, indent, eol);
-      }
-      if (Object.prototype.hasOwnProperty.call(diff, 'minScale')) {
-        const val = diff.minScale;
-        if (val == null) body = removeControlProp(body, 'INP_MinScale');
-        else body = upsertControlProp(body, 'INP_MinScale', val, indent, eol);
-      }
-      if (Object.prototype.hasOwnProperty.call(diff, 'maxScale')) {
-        const val = diff.maxScale;
-        if (val == null) body = removeControlProp(body, 'INP_MaxScale');
-        else body = upsertControlProp(body, 'INP_MaxScale', val, indent, eol);
-      }
-      if (Object.prototype.hasOwnProperty.call(diff, 'inputControl')) {
-        const val = diff.inputControl;
-        if (val == null) body = removeControlProp(body, 'INPID_InputControl');
-        else body = upsertControlProp(body, 'INPID_InputControl', `"${escapeQuotes(val)}"`, indent, eol);
-      }
-      const normalizeDefault = (val) => {
-        if (val == null) return null;
-        let out = String(val).trim();
-        if (!out) return null;
-        if (out.startsWith('"') && out.endsWith('"')) out = out.slice(1, -1);
-        if (/^true$/i.test(out)) return '1';
-        if (/^false$/i.test(out)) return '0';
-        return out;
-      };
-      const hasControlProp = (prop) => {
-        try { return new RegExp(`${prop}\\s*=`, 'i').test(body); } catch (_) { return false; }
-      };
-      const inputControl = Object.prototype.hasOwnProperty.call(diff, 'inputControl')
-        ? diff.inputControl
-        : extractControlPropValue(body, 'INPID_InputControl');
-      const normalizedInput = normalizeInputControlValue(inputControl);
-      if (normalizedInput && normalizedInput.toLowerCase() === 'checkboxcontrol') {
-        const fallbackDefault = normalizeDefault(
-          Object.prototype.hasOwnProperty.call(diff, 'defaultValue')
-            ? diff.defaultValue
-            : (entry?.controlMeta?.defaultValue ?? entry?.controlMetaOriginal?.defaultValue ?? extractInstancePropValue(entry.raw, 'Default') ?? '0')
-        ) || '0';
-        body = upsertControlProp(body, 'INPID_InputControl', '"CheckboxControl"', indent, eol);
-        if (!hasControlProp('INP_Integer')) body = upsertControlProp(body, 'INP_Integer', 'false', indent, eol);
-        if (!hasControlProp('INP_Default')) body = upsertControlProp(body, 'INP_Default', fallbackDefault, indent, eol);
-        if (!hasControlProp('INP_MinScale')) body = upsertControlProp(body, 'INP_MinScale', '0', indent, eol);
-        if (!hasControlProp('INP_MaxScale')) body = upsertControlProp(body, 'INP_MaxScale', '1', indent, eol);
-        if (!hasControlProp('INP_MinAllowed')) body = upsertControlProp(body, 'INP_MinAllowed', '0', indent, eol);
-        if (!hasControlProp('INP_MaxAllowed')) body = upsertControlProp(body, 'INP_MaxAllowed', '1', indent, eol);
-        if (!hasControlProp('CBC_TriState')) body = upsertControlProp(body, 'CBC_TriState', 'false', indent, eol);
-        if (!hasControlProp('LINKID_DataType')) body = upsertControlProp(body, 'LINKID_DataType', '"Number"', indent, eol);
-      }
+      body = applyControlMetaPropsToBody(body, diff, entry, indent, eol);
       const updated = text.slice(0, block.open + 1) + body + text.slice(block.close);
       const newBounds = locateMacroGroupBounds(updated, resultRef) || currentBounds;
       return { text: updated, bounds: newBounds };
@@ -13828,8 +16337,16 @@ async function handleFile(file) {
         while (end < updatedText.length && /\s/.test(updatedText[end]) && updatedText[end] !== '\n' && updatedText[end] !== '\r') end++;
         updatedText = updatedText.slice(0, lineStart) + block + updatedText.slice(end);
       } else {
+        const bodyStart = uc.openIndex + 1;
+        let insertPos = uc.closeIndex;
+        let cursor = uc.closeIndex - 1;
+        while (cursor >= bodyStart && /\s/.test(updatedText[cursor])) cursor--;
+        if (cursor >= bodyStart && updatedText[cursor] !== ',' && updatedText[cursor] !== '{') {
+          updatedText = updatedText.slice(0, cursor + 1) + ',' + updatedText.slice(cursor + 1);
+          insertPos += 1;
+        }
         const insertion = eol + block;
-        updatedText = updatedText.slice(0, uc.closeIndex) + insertion + updatedText.slice(uc.closeIndex);
+        updatedText = updatedText.slice(0, insertPos) + insertion + updatedText.slice(insertPos);
       }
       const newBounds = locateMacroGroupBounds(updatedText, resultRef) || currentBounds;
       return { text: updatedText, bounds: newBounds };
@@ -13844,15 +16361,100 @@ async function handleFile(file) {
       if (!currentBounds) return { text, bounds: null, block: null };
       let uc = findGroupUserControlsBlock(text, currentBounds.groupOpenIndex, currentBounds.groupCloseIndex);
       if (uc) return { text, bounds: currentBounds, block: uc };
+      try {
+        if (typeof logDiag === 'function' && diagnosticsController?.isEnabled?.()) {
+          const macroName = String(resultRef?.macroNameOriginal || resultRef?.macroName || '').trim() || 'unknown';
+          const stack = String(new Error().stack || '')
+            .split(/\r?\n/)
+            .slice(2, 6)
+            .map((line) => line.trim())
+            .join(' | ');
+          logDiag(`[Group UC create] macro=${macroName} stack=${stack}`);
+        }
+      } catch (_) {}
       const indent = (getLineIndent(text, currentBounds.groupOpenIndex) || '') + '\t';
       const snippet = `${eol}${indent}UserControls = ordered() {${eol}${indent}},${eol}`;
-      const insertPos = currentBounds.groupOpenIndex + 1;
+      const insertPos = currentBounds.groupCloseIndex;
       const updated = text.slice(0, insertPos) + snippet + text.slice(insertPos);
-      const newBounds = locateMacroGroupBounds(updated, resultRef) || currentBounds;
-      const newUc = findGroupUserControlsBlock(updated, newBounds.groupOpenIndex, newBounds.groupCloseIndex);
+      const ucOpenRel = snippet.indexOf('{');
+      const ucOpen = ucOpenRel >= 0 ? insertPos + ucOpenRel : -1;
+      const ucClose = ucOpen >= 0 ? findMatchingBrace(updated, ucOpen) : -1;
+      const newBounds = locateMacroGroupBounds(updated, resultRef) || {
+        groupOpenIndex: currentBounds.groupOpenIndex,
+        groupCloseIndex: currentBounds.groupCloseIndex + snippet.length,
+      };
+      const newUc = (ucOpen >= 0 && ucClose > ucOpen)
+        ? { openIndex: ucOpen, closeIndex: ucClose }
+        : findGroupUserControlsBlock(updated, newBounds.groupOpenIndex, newBounds.groupCloseIndex);
       return { text: updated, bounds: newBounds, block: newUc };
     } catch (_) {
       return { text, bounds, block: null };
+    }
+  }
+
+  function normalizeGroupUserControlsBlocks(text, result, eol) {
+    try {
+      if (!text) return text;
+      const bounds = locateMacroGroupBounds(text, result);
+      if (!bounds) return text;
+      const blocks = findAllGroupUserControlsBlocks(text, bounds.groupOpenIndex, bounds.groupCloseIndex);
+      if (blocks.length <= 1) return text;
+      const newline = eol || '\n';
+      const mergedBodies = [];
+      blocks.forEach((block) => {
+        const body = text.slice(block.openIndex + 1, block.closeIndex).trim();
+        if (body) mergedBodies.push(body);
+      });
+      const baseIndent = (getLineIndent(text, bounds.groupOpenIndex) || '') + '\t';
+      let replacement = `${newline}${baseIndent}UserControls = ordered() {`;
+      if (mergedBodies.length) {
+        replacement += `${newline}${mergedBodies.join(newline)}`;
+        if (!replacement.endsWith(newline)) replacement += newline;
+      } else {
+        replacement += newline;
+      }
+      replacement += `${baseIndent}},${newline}`;
+      const first = blocks[0];
+      const last = blocks[blocks.length - 1];
+      return text.slice(0, first.declStart) + replacement + text.slice(last.endIndex);
+    } catch (_) {
+      return text;
+    }
+  }
+
+  function stripEmptyGroupUserControls(text, result) {
+    try {
+      if (!text) return text;
+      const bounds = locateMacroGroupBounds(text, result);
+      if (!bounds) return text;
+      const blocks = findAllGroupUserControlsBlocks(text, bounds.groupOpenIndex, bounds.groupCloseIndex);
+      if (!blocks.length) return text;
+      const removable = blocks.filter((block) => {
+        try {
+          return text.slice(block.openIndex + 1, block.closeIndex).trim().length === 0;
+        } catch (_) {
+          return false;
+        }
+      });
+      if (!removable.length) return text;
+      let updated = text;
+      removable.sort((a, b) => b.declStart - a.declStart);
+      removable.forEach((block) => {
+        let start = block.declStart;
+        while (start > bounds.groupOpenIndex && /[ \t]/.test(updated[start - 1])) start--;
+        if (start > bounds.groupOpenIndex && (updated[start - 1] === '\n' || updated[start - 1] === '\r')) start--;
+        let end = block.endIndex;
+        while (end < updated.length && /[ \t]/.test(updated[end])) end++;
+        if (end < updated.length && (updated[end] === '\r' || updated[end] === '\n')) {
+          const firstBreak = updated[end];
+          end++;
+          if (firstBreak === '\r' && updated[end] === '\n') end++;
+        }
+        updated = updated.slice(0, start) + updated.slice(end);
+      });
+      return updated;
+    } catch (_) {
+      return text;
     }
   }
 
@@ -14051,11 +16653,8 @@ function applyBlendCheckboxesToTool(text, bounds, toolName, controls, eol, resul
           if (cb) return text.slice(cb.open + 1, cb.close);
         }
       }
-      const groupUc = findUserControlsInGroup(text, bounds.groupOpenIndex, bounds.groupCloseIndex);
-      if (groupUc) {
-        const cb = findControlBlockInUc(text, groupUc.open, groupUc.close, controlName);
-        if (cb) return text.slice(cb.open + 1, cb.close);
-      }
+      const groupBlock = findGroupUserControlBlockById(text, result, controlName);
+      if (groupBlock) return text.slice(groupBlock.open + 1, groupBlock.close);
       return null;
     } catch (_) {
       return null;
@@ -14175,7 +16774,23 @@ function applyBlendCheckboxesToTool(text, bounds, toolName, controls, eol, resul
         const close = findMatchingBrace(body, cursor);
         cursor = close >= 0 ? close + 1 : body.length;
       } else {
-        while (cursor < body.length && !/[,\r\n}]/.test(body[cursor])) cursor++;
+        const identMatch = /^[A-Za-z_][A-Za-z0-9_]*/.exec(body.slice(cursor));
+        if (identMatch) {
+          const identEnd = cursor + identMatch[0].length;
+          let probe = identEnd;
+          while (probe < body.length && /\s/.test(body[probe])) probe++;
+          if (probe < body.length && body[probe] === '{') {
+            const close = findMatchingBrace(body, probe);
+            cursor = close >= 0 ? close + 1 : body.length;
+          } else if (probe < body.length && body[probe] === '(') {
+            const close = findMatchingParen(body, probe);
+            cursor = close >= 0 ? close + 1 : body.length;
+          } else {
+            while (cursor < body.length && !/[,\r\n}]/.test(body[cursor])) cursor++;
+          }
+        } else {
+          while (cursor < body.length && !/[,\r\n}]/.test(body[cursor])) cursor++;
+        }
       }
       while (cursor < body.length && /\s/.test(body[cursor])) cursor++;
       if (cursor < body.length && body[cursor] === ',') cursor++;
@@ -14259,13 +16874,114 @@ function applyBlendCheckboxesToTool(text, bounds, toolName, controls, eol, resul
           if (bounds) return bounds;
         }
       }
+      const topMatch = text.match(/Tools\s*=\s*ordered\(\)\s*\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(GroupOperator|MacroOperator)\s*\{/s);
+      if (topMatch && topMatch[1] && topMatch[2]) {
+        const bounds = findGroupByName(text, String(topMatch[1]).trim(), String(topMatch[2]).trim());
+        if (bounds) return bounds;
+      }
       if (typeof result?.inputs?.openIndex === 'number') {
         const fallback = findEnclosingGroupForIndex(text, Math.max(0, Math.min(text.length - 1, result.inputs.openIndex)));
         if (fallback) return { groupOpenIndex: fallback.groupOpenIndex, groupCloseIndex: fallback.groupCloseIndex };
       }
-      return { groupOpenIndex: 0, groupCloseIndex: text.length };
+      return null;
     } catch (_) {
-      return { groupOpenIndex: 0, groupCloseIndex: text.length };
+      return null;
+    }
+  }
+
+  function resolveMacroGroupSourceOp(text, result) {
+    try {
+      if (text) {
+        const bounds = locateMacroGroupBounds(text, result);
+        if (bounds && Number.isFinite(bounds.groupOpenIndex)) {
+          const lineStart = text.lastIndexOf('\n', bounds.groupOpenIndex);
+          const head = text.slice(Math.max(0, lineStart + 1), bounds.groupOpenIndex + 1);
+          const match = head.match(/\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(GroupOperator|MacroOperator)\s*\{$/);
+          if (match && match[1]) return String(match[1]).trim();
+        }
+        const topMatch = text.match(/Tools\s*=\s*ordered\(\)\s*\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(GroupOperator|MacroOperator)\s*\{/s);
+        if (topMatch && topMatch[1]) return String(topMatch[1]).trim();
+      }
+    } catch (_) {}
+    return String(result?.macroNameOriginal || result?.macroName || 'Macro').trim();
+  }
+
+  function findGroupUserControlRecord(result, controlId) {
+    try {
+      if (!result || !controlId) return null;
+      const id = String(controlId).trim();
+      if (!id) return null;
+      const map = result.groupUserControlsById;
+      if (map && typeof map.get === 'function') {
+        const hit = map.get(id);
+        if (hit) return hit;
+      }
+      const list = Array.isArray(result.groupUserControls) ? result.groupUserControls : [];
+      return list.find((item) => item && String(item.id || '').trim() === id) || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function syncGroupUserControlEntryBridge(entry, meta) {
+    try {
+      if (!entry || !state.parseResult) return entry;
+      const requestedTarget = String(meta?.publishTarget || entry.publishTarget || '').trim();
+      const isGroupOwned = requestedTarget === 'groupUserControl' || entry.syntheticGroupUserControl === true;
+      if (!isGroupOwned) return entry;
+      entry.publishTarget = 'groupUserControl';
+      entry.syntheticGroupUserControl = true;
+      entry.sourceOp = resolveMacroGroupSourceOp(state.originalText, state.parseResult);
+      const backing = findGroupUserControlRecord(state.parseResult, entry.source);
+      const normalizedPage = normalizePageName((meta && meta.page) || entry.page || backing?.page || 'Controls');
+      entry.page = normalizedPage;
+      if (backing) {
+        backing.page = normalizedPage;
+        const controlName = String(backing.name || '').trim();
+        if (controlName) {
+          entry.name = controlName;
+          if (!entry.displayName || entry.displayName === `${entry.sourceOp}.${entry.source}` || entry.displayName === entry.source) {
+            entry.displayName = controlName;
+          }
+        }
+        const nextMeta = { ...(entry.controlMeta || {}) };
+        const nextMetaOriginal = { ...(entry.controlMetaOriginal || {}) };
+        const inputControl = String(backing.inputControl || meta?.inputControl || '').trim();
+        if (inputControl) {
+          nextMeta.inputControl = inputControl;
+          nextMetaOriginal.inputControl = nextMetaOriginal.inputControl || inputControl;
+        }
+        const lowerInput = inputControl.toLowerCase();
+        if (!entry.kind) {
+          if (lowerInput === 'labelcontrol') entry.kind = 'Label';
+          else if (lowerInput === 'buttoncontrol') entry.kind = 'Button';
+          else if (lowerInput === 'separatorcontrol') entry.kind = 'Separator';
+        }
+        if (lowerInput === 'labelcontrol' || String(entry.kind || '').toLowerCase() === 'label') {
+          entry.isLabel = true;
+          if (!Number.isFinite(entry.labelCount)) entry.labelCount = 0;
+        } else if (lowerInput === 'buttoncontrol' || String(entry.kind || '').toLowerCase() === 'button') {
+          entry.isButton = true;
+        }
+        if (!nextMeta.kind && entry.kind) nextMeta.kind = String(entry.kind).toLowerCase();
+        if (!nextMetaOriginal.kind && nextMeta.kind) nextMetaOriginal.kind = nextMeta.kind;
+        const labelCount = Number.isFinite(backing.labelCount) ? Number(backing.labelCount) : (Number.isFinite(meta?.labelCount) ? Number(meta.labelCount) : null);
+        if (Number.isFinite(labelCount)) {
+          nextMeta.labelCount = labelCount;
+          if (!Number.isFinite(nextMetaOriginal.labelCount)) nextMetaOriginal.labelCount = labelCount;
+          entry.labelCount = labelCount;
+        }
+        const defaultValue = backing.defaultValue != null ? backing.defaultValue : (meta?.defaultValue != null ? meta.defaultValue : null);
+        if (defaultValue != null) {
+          nextMeta.defaultValue = defaultValue;
+          if (nextMetaOriginal.defaultValue == null) nextMetaOriginal.defaultValue = defaultValue;
+        }
+        entry.controlMeta = nextMeta;
+        entry.controlMetaOriginal = nextMetaOriginal;
+      }
+      return entry;
+    } catch (_) {
+      return entry;
     }
   }
 
@@ -14483,11 +17199,39 @@ function applyBlendCheckboxesToTool(text, bounds, toolName, controls, eol, resul
 
   // Color grouping helpers for Published panel
 
+  function parseColorChannelMeta(id) {
+    const raw = String(id || '').trim();
+    if (!raw) return null;
+    const suffix = raw.match(/^(.*?)(Red|Green|Blue|Alpha)$/i);
+    if (suffix && suffix[1]) {
+      return {
+        base: suffix[1],
+        channel: suffix[2].charAt(0).toUpperCase() + suffix[2].slice(1).toLowerCase(),
+      };
+    }
+    const prefix = raw.match(/^(Red|Green|Blue|Alpha)(.*)$/i);
+    if (prefix) {
+      const tail = String(prefix[2] || '');
+      if (!tail) {
+        return {
+          base: 'Color',
+          channel: prefix[1].charAt(0).toUpperCase() + prefix[1].slice(1).toLowerCase(),
+        };
+      }
+      if (/^\d+(clone)?$/i.test(tail)) {
+        return {
+          base: `Color${tail}`,
+          channel: prefix[1].charAt(0).toUpperCase() + prefix[1].slice(1).toLowerCase(),
+        };
+      }
+    }
+    return null;
+  }
+
   function deriveColorBaseFromId(id) {
 
-    const suf = ["Red","Green","Blue","Alpha"].find(s => String(id || "").endsWith(s));
-
-    return suf ? String(id).slice(0, String(id).length - suf.length) : null;
+    const meta = parseColorChannelMeta(id);
+    return meta ? meta.base : null;
 
   }
 
@@ -14674,20 +17418,19 @@ function applyBlendCheckboxesToTool(text, bounds, toolName, controls, eol, resul
     if (idx < 0) {
 
       if (!options.skipHistory) pushHistory('publish control');
-
-      const key = makeUniqueKey(`${sourceOp}_${source}`);
-
-      const base = (typeof deriveColorBaseFromId === "function" ? deriveColorBaseFromId(source) : (function(){ const suf=["Red","Green","Blue","Alpha"].find(s => String(source||"").endsWith(s)); return suf ? String(source).slice(0, String(source).length - suf.length) : null; })());
-
-      const controlGroup = base ? getOrAssignControlGroup(sourceOp, base) : null;
-
-      const metaPage = (meta && meta.page && String(meta.page).trim()) ? String(meta.page).trim() : '';
-      const activePage = (state.parseResult && state.parseResult.activePage) ? String(state.parseResult.activePage).trim() : '';
-      const targetPage = metaPage || activePage || 'Controls';
-
-      const raw = buildInstanceInputRaw(key, sourceOp, source, displayName, targetPage, controlGroup);
-
-      const entry = { key, name: displayName || null, page: targetPage, sourceOp, source, displayName: displayName || `${sourceOp}.${source}`, raw, controlGroup: (Number.isFinite(controlGroup) ? controlGroup : null), onChange: '', buttonExecute: '' };
+      let entry;
+      if (meta && meta.publishTarget === 'groupUserControl') {
+        entry = buildGroupUserControlEntry(state.parseResult, sourceOp, source, displayName, meta);
+      } else {
+        const key = makeUniqueKey(`${sourceOp}_${source}`);
+        const base = (typeof deriveColorBaseFromId === "function" ? deriveColorBaseFromId(source) : (function(){ const suf=["Red","Green","Blue","Alpha"].find(s => String(source||"").endsWith(s)); return suf ? String(source).slice(0, String(source).length - suf.length) : null; })());
+        const controlGroup = base ? getOrAssignControlGroup(sourceOp, base) : null;
+        const metaPage = (meta && meta.page && String(meta.page).trim()) ? String(meta.page).trim() : '';
+        const activePage = (state.parseResult && state.parseResult.activePage) ? String(state.parseResult.activePage).trim() : '';
+        const targetPage = metaPage || activePage || 'Controls';
+        const raw = buildInstanceInputRaw(key, sourceOp, source, displayName, targetPage, controlGroup);
+        entry = { key, name: displayName || null, page: targetPage, sourceOp, source, displayName: displayName || `${sourceOp}.${source}`, raw, controlGroup: (Number.isFinite(controlGroup) ? controlGroup : null), onChange: '', buttonExecute: '' };
+      }
 
       state.parseResult.entries.push(entry);
       idx = state.parseResult.entries.length - 1;
@@ -14695,6 +17438,7 @@ function applyBlendCheckboxesToTool(text, bounds, toolName, controls, eol, resul
 
     }
     applyNodeControlMeta(state.parseResult.entries[idx], meta);
+    syncGroupUserControlEntryBridge(state.parseResult.entries[idx], meta);
 
     if (!options.skipInsert) {
       try {
@@ -14724,24 +17468,25 @@ function applyBlendCheckboxesToTool(text, bounds, toolName, controls, eol, resul
 
     if (idx >= 0) return idx;
 
-    const key = makeUniqueKey(`${sourceOp}_${source}`);
-
-    const base = (typeof deriveColorBaseFromId === "function" ? deriveColorBaseFromId(source) : (function(){ const suf=["Red","Green","Blue","Alpha"].find(s => String(source||"").endsWith(s)); return suf ? String(source).slice(0, String(source).length - suf.length) : null; })());
-
-    const controlGroup = base ? getOrAssignControlGroup(sourceOp, base) : null;
-
-    const metaPage = (meta && meta.page && String(meta.page).trim()) ? String(meta.page).trim() : '';
-    const activePage = (state.parseResult && state.parseResult.activePage) ? String(state.parseResult.activePage).trim() : '';
-    const targetPage = metaPage || activePage || 'Controls';
-
-    const raw = buildInstanceInputRaw(key, sourceOp, source, displayName, targetPage, controlGroup);
-
-    const entry = { key, name: displayName || null, page: targetPage, sourceOp, source, displayName: displayName || `${sourceOp}.${source}`, raw, controlGroup: (Number.isFinite(controlGroup) ? controlGroup : null), onChange: '', buttonExecute: '' };
+    let entry;
+    if (meta && meta.publishTarget === 'groupUserControl') {
+      entry = buildGroupUserControlEntry(state.parseResult, sourceOp, source, displayName, meta);
+    } else {
+      const key = makeUniqueKey(`${sourceOp}_${source}`);
+      const base = (typeof deriveColorBaseFromId === "function" ? deriveColorBaseFromId(source) : (function(){ const suf=["Red","Green","Blue","Alpha"].find(s => String(source||"").endsWith(s)); return suf ? String(source).slice(0, String(source).length - suf.length) : null; })());
+      const controlGroup = base ? getOrAssignControlGroup(sourceOp, base) : null;
+      const metaPage = (meta && meta.page && String(meta.page).trim()) ? String(meta.page).trim() : '';
+      const activePage = (state.parseResult && state.parseResult.activePage) ? String(state.parseResult.activePage).trim() : '';
+      const targetPage = metaPage || activePage || 'Controls';
+      const raw = buildInstanceInputRaw(key, sourceOp, source, displayName, targetPage, controlGroup);
+      entry = { key, name: displayName || null, page: targetPage, sourceOp, source, displayName: displayName || `${sourceOp}.${source}`, raw, controlGroup: (Number.isFinite(controlGroup) ? controlGroup : null), onChange: '', buttonExecute: '' };
+    }
 
     state.parseResult.entries.push(entry);
     idx = state.parseResult.entries.length - 1;
     state.parseResult.order.push(idx);
     applyNodeControlMeta(state.parseResult.entries[idx], meta);
+    syncGroupUserControlEntryBridge(state.parseResult.entries[idx], meta);
 
     return idx;
 
@@ -15340,6 +18085,8 @@ end
       const overrides = (result && result.buttonOverrides && typeof result.buttonOverrides.forEach === 'function') ? result.buttonOverrides : null;
       if (!overrides || result.buttonOverrides.size === 0) return text;
       let out = text;
+      const groupBounds = locateMacroGroupBounds(out, result);
+      const groupUc = groupBounds ? findUserControlsInGroup(out, groupBounds.groupOpenIndex, groupBounds.groupCloseIndex) : null;
       // collect all group-level and tool-level UserControls ranges, scan each for control id
       const ranges = [];
       let pos = 0;
@@ -15365,6 +18112,18 @@ end
           for (const rg of ranges) {
             const cb = findControlBlockInUc(out, rg.open, rg.close, ctrl);
             if (cb && cb.open && cb.close) {
+              const isGroupLevel = !!groupUc && rg.open === groupUc.open && rg.close === groupUc.close;
+              if (isGroupLevel) {
+                const policy = canMutateGroupUserControl(result, ctrl, { action: 'update' });
+                if (!policy.allowed) {
+                  recordGroupUserControlMutationIssue(result, {
+                    control: ctrl,
+                    action: 'update',
+                    message: policy.message,
+                  });
+                  break;
+                }
+              }
               const before = out;
               out = rewriteBtncsExecuteInRange(out, cb.open, cb.close, v, eol);
               if (out !== before) { try { logDiag(`[URL override] ${key} -> direct inject`); } catch(_) {} }
@@ -15512,6 +18271,44 @@ end
       invalidKeys.forEach(keyInfo => {
         issues.push({ type: 'key', key: keyInfo, message: `Invalid InstanceInput key detected for ${keyInfo}.` });
       });
+      const groupUcIssues = state.parseResult.groupUserControlIssues || { blockCount: 0, duplicateIds: [] };
+      const groupUcMutationIssues = Array.isArray(state.parseResult.groupUserControlMutationIssues)
+        ? state.parseResult.groupUserControlMutationIssues
+        : [];
+      if (Number(groupUcIssues.blockCount || 0) > 1) {
+        issues.push({
+          type: 'group-user-controls',
+          message: `Macro has ${groupUcIssues.blockCount} top-level UserControls blocks. Expected exactly 1.`,
+        });
+      }
+      (Array.isArray(groupUcIssues.duplicateIds) ? groupUcIssues.duplicateIds : []).forEach((id) => {
+        issues.push({
+          type: 'group-user-control-id',
+          control: id,
+          message: `Macro-level UserControls contains duplicate control id "${id}".`,
+        });
+      });
+      (Array.isArray(groupUcIssues.unknownControls) ? groupUcIssues.unknownControls : []).forEach((item) => {
+        try {
+          logDiag(`[Group UC] Preserve-only control "${item.id}" type="${item.inputControl || 'unknown'}"`);
+        } catch (_) {}
+      });
+      groupUcMutationIssues.forEach((item) => {
+        if (!item || !item.message) return;
+        issues.push({
+          type: 'group-user-control-mutation',
+          control: item.control,
+          message: item.message,
+        });
+      });
+      for (const entry of (state.parseResult.entries || [])) {
+        if (!entry || !isMacroLayerOnlyControlId(entry.source)) continue;
+        issues.push({
+          type: 'macro-control-leaked-into-inputs',
+          control: entry.source,
+          message: `Macro-layer control "${entry.source}" is present in published Inputs/entries and should remain group-owned.`,
+        });
+      }
       state.validationIssues = issues;
       if (issues.length) {
         const label = context ? `Validation (${context})` : 'Validation';
@@ -15572,13 +18369,11 @@ end
           if (cb) return true;
         }
       }
-      const groupUc = findUserControlsInGroup(text, bounds.groupOpenIndex, bounds.groupCloseIndex);
-      if (groupUc) {
-        const cb = findControlBlockInUc(text, groupUc.open, groupUc.close, controlId);
-        if (cb) return true;
-      }
+      if (findGroupUserControlBlockById(text, state.parseResult, controlId)) return true;
       return false;
     } catch (_) {
       return false;
     }
   }
+
+

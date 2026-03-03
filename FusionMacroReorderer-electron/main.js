@@ -746,26 +746,30 @@ ipcMain.handle('open-setting-file', async () => {
       { name: 'Fusion Setting', extensions: ['setting', 'txt'] },
       { name: 'All Files', extensions: ['*'] },
     ],
-    properties: ['openFile'],
+    properties: ['openFile', 'multiSelections'],
   });
 
   if (result.canceled || !result.filePaths || !result.filePaths[0]) {
     return { canceled: true };
   }
 
-  const filePath = result.filePaths[0];
   try {
-    const content = fs.readFileSync(filePath, 'utf8');
-    return {
-      canceled: false,
+    const files = result.filePaths.map((filePath) => ({
       filePath,
       baseName: path.basename(filePath),
-      content,
+      content: fs.readFileSync(filePath, 'utf8'),
+    }));
+    return {
+      canceled: false,
+      filePath: files[0]?.filePath || '',
+      baseName: files[0]?.baseName || '',
+      content: files[0]?.content || '',
+      files,
     };
   } catch (err) {
     return {
       canceled: false,
-      filePath,
+      filePath: result.filePaths[0] || '',
       error: String((err && err.message) || err),
     };
   }
@@ -1348,6 +1352,13 @@ ipcMain.handle('set-data-menu-state', async (_event, payload = {}) => {
             click: () => {
               const win = BrowserWindow.getFocusedWindow();
               if (win) win.webContents.send('fmr-menu', { action: 'csvGenerate' });
+            },
+          },
+          {
+            label: 'Presets Engine...',
+            click: () => {
+              const win = BrowserWindow.getFocusedWindow();
+              if (win) win.webContents.send('fmr-menu', { action: 'presetEngine' });
             },
           },
           { type: 'separator' },
