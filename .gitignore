@@ -9,6 +9,11 @@ pnpm-debug.log*
 dist/
 out/
 build/
+!FusionMacroReorderer-electron/build/
+FusionMacroReorderer-electron/build/*
+!FusionMacroReorderer-electron/build/icon.ico
+!FusionMacroReorderer-electron/build/icon.icns
+!FusionMacroReorderer-electron/build/icon.png
 
 # Electron-builder artifacts
 *.dmg

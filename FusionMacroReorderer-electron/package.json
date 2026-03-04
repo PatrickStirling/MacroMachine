@@ -1,6 +1,6 @@
 {
   "name": "fusion-macro-reorderer-electron",
-  "version": "0.2.49",
+  "version": "0.2.50",
   "description": "Desktop wrapper for Macro Machine",
   "main": "main.js",
   "dependencies": {
@@ -20,6 +20,7 @@
   "build": {
     "appId": "com.stirlingsupply.macromachine",
     "productName": "Macro Machine",
+    "icon": "build/icon.png",
     "files": [
       "**/*"
     ],
@@ -30,9 +31,14 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "../Settings Gear.png",
+        "to": "Settings Gear.png"
       }
     ],
     "mac": {
+      "icon": "build/icon.icns",
       "target": [
         "dmg",
         "zip"
@@ -47,6 +53,7 @@
       }
     },
     "win": {
+      "icon": "build/icon.ico",
       "target": "nsis"
     },
     "publish": [

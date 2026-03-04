@@ -35,6 +35,8 @@ export function createPublishedControls({
   let publishedFilter = '';
   let highlightHandler = typeof highlightNode === 'function' ? highlightNode : () => {};
   let insertionAnchorPos = null;
+  let selectionAnchorIndex = null;
+  let labelRangeCaptureIndex = null;
   let dragFromIndex = null;
   let currentDropIndex = null;
   const dropIndicator = document.createElement('li');
@@ -132,6 +134,17 @@ export function createPublishedControls({
     }
   }
 
+  function syncActiveDetailRowClasses() {
+    try {
+      if (!controlsList) return;
+      const rows = controlsList.querySelectorAll('li[data-index]');
+      rows.forEach((row) => {
+        const idx = Number.parseInt(row.dataset.index || '', 10);
+        row.classList.toggle('active-detail', Number.isFinite(idx) && idx === detailTargetIndex);
+      });
+    } catch (_) {}
+  }
+
   function syncDetailTarget(preferredIdx = null) {
     try {
       const sel = getSelectedSet();
@@ -147,11 +160,25 @@ export function createPublishedControls({
       } else {
         detailTargetIndex = null;
       }
+      syncActiveDetailRowClasses();
       notifyDetailTarget();
     } catch (_) {
       detailTargetIndex = null;
+      syncActiveDetailRowClasses();
       notifyDetailTarget();
     }
+  }
+
+  function setDetailTargetIndex(index, options = {}) {
+    try {
+      const next = (typeof index === 'number' && index >= 0) ? index : null;
+      detailTargetIndex = next;
+      syncActiveDetailRowClasses();
+      if (options.notify !== false) notifyDetailTarget();
+      if (options.render !== false && state.parseResult) {
+        renderList(state.parseResult.entries, state.parseResult.order);
+      }
+    } catch (_) {}
   }
 
   function ensurePageIconMap() {
@@ -231,6 +258,8 @@ export function createPublishedControls({
       const sel = getSelectedSet();
       if (sel && typeof sel.clear === 'function') sel.clear();
       state.parseResult.selected = sel instanceof Set ? sel : new Set();
+      selectionAnchorIndex = null;
+      labelRangeCaptureIndex = null;
       updateRemoveSelectedState();
       syncDetailTarget();
     } catch (_) {}
@@ -620,8 +649,23 @@ export function createPublishedControls({
           li.classList.add('selected');
           insertionAnchorPos = Math.max(insertionAnchorPos ?? -1, pos);
         }
+        if (detailTargetIndex === idx) {
+          li.classList.add('active-detail');
+        }
+        if (labelRangeCaptureIndex === idx) {
+          li.classList.add('label-range-source');
+        }
         li.addEventListener('click', (ev) => {
           if (isInteractiveTarget(ev.target)) return;
+          if (labelRangeCaptureIndex != null) {
+            if (applyLabelRangeSelection(idx)) return;
+          }
+          if (ev.shiftKey) {
+            if (applySelectionRange(order, idx, true)) {
+              renderList(entries, order);
+            }
+            return;
+          }
           const sel = getSelectedSet();
           const alreadySelected = li.classList.contains('selected');
           const hasModifier = ev.shiftKey || ev.metaKey || ev.ctrlKey;
@@ -642,6 +686,7 @@ export function createPublishedControls({
           li.classList.toggle('selected', willSelect);
           if (willSelect) sel.add(idx); else sel.delete(idx);
           state.parseResult.selected = sel;
+          selectionAnchorIndex = idx;
           const p = order.indexOf(idx);
           if (willSelect) insertionAnchorPos = (insertionAnchorPos == null) ? p : Math.max(insertionAnchorPos, p);
           else refreshAnchorFromSelection(order);
@@ -673,10 +718,21 @@ export function createPublishedControls({
       cb.checked = getSelectedSet().has(idx);
       cb.addEventListener('change', (ev) => {
         ev.stopPropagation();
+        if (labelRangeCaptureIndex != null) {
+          cb.checked = getSelectedSet().has(idx);
+          return;
+        }
+        if (ev.shiftKey) {
+          if (applySelectionRange(order, idx, cb.checked)) {
+            renderList(entries, order);
+          }
+          return;
+        }
         const sel = getSelectedSet();
         if (cb.checked) sel.add(idx); else sel.delete(idx);
         state.parseResult.selected = sel;
         li.classList.toggle('selected', cb.checked);
+        selectionAnchorIndex = idx;
         const p = order.indexOf(idx);
         if (cb.checked) insertionAnchorPos = (insertionAnchorPos == null) ? p : Math.max(insertionAnchorPos, p);
         else refreshAnchorFromSelection(order);
@@ -717,21 +773,57 @@ export function createPublishedControls({
       });
 
       if (e.isLabel) {
-        const countInput = document.createElement('input');
-        countInput.type = 'number';
-        countInput.min = '0';
-        countInput.step = '1';
-        countInput.value = String(e.labelCount || 0);
-        countInput.title = 'Items in this label group';
-        countInput.className = 'label-count';
-        countInput.addEventListener('change', () => {
-          const val = parseInt(countInput.value, 10);
+        const countWrap = document.createElement('div');
+        countWrap.className = 'label-count-stepper';
+        const decrementBtn = document.createElement('button');
+        decrementBtn.type = 'button';
+        decrementBtn.className = 'label-count-btn';
+        decrementBtn.textContent = '-';
+        decrementBtn.title = 'Reduce items in this label group';
+        decrementBtn.disabled = !Number.isFinite(e.labelCount) || e.labelCount <= 0;
+        decrementBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
           pushHistory('label count');
-          e.labelCount = Number.isFinite(val) && val >= 0 ? val : 0;
+          e.labelCount = Math.max(0, Number.isFinite(e.labelCount) ? e.labelCount - 1 : 0);
+          e.controlMetaDirty = true;
           renderList(entries, order);
           notifyEntryMutated(idx);
         });
-        titleRow.appendChild(countInput);
+        const countValue = document.createElement('span');
+        countValue.className = 'label-count-value';
+        countValue.title = 'Items in this label group';
+        countValue.textContent = String(Number.isFinite(e.labelCount) ? e.labelCount : 0);
+        const incrementBtn = document.createElement('button');
+        incrementBtn.type = 'button';
+        incrementBtn.className = 'label-count-btn';
+        incrementBtn.textContent = '+';
+        incrementBtn.title = 'Add one more item to this label group';
+        incrementBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          pushHistory('label count');
+          e.labelCount = Math.max(0, Number.isFinite(e.labelCount) ? e.labelCount + 1 : 1);
+          e.controlMetaDirty = true;
+          renderList(entries, order);
+          notifyEntryMutated(idx);
+        });
+        countWrap.appendChild(decrementBtn);
+        countWrap.appendChild(countValue);
+        countWrap.appendChild(incrementBtn);
+        titleRow.appendChild(countWrap);
+        const rangeBtn = document.createElement('button');
+        rangeBtn.type = 'button';
+        rangeBtn.className = 'label-range-btn' + (labelRangeCaptureIndex === idx ? ' active' : '');
+        rangeBtn.textContent = labelRangeCaptureIndex === idx ? 'Pick End' : 'Set Range';
+        rangeBtn.title = labelRangeCaptureIndex === idx
+          ? 'Click the last control that should belong to this label group'
+          : 'Choose the last control that should belong to this label group';
+        rangeBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          labelRangeCaptureIndex = labelRangeCaptureIndex === idx ? null : idx;
+          renderList(entries, order);
+          syncDetailTarget(idx);
+        });
+        titleRow.appendChild(rangeBtn);
         const eyeBtn = document.createElement('button');
         eyeBtn.type = 'button';
         eyeBtn.className = 'label-visibility-btn';
@@ -1086,14 +1178,6 @@ export function createPublishedControls({
     if (!state.parseResult) return 0;
     const order = state.parseResult.order || [];
     const sel = getSelectedSet();
-    if (detailTargetIndex != null) {
-      const detailPos = order.indexOf(detailTargetIndex);
-      if (detailPos >= 0) {
-        const pos = Math.max(0, Math.min(order.length, detailPos + 1));
-        try { logDiag(`Anchor pos via detail target = ${detailPos}, insert at ${pos}`); } catch (_) {}
-        return pos;
-      }
-    }
     if (insertionAnchorPos != null) {
       const pos = Math.max(0, Math.min(order.length, insertionAnchorPos + 1));
       try { logDiag(`Anchor pos via insertionAnchorPos = ${insertionAnchorPos}, insert at ${pos}`); } catch (_) {}
@@ -1119,6 +1203,14 @@ export function createPublishedControls({
       if (maxPos >= 0) {
         try { logDiag(`Anchor pos via model selected = ${maxPos}, insert at ${maxPos + 1}`); } catch (_) {}
         return maxPos + 1;
+      }
+    }
+    if (detailTargetIndex != null) {
+      const detailPos = order.indexOf(detailTargetIndex);
+      if (detailPos >= 0) {
+        const pos = Math.max(0, Math.min(order.length, detailPos + 1));
+        try { logDiag(`Anchor pos via detail target = ${detailPos}, insert at ${pos}`); } catch (_) {}
+        return pos;
       }
     }
     try {
@@ -1384,6 +1476,86 @@ export function createPublishedControls({
       return `${e.sourceOp}::flipPair::${prefix || '__root__'}`;
     } catch (_) {
       return null;
+    }
+  }
+
+  function getSelectionSpan(order) {
+    try {
+      if (!Array.isArray(order) || !order.length) return null;
+      const sel = Array.from(getSelectedSet() || [])
+        .map((idx) => order.indexOf(idx))
+        .filter((pos) => pos >= 0)
+        .sort((a, b) => a - b);
+      if (!sel.length) return null;
+      const startPos = sel[0];
+      const endPos = sel[sel.length - 1];
+      for (let pos = startPos; pos <= endPos; pos += 1) {
+        if (!sel.includes(pos)) return null;
+      }
+      return {
+        startPos,
+        endPos,
+        count: endPos - startPos + 1,
+        startIndex: order[startPos],
+        endIndex: order[endPos],
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function applySelectionRange(order, targetIdx, shouldSelect = true) {
+    try {
+      const targetPos = Array.isArray(order) ? order.indexOf(targetIdx) : -1;
+      if (targetPos < 0) return false;
+      const anchorIdx = selectionAnchorIndex;
+      const anchorPos = anchorIdx != null && Array.isArray(order) ? order.indexOf(anchorIdx) : -1;
+      const start = Math.min(anchorPos >= 0 ? anchorPos : targetPos, targetPos);
+      const end = Math.max(anchorPos >= 0 ? anchorPos : targetPos, targetPos);
+      const sel = getSelectedSet();
+      for (let pos = start; pos <= end; pos += 1) {
+        const idx = order[pos];
+        if (shouldSelect) sel.add(idx);
+        else sel.delete(idx);
+      }
+      state.parseResult.selected = sel;
+      refreshAnchorFromSelection(order);
+      updateRemoveSelectedState();
+      syncDetailTarget(targetIdx);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function applyLabelRangeSelection(targetIdx) {
+    try {
+      const labelIdx = labelRangeCaptureIndex;
+      labelRangeCaptureIndex = null;
+      if (!state.parseResult || !Array.isArray(state.parseResult.entries) || labelIdx == null) return false;
+      const order = state.parseResult.order || [];
+      const labelPos = order.indexOf(labelIdx);
+      const targetPos = order.indexOf(targetIdx);
+      if (labelPos < 0 || targetPos < 0 || targetPos < labelPos) {
+        renderList(state.parseResult.entries, order);
+        return true;
+      }
+      const entry = state.parseResult.entries[labelIdx];
+      if (!entry || !entry.isLabel) {
+        renderList(state.parseResult.entries, order);
+        return false;
+      }
+      const nextCount = Math.max(0, targetPos - labelPos);
+      if (typeof pushHistory === 'function') pushHistory('label range');
+      entry.labelCount = nextCount;
+      entry.controlMetaDirty = true;
+      renderList(state.parseResult.entries, order);
+      updateRemoveSelectedState();
+      syncDetailTarget(labelIdx);
+      notifyEntryMutated(labelIdx);
+      return true;
+    } catch (_) {
+      return false;
     }
   }
 
@@ -1878,6 +2050,14 @@ export function createPublishedControls({
     refreshPageTabs: () => { refreshPageTabsInternal(); },
     setEntryDisplayName: setEntryDisplayNameByIndex,
     appendLauncherUi: (container, entry, options) => appendLauncherUi(container, entry, options),
+    getSelectionSpan: () => {
+      try {
+        return getSelectionSpan(state.parseResult?.order || []);
+      } catch (_) {
+        return null;
+      }
+    },
+    setDetailTargetIndex,
   };
 }
   function isInteractiveTarget(node) {

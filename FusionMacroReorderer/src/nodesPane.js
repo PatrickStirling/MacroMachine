@@ -9,6 +9,9 @@ export function createNodesPane(options = {}) {
     hideReplacedEl,
     viewControlsBtn = null,
     viewControlsMenu = null,
+    showAllNodesBtn = null,
+    showPublishedNodesBtn = null,
+    collapseAllNodesBtn = null,
     showNodeTypeLabelsEl = null,
     showInstancedConnectionsEl = null,
     showNextNodeLinksEl = null,
@@ -180,6 +183,47 @@ export function createNodesPane(options = {}) {
       const next = !!open;
       viewControlsMenu.hidden = !next;
       viewControlsBtn.setAttribute('aria-expanded', next ? 'true' : 'false');
+    } catch (_) {}
+  }
+
+  function setAllNodeModes(mode = 'open') {
+    try {
+      if (!state.parseResult) return;
+      if (!(state.parseResult.nodesCollapsed instanceof Set)) state.parseResult.nodesCollapsed = new Set();
+      if (!(state.parseResult.nodesPublishedOnly instanceof Set)) state.parseResult.nodesPublishedOnly = new Set();
+      const collapsed = state.parseResult.nodesCollapsed;
+      const publishedOnly = state.parseResult.nodesPublishedOnly;
+      collapsed.clear();
+      publishedOnly.clear();
+      const nodes = Array.isArray(state.parseResult.nodes) ? state.parseResult.nodes : [];
+      for (const n of nodes) {
+        const nodeControlsRaw = ensureDissolveMixControl(n, n.controls || []);
+        const nodeControls = dedupeControlsByResolvedSource(nodeControlsRaw);
+        const hasPublished = (nodeControls || []).some(c => {
+          if (isSectionHeaderControl(c)) return false;
+          if (isGroupedControl(c)) {
+            return (c.channels || []).some((ch) => {
+              const chId = resolveControlSource(ch);
+              const chOp = resolvePublishSourceOp(n, ch);
+              return !!chId && isPublished(chOp, chId);
+            });
+          }
+          const key = resolveControlSource(c);
+          const op = resolvePublishSourceOp(n, c);
+          return key ? isPublished(op, key) : false;
+        });
+        if (mode === 'closed') {
+          collapsed.add(n.name);
+          continue;
+        }
+        if (mode === 'published' && hasPublished) {
+          publishedOnly.add(n.name);
+        }
+      }
+      state.parseResult.nodesCollapsed = collapsed;
+      state.parseResult.nodesPublishedOnly = publishedOnly;
+      state.parseResult.nodesViewInitialized = true;
+      parseAndRenderNodes();
     } catch (_) {}
   }
 
@@ -694,16 +738,10 @@ export function createNodesPane(options = {}) {
     state.parseResult.nodeSelection = new Set();
     state.parseResult.nodeSelectionMuted = false;
     updateNodeSelectionButtons();
-    parseAndRenderNodes();
   }
 
   function updateNodeSelectionButtons() {
-    try {
-      const muted = !!(state.parseResult && state.parseResult.nodeSelectionMuted);
-      const size = muted ? 0 : ((state.parseResult && state.parseResult.nodeSelection instanceof Set) ? state.parseResult.nodeSelection.size : 0);
-      if (publishSelectedBtn) publishSelectedBtn.disabled = size === 0;
-      if (clearNodeSelectionBtn) clearNodeSelectionBtn.disabled = size === 0;
-    } catch (_) {}
+    try {} catch (_) {}
   }
 
   function closeNodeContextMenu() {
@@ -931,6 +969,24 @@ export function createNodesPane(options = {}) {
     const willOpen = !!viewControlsMenu?.hidden;
     setViewControlsMenuOpen(willOpen);
   });
+  showAllNodesBtn?.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    setAllNodeModes('open');
+    setViewControlsMenuOpen(false);
+  });
+  showPublishedNodesBtn?.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    setAllNodeModes('published');
+    setViewControlsMenuOpen(false);
+  });
+  collapseAllNodesBtn?.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    setAllNodeModes('closed');
+    setViewControlsMenuOpen(false);
+  });
 
   if (viewControlsMenu) {
     document.addEventListener('mousedown', (ev) => {
@@ -945,8 +1001,6 @@ export function createNodesPane(options = {}) {
     });
   }
 
-  publishSelectedBtn?.addEventListener('click', handlePublishSelected);
-  clearNodeSelectionBtn?.addEventListener('click', () => clearNodeSelection());
 
   importCatalogBtn?.addEventListener('click', () => catalogInput?.click());
   catalogInput?.addEventListener('change', handleCatalogImport);
@@ -1158,6 +1212,7 @@ export function createNodesPane(options = {}) {
         controlledBy: (controlledBy.get(n.name) || n.controlledBy || new Map()),
         expressionDriven: (expressionBindings.get(n.name) || n.expressionDriven || new Map()),
       }));
+      nodes = nodes.filter((n) => !shouldHideNodeFromList(n));
       lastNodeNames = Array.from(new Set(
         (nodes || [])
           .filter((n) => n && !n.external && n.name)
@@ -1187,6 +1242,9 @@ export function createNodesPane(options = {}) {
         nodes.unshift(macroNode);
       }
       nodes = prioritizeUtilityNode(nodes, UTILITY_NODE_NAME);
+      try {
+        if (state.parseResult) state.parseResult.nodes = Array.isArray(nodes) ? nodes.slice() : [];
+      } catch (_) {}
       const flt = (nodeFilter || '').trim();
       const filtered = !flt ? nodes : nodes.filter(n => {
         if (n.name.toLowerCase().includes(flt) || (n.type || '').toLowerCase().includes(flt)) return true;
@@ -1476,23 +1534,35 @@ export function createNodesPane(options = {}) {
 
   function getNodeTypeMeta(node) {
     try {
-      if (!node || node.isMacroRoot) return null;
+      if (!node) return null;
+      if (node.isMacroRoot) return { key: 'macro-root', label: 'Macro Root' };
       if (node.isModifier) return { key: 'modifier', label: 'Modifier' };
       const type = String(node.type || '').trim();
       const name = String(node.name || '').trim();
+      const typeLower = type.toLowerCase();
       const blob = `${type} ${name}`.toLowerCase();
       const has = (re) => re.test(blob);
+      const hasType = (re) => re.test(typeLower);
 
       if (has(/\b3d\b|camera3d|renderer3d|light3d|merge3d|transform3d|material|imageplane3d|shape3d/)) {
         return { key: 'three-d', label: '3D' };
       }
-      if (has(/multipoly|polymask|maskpaint|bitmapmask|paintmask|mask|rectangle|ellipse|polygon|bspline|polypath|polyline|path/)) {
-        return { key: 'shape', label: 'Shape' };
+      if (hasType(/^p(?:emitter|render|turbulence|bounce|directionalforce|drag|friction|imageemitter|kill|line|pointforce|randomforce|sprite|stylize|vortex|wind)\b/) || has(/\bparticle\b/)) {
+        return { key: 'particle', label: 'Particle' };
+      }
+      if (hasType(/^s(?:render|rectangle|ellipse|polygon|bspline|polyline|outline|text|transform|merge|duplicate|bitmap|shape)\b/)) {
+        return { key: 'shape-system', label: 'Shape' };
+      }
+      if (hasType(/^(?:multipoly|polymask|maskpaint|bitmapmask|paintmask|rectangle|ellipse|polygon|bspline|polypath|polyline|mask|outline)\b/)) {
+        return { key: 'mask', label: 'Mask' };
       }
       if (has(/multitext|loader|mediain|background|textplus|text3d|text|generator|solid|checker|gradient|fastnoise|noise/)) {
         return { key: 'generator', label: 'Generator' };
       }
-      if (has(/multimerge|transform|merge|blur|glow|color|correct|dissolve|resize|crop|key|tracker|optical|lens|vignette|channel|levels|brightness|contrast|sharpen/)) {
+      if (hasType(/^(?:multimerge|merge|dissolve|switch|wireless)\b/)) {
+        return { key: 'flow', label: 'Flow' };
+      }
+      if (has(/transform|blur|glow|color|correct|resize|crop|key|tracker|optical|lens|vignette|channel|levels|brightness|contrast|sharpen|erodedilate|displace|letterbox/)) {
         return { key: 'effect', label: 'Effect' };
       }
       return null;
@@ -1501,8 +1571,36 @@ export function createNodesPane(options = {}) {
     }
   }
 
-  function renderNodes(nodes) {
+  function shouldHideNodeFromList(node) {
+    try {
+      if (!node || node.isMacroRoot) return false;
+      const type = String(node.type || '').trim().toLowerCase();
+      const name = String(node.name || '').trim().toLowerCase();
+      const blob = `${type} ${name}`;
+      return /\bpiperouter\b|\baudiodisplay\b/.test(blob);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function renderNodes(nodes, preserveNodeName = '') {
     if (!nodesList) return;
+    const scrollHost = nodesList.parentElement || nodesList;
+    const previousScrollTop = Number.isFinite(scrollHost.scrollTop) ? scrollHost.scrollTop : 0;
+    const escapedNodeName = preserveNodeName
+      ? ((typeof CSS !== 'undefined' && CSS && typeof CSS.escape === 'function')
+          ? CSS.escape(String(preserveNodeName))
+          : String(preserveNodeName).replace(/\\/g, '\\\\').replace(/"/g, '\\"'))
+      : '';
+    let anchorOffsetBefore = null;
+    if (preserveNodeName) {
+      try {
+        const anchorNode = nodesList.querySelector(`.node[data-op="${escapedNodeName}"] .node-header`);
+        if (anchorNode) {
+          anchorOffsetBefore = anchorNode.getBoundingClientRect().top;
+        }
+      } catch (_) {}
+    }
     nodesList.innerHTML = '';
     if (!state.parseResult) state.parseResult = {};
     if (!(state.parseResult.nodesCollapsed instanceof Set)) state.parseResult.nodesCollapsed = new Set();
@@ -1567,10 +1665,12 @@ export function createNodesPane(options = {}) {
       title.className = 'node-title';
       if (n.name && n.name.toUpperCase() === UTILITY_NODE_NAME) {
         title.textContent = n.name;
+      } else if (n.isMacroRoot) {
+        title.textContent = n.name || 'Macro';
       } else {
         title.textContent = `${n.name} (${n.type || 'Unknown'})`;
       }
-      if (showNodeTypeLabels && typeMeta && typeMeta.label && typeMeta.key !== 'modifier') {
+      if (showNodeTypeLabels && typeMeta && typeMeta.label && !n.isMacroRoot) {
         const typeChip = document.createElement('span');
         typeChip.className = 'node-type-chip';
         typeChip.textContent = typeMeta.label;
@@ -1579,11 +1679,10 @@ export function createNodesPane(options = {}) {
       const flags = document.createElement('div');
       flags.className = 'node-flags';
       (function () {
-        const isMod = !!n.isModifier;
-        if (isMod) {
+        if (n.isMacroRoot) {
           const badge = document.createElement('span');
-          badge.className = 'node-badge modifier';
-          badge.textContent = 'Modifier';
+          badge.className = 'node-badge macro-root';
+          badge.textContent = 'Macro Root';
           flags.appendChild(badge);
         }
       })();
@@ -1622,7 +1721,7 @@ export function createNodesPane(options = {}) {
           next = current === 'closed' ? 'published' : current === 'published' ? 'open' : 'closed';
         }
         setNodeMode(n.name, next);
-        renderNodes(nodes);
+        renderNodes(nodes, n.name);
       });
       header.appendChild(nodeTwisty);
       header.appendChild(title);
@@ -1842,10 +1941,6 @@ export function createNodesPane(options = {}) {
               };
             }),
           };
-          try {
-            const key0 = `group|${n.name}|${groupId}`;
-            if (!state.parseResult.nodeSelectionMuted && getNodeSelection().has(key0)) row.classList.add('selected');
-          } catch (_) {}
           if (enableNodeDrag) {
             row.draggable = true;
             row.addEventListener('dragstart', (ev) => {
@@ -1867,114 +1962,41 @@ export function createNodesPane(options = {}) {
               } catch (_) {}
             });
           }
-          const cb = document.createElement('input'); cb.type = 'checkbox'; cb.className = 'node-ctrl group'; cb.title = 'Select grouped controls';
-          cb.dataset.sourceOp = n.name;
-          cb.dataset.groupId = groupId;
-          cb.dataset.channels = (row._mmMeta.channels || []).map(ch => ch.source || ch.id).join('|');
-          cb.checked = getNodeSelection().has(`group|${n.name}|${groupId}`);
-          cb.addEventListener('click', (ev) => {
-            if (!ev.shiftKey) return;
-            cb.dataset.shiftSelect = '1';
-          });
-          cb.addEventListener('change', (ev) => {
-            if (cb.dataset.shiftSelect) {
-              delete cb.dataset.shiftSelect;
-              if (state.parseResult) state.parseResult.nodeSelectionMuted = false;
-              applyRangeSelection(row, cb.checked);
-              const sel = getNodeSelection();
-              setRowSelected(row, cb.checked, sel);
-              state.parseResult.nodeSelection = sel;
-              updateNodeSelectionButtons();
-              return;
-            }
-            if (cb.dataset.skipChange) {
-              delete cb.dataset.skipChange;
-              return;
-            }
-            if (state.parseResult) state.parseResult.nodeSelectionMuted = false;
-            const key = `group|${n.name}|${groupId}`;
-            const sel = getNodeSelection();
-            const shouldSelect = cb.checked;
-            if (ev && ev.shiftKey) {
-              applyRangeSelection(row, shouldSelect);
-            } else {
-              if (shouldSelect) sel.add(key);
-              else sel.delete(key);
-              state.parseResult.nodeSelection = sel;
-              row.classList.toggle('selected', shouldSelect);
-              updateNodeSelectionButtons();
-              lastSelectIndex = parseInt(row.dataset.selectIndex || '-1', 10);
-            }
-          });
-          const toggleGroupPublish = () => {
-            setSingleSelection(row);
+          const indicator = document.createElement('span'); indicator.className = 'node-published-indicator group'; indicator.title = 'Published status';
+          indicator.dataset.sourceOp = n.name;
+          indicator.dataset.groupId = groupId;
+          indicator.dataset.channels = (row._mmMeta.channels || []).map(ch => ch.source || ch.id).join('|');
+          const publishGroup = () => {
+            lastSelectIndex = parseInt(row.dataset.selectIndex || '-1', 10);
             const channelMeta = row._mmMeta && Array.isArray(row._mmMeta.channels) ? row._mmMeta.channels : [];
-            const allPublished = channelMeta.length > 0 && channelMeta.every((ch) => {
+            const allIdxs = [];
+            for (const ch of channelMeta) {
               const chOp = String(ch?.sourceOp || n.name);
               const chSrc = String(ch?.source || ch?.id || '').trim();
-              return !!chSrc && isPublished(chOp, chSrc);
-            });
-            if (!allPublished) {
-              const allIdxs = [];
-              for (const ch of channelMeta) {
-                const chOp = String(ch?.sourceOp || n.name);
-                const chSrc = String(ch?.source || ch?.id || '').trim();
-                if (!chSrc) continue;
-                const meta = ch && ch.control ? buildControlMetaFromDefinition(ch.control) : null;
-                const r = ensurePublished(chOp, chSrc, ch.name, meta);
-                if (r) allIdxs.push(r.index);
-              }
-              if (allIdxs.length) {
-                const pos = getInsertionPosUnderSelection();
-                try { logDiag(`Insert group count=${allIdxs.length} at pos ${pos}`); } catch (_) {}
-                state.parseResult.order = insertIndicesAt(state.parseResult.order, allIdxs, pos);
-              }
-            } else {
-              for (const ch of channelMeta) {
-                const chOp = String(ch?.sourceOp || n.name);
-                const chSrc = String(ch?.source || ch?.id || '').trim();
-                if (!chSrc) continue;
-                removePublished(chOp, chSrc);
-              }
+              if (!chSrc || isPublished(chOp, chSrc)) continue;
+              const meta = ch && ch.control ? buildControlMetaFromDefinition(ch.control) : null;
+              const r = ensurePublished(chOp, chSrc, ch.name, meta);
+              if (r) allIdxs.push(r.index);
+            }
+            if (allIdxs.length) {
+              const pos = getInsertionPosUnderSelection();
+              try { logDiag(`Insert group count=${allIdxs.length} at pos ${pos}`); } catch (_) {}
+              state.parseResult.order = insertIndicesAt(state.parseResult.order, allIdxs, pos);
             }
             renderPublishedList(state.parseResult.entries, state.parseResult.order);
             refreshNodesChecks();
           };
           const label = document.createElement('span'); label.className = 'ctrl-name'; label.textContent = c.groupLabel || (groupId + ' (group)');
-          row.addEventListener('click', (ev) => {
-            if (yieldToPickSession(ev)) return;
-            const t = ev.target;
-            if (t && t.tagName === 'INPUT') return;
-            if (ev.shiftKey) {
-              applyRangeSelection(row, true);
-              return;
-            }
-            if (ev.metaKey || ev.ctrlKey || ev.altKey) {
-              state.parseResult.nodeSelectionMuted = false;
-              const key = `group|${n.name}|${groupId}`;
-              const sel = getNodeSelection();
-              if (sel.has(key)) sel.delete(key); else sel.add(key);
-              state.parseResult.nodeSelection = sel;
-              row.classList.toggle('selected');
-              cb.checked = sel.has(key);
-              updateNodeSelectionButtons();
-              lastSelectIndex = parseInt(row.dataset.selectIndex || '-1', 10);
-              return;
-            }
-            toggleGroupPublish();
-          });
           label.addEventListener('click', (ev) => {
             if (yieldToPickSession(ev)) return;
             ev.preventDefault(); ev.stopPropagation();
             if (ev.shiftKey) {
-              const anchor = lastSelectIndex;
-              applyRangeSelection(row, true);
-              publishRangeFromRow(row, anchor, 'publish');
+              publishRangeFromRow(row, lastSelectIndex, 'publish');
               return;
             }
-            toggleGroupPublish();
+            publishGroup();
           });
-          row.appendChild(cb); row.appendChild(label);
+          row.appendChild(indicator); row.appendChild(label);
           if (showInstancedConnections && n.instanceSourceOp) {
             const badgeMeta = getInstanceBadgeMeta(c.instanceState);
             if (badgeMeta) {
@@ -2018,10 +2040,6 @@ export function createNodesPane(options = {}) {
           displayName: c.name || c.id,
           controlMeta,
         };
-        try {
-          const key0 = `control|${n.name}|${srcKey}`;
-          if (!state.parseResult.nodeSelectionMuted && getNodeSelection().has(key0)) row.classList.add('selected');
-        } catch (_) {}
         if (enableNodeDrag) {
           row.draggable = true;
           row.addEventListener('dragstart', (ev) => {
@@ -2042,76 +2060,21 @@ export function createNodesPane(options = {}) {
             } catch (_) {}
           });
         }
-        const cb = document.createElement('input'); cb.type = 'checkbox'; cb.className = 'node-ctrl'; cb.title = 'Select control';
-        cb.dataset.sourceOp = n.name; cb.dataset.source = srcKey;
-        cb.checked = getNodeSelection().has(`control|${n.name}|${srcKey}`);
-        cb.addEventListener('click', (ev) => {
-          if (!ev.shiftKey) return;
-          cb.dataset.shiftSelect = '1';
-        });
-        cb.addEventListener('change', (ev) => {
-          if (cb.dataset.shiftSelect) {
-            delete cb.dataset.shiftSelect;
-            if (state.parseResult) state.parseResult.nodeSelectionMuted = false;
-            applyRangeSelection(row, cb.checked);
-            const sel = getNodeSelection();
-            setRowSelected(row, cb.checked, sel);
-            state.parseResult.nodeSelection = sel;
-            updateNodeSelectionButtons();
-            return;
-          }
-          if (cb.dataset.skipChange) {
-            delete cb.dataset.skipChange;
-            return;
-          }
-          if (state.parseResult) state.parseResult.nodeSelectionMuted = false;
-          const key = `control|${n.name}|${srcKey}`;
-          const sel = getNodeSelection();
-          const shouldSelect = cb.checked;
-          if (ev && ev.shiftKey) {
-            applyRangeSelection(row, shouldSelect);
-          } else {
-            if (shouldSelect) sel.add(key);
-            else sel.delete(key);
-            state.parseResult.nodeSelection = sel;
-            row.classList.toggle('selected', shouldSelect);
-            updateNodeSelectionButtons();
-            lastSelectIndex = parseInt(row.dataset.selectIndex || '-1', 10);
-          }
-        });
+        const indicator = document.createElement('span'); indicator.className = 'node-published-indicator'; indicator.title = 'Published status';
+        indicator.dataset.sourceOp = n.name; indicator.dataset.source = srcKey;
         const label = document.createElement('span'); label.className = 'ctrl-name'; label.textContent = c.name || c.id;
         if (isControlled(c.id)) label.classList.add('replaced');
-        row.addEventListener('click', (ev) => {
-          if (yieldToPickSession(ev)) return;
-          const t = ev.target; if (t && t.tagName === 'INPUT') return;
-          if (ev.shiftKey) {
-            applyRangeSelection(row, true);
-            return;
-          }
-          state.parseResult.nodeSelectionMuted = false;
-          const key = `control|${n.name}|${srcKey}`;
-          const sel = getNodeSelection();
-          if (sel.has(key)) sel.delete(key); else sel.add(key);
-          state.parseResult.nodeSelection = sel;
-          row.classList.toggle('selected');
-          cb.checked = sel.has(key);
-          updateNodeSelectionButtons();
-          lastSelectIndex = parseInt(row.dataset.selectIndex || '-1', 10);
-        });
         label.addEventListener('click', (ev) => {
           if (yieldToPickSession(ev)) return;
           ev.preventDefault(); ev.stopPropagation();
           if (ev.shiftKey) {
-            const anchor = lastSelectIndex;
-            applyRangeSelection(row, true);
             if (!n.isMacroRoot || !c.isMacroUserControl) {
-              publishRangeFromRow(row, anchor, 'publish');
+              publishRangeFromRow(row, lastSelectIndex, 'publish');
             }
             return;
           }
           if (n.isMacroRoot && c.isMacroUserControl) {
-            setSingleSelection(row);
-            cb.checked = true;
+            lastSelectIndex = parseInt(row.dataset.selectIndex || '-1', 10);
             const already = isPublished(srcOpTarget, srcKey);
             if (!already) {
               const r = ensurePublished(srcOpTarget, srcKey, c.name, controlMeta);
@@ -2127,7 +2090,7 @@ export function createNodesPane(options = {}) {
             refreshNodesChecks();
             return;
           }
-          setSingleSelection(row);
+          lastSelectIndex = parseInt(row.dataset.selectIndex || '-1', 10);
           const already = isPublished(srcOpTarget, srcKey);
           if (!already) {
             const r = ensurePublished(srcOpTarget, srcKey, c.name, controlMeta);
@@ -2139,8 +2102,6 @@ export function createNodesPane(options = {}) {
             if (typeof consumePendingControlMeta === 'function') {
               consumePendingControlMeta(n.name, srcKey);
             }
-          } else {
-            removePublished(srcOpTarget, srcKey);
           }
           renderPublishedList(state.parseResult.entries, state.parseResult.order);
           refreshNodesChecks();
@@ -2216,7 +2177,7 @@ export function createNodesPane(options = {}) {
             byEl = by;
           }
         } catch (_) {}
-        row.appendChild(cb);
+        row.appendChild(indicator);
         row.appendChild(label);
         if (byEl) row.appendChild(byEl);
         list.appendChild(row);
@@ -2225,6 +2186,17 @@ export function createNodesPane(options = {}) {
       nodesList.appendChild(wrapper);
     }
     refreshNodesChecks();
+    try {
+      if (preserveNodeName) {
+        const anchorNode = nodesList.querySelector(`.node[data-op="${escapedNodeName}"] .node-header`);
+        if (anchorNode && Number.isFinite(anchorOffsetBefore)) {
+          const anchorOffsetAfter = anchorNode.getBoundingClientRect().top;
+          scrollHost.scrollTop += (anchorOffsetAfter - anchorOffsetBefore);
+          return;
+        }
+      }
+      scrollHost.scrollTop = previousScrollTop;
+    } catch (_) {}
   }
 
   let lastSelectIndex = -1;
@@ -2246,8 +2218,6 @@ export function createNodesPane(options = {}) {
     if (shouldSelect) sel.add(key);
     else sel.delete(key);
     row.classList.toggle('selected', shouldSelect);
-    const cb = row.querySelector('input.node-ctrl');
-    if (cb) cb.checked = shouldSelect;
   }
 
   function setSingleSelection(row) {
@@ -2368,6 +2338,7 @@ export function createNodesPane(options = {}) {
       }
       renderPublishedList(state.parseResult.entries, state.parseResult.order);
       refreshNodesChecks();
+      lastSelectIndex = currentIndex;
     } catch (_) {}
   }
 
@@ -4162,30 +4133,30 @@ export function createNodesPane(options = {}) {
 
   function refreshNodesChecks() {
     if (!nodesList) return;
-    const cbs = nodesList.querySelectorAll('input.node-ctrl');
-    cbs.forEach(cb => {
-      const row = cb.closest ? cb.closest('.node-row') : null;
+    const indicators = nodesList.querySelectorAll('.node-published-indicator');
+    indicators.forEach((indicator) => {
+      const row = indicator.closest ? indicator.closest('.node-row') : null;
       const meta = row && row._mmMeta ? row._mmMeta : null;
       if (meta && meta.kind === 'control') {
-        cb.checked = isPublished(meta.sourceOp, meta.source);
+        indicator.classList.toggle('is-published', isPublished(meta.sourceOp, meta.source));
         return;
       }
       if (meta && meta.kind === 'group') {
         const channels = Array.isArray(meta.channels) ? meta.channels : [];
-        cb.checked = channels.length > 0 && channels.every((ch) => {
+        indicator.classList.toggle('is-published', channels.length > 0 && channels.every((ch) => {
           const chOp = String(ch?.sourceOp || meta.sourceOp || '').trim();
           const chSrc = String(ch?.source || ch?.id || '').trim();
           return !!chSrc && isPublished(chOp, chSrc);
-        });
+        }));
         return;
       }
-      const op = cb.dataset.sourceOp;
-      const src = cb.dataset.source;
-      if (src) cb.checked = isPublished(op, src);
-      else if (cb.dataset.groupId || cb.dataset.groupBase) {
-        const listStr = (cb.dataset.channels || '');
+      const op = indicator.dataset.sourceOp;
+      const src = indicator.dataset.source;
+      if (src) indicator.classList.toggle('is-published', isPublished(op, src));
+      else if (indicator.dataset.groupId || indicator.dataset.groupBase) {
+        const listStr = (indicator.dataset.channels || '');
         const ids = listStr ? listStr.split('|').filter(s => s) : [];
-        cb.checked = ids.length > 0 && ids.every(id => isPublished(op, id));
+        indicator.classList.toggle('is-published', ids.length > 0 && ids.every(id => isPublished(op, id)));
       }
     });
   }
@@ -4222,6 +4193,7 @@ export function createNodesPane(options = {}) {
       state.parseResult.nodesPublishedOnly.delete(name);
       if (mode === 'published') state.parseResult.nodesPublishedOnly.add(name);
     },
+    setAllNodeModes,
     setHighlightHandler(fn) {
       if (typeof fn === 'function') highlightCallback = fn;
     },

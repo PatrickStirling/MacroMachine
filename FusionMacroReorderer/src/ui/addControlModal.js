@@ -20,10 +20,13 @@ export function createAddControlModal(options = {}) {
     addControlSubmitBtn,
     onAddControl,
     getTargetNodes = null,
+    getSuggestedLabelCount = null,
+    getSuggestedLabelSelectionSpan = null,
   } = options;
 
   let pendingNode = null;
   let availableNodes = [];
+  let pendingLabelSelectionSpan = null;
 
   const getKnownPageNames = () => {
     const set = new Set();
@@ -144,10 +147,30 @@ export function createAddControlModal(options = {}) {
   };
 
   const resetAddControlFormFields = () => {
+    pendingLabelSelectionSpan = null;
+    if (typeof getSuggestedLabelSelectionSpan === 'function') {
+      try {
+        const suggestedSpan = getSuggestedLabelSelectionSpan();
+        if (suggestedSpan && Number.isFinite(suggestedSpan.startPos) && Number.isFinite(suggestedSpan.count) && suggestedSpan.count > 0) {
+          pendingLabelSelectionSpan = {
+            startPos: Number(suggestedSpan.startPos),
+            endPos: Number.isFinite(suggestedSpan.endPos) ? Number(suggestedSpan.endPos) : Number(suggestedSpan.startPos) + Number(suggestedSpan.count) - 1,
+            count: Number(suggestedSpan.count),
+            startIndex: suggestedSpan.startIndex,
+            endIndex: suggestedSpan.endIndex,
+          };
+        }
+      } catch (_) {}
+    }
+    const suggestedLabelCount = pendingLabelSelectionSpan
+      ? pendingLabelSelectionSpan.count
+      : ((typeof getSuggestedLabelCount === 'function')
+        ? Number(getSuggestedLabelCount() || 0)
+        : 0);
     syncTitleWithTarget();
     if (addControlNameInput) addControlNameInput.value = '';
     if (addControlTypeSelect) addControlTypeSelect.value = 'label';
-    if (addControlLabelCountInput) addControlLabelCountInput.value = '0';
+    if (addControlLabelCountInput) addControlLabelCountInput.value = String(Number.isFinite(suggestedLabelCount) && suggestedLabelCount > 0 ? suggestedLabelCount : 0);
     if (addControlLabelDefaultSelect) addControlLabelDefaultSelect.value = 'closed';
     if (addControlComboOptionsInput) addControlComboOptionsInput.value = 'Option 1\nOption 2\nOption 3';
     if (addControlPageInput) {
@@ -236,6 +259,9 @@ export function createAddControlModal(options = {}) {
           const countVal = parseInt(addControlLabelCountInput?.value || '0', 10);
           config.labelCount = Number.isFinite(countVal) ? countVal : 0;
           config.labelDefault = (addControlLabelDefaultSelect?.value === 'open') ? 'open' : 'closed';
+          if (pendingLabelSelectionSpan && Number.isFinite(pendingLabelSelectionSpan.startPos)) {
+            config.labelSelectionSpan = { ...pendingLabelSelectionSpan };
+          }
         } else if (type === 'combo') {
           const comboOptions = parseComboOptionsInput(addControlComboOptionsInput?.value || '');
           if (!comboOptions.length) {

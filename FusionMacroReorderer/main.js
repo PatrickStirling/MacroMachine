@@ -1862,6 +1862,9 @@ function updateDocExportPathDisplay() {
   const hideReplacedEl = document.getElementById('hideReplaced');
   const viewControlsBtn = document.getElementById('viewControlsBtn');
   const viewControlsMenu = document.getElementById('viewControlsMenu');
+  const showAllNodesBtn = document.getElementById('showAllNodesBtn');
+  const showPublishedNodesBtn = document.getElementById('showPublishedNodesBtn');
+  const collapseAllNodesBtn = document.getElementById('collapseAllNodesBtn');
   const showNodeTypeLabelsEl = document.getElementById('showNodeTypeLabels');
   const showInstancedConnectionsEl = document.getElementById('showInstancedConnections');
   const showNextNodeLinksEl = document.getElementById('showNextNodeLinks');
@@ -1982,8 +1985,13 @@ function updateDocExportPathDisplay() {
     addControlCancelBtn,
     addControlCloseBtn,
     addControlSubmitBtn,
-    onAddControl: (nodeName, config) => addControlToNode(nodeName, config),
+    onAddControl: (nodeName, config) => addControlToNode(nodeName, applyLabelSelectionDefaults(config)),
     getTargetNodes: () => getControlTargetNodeNames(),
+    getSuggestedLabelCount: () => {
+      const span = getSuggestedLabelSelectionSpan();
+      return Number.isFinite(span?.count) ? span.count : 0;
+    },
+    getSuggestedLabelSelectionSpan: () => getSuggestedLabelSelectionSpan(),
   });
 
   function pickPrimaryToolNameFromCurrentMacro() {
@@ -2004,6 +2012,30 @@ function updateDocExportPathDisplay() {
     } catch (_) {}
     const primary = pickPrimaryToolNameFromCurrentMacro();
     return primary ? [primary] : [];
+  }
+
+  function getSuggestedLabelSelectionSpan() {
+    try {
+      return typeof getPublishedSelectionSpan === 'function' ? getPublishedSelectionSpan() : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function applyLabelSelectionDefaults(config) {
+    try {
+      const next = { ...(config || {}) };
+      if (String(next.type || '').toLowerCase() !== 'label') return next;
+      const span = getSuggestedLabelSelectionSpan();
+      if (!span || !Number.isFinite(span.count) || span.count <= 0) return next;
+      if (!Number.isFinite(next.labelCount) || next.labelCount <= 0) {
+        next.labelCount = span.count;
+      }
+      next.labelSelectionSpan = span;
+      return next;
+    } catch (_) {
+      return config || {};
+    }
   }
 
   function openAddControlDialog(nodeName) {
@@ -2054,7 +2086,7 @@ function updateDocExportPathDisplay() {
       config.labelDefault = 'closed';
     }
     try {
-      await addControlToNode(nodeName, config);
+      await addControlToNode(nodeName, applyLabelSelectionDefaults(config));
     } catch (err) {
       error(err?.message || 'Unable to create control.');
     }
@@ -3247,6 +3279,36 @@ function hideDetailDrawer() {
     };
     detailDrawerSubtitle.textContent = `${entry.sourceOp || 'Unknown'}${entry.source ? '.' + entry.source : ''}`;
     detailDrawerBody.innerHTML = '';
+    const drawerNav = getSelectedDrawerNavigation(index);
+    if (drawerNav) {
+      const navRow = document.createElement('div');
+      navRow.className = 'detail-selection-nav';
+      const prevBtn = document.createElement('button');
+      prevBtn.type = 'button';
+      prevBtn.className = 'detail-selection-nav-btn';
+      prevBtn.innerHTML = renderIconHtml ? renderIconHtml('chevron-left', 14) : '&lt;';
+      prevBtn.title = 'Previous selected control';
+      prevBtn.disabled = !(typeof drawerNav.previousIndex === 'number');
+      prevBtn.addEventListener('click', () => {
+        if (typeof drawerNav.previousIndex === 'number') focusDrawerSelectedEntry(drawerNav.previousIndex);
+      });
+      const status = document.createElement('div');
+      status.className = 'detail-selection-nav-status';
+      status.textContent = `${drawerNav.currentPos + 1} of ${drawerNav.total} selected`;
+      const nextBtn = document.createElement('button');
+      nextBtn.type = 'button';
+      nextBtn.className = 'detail-selection-nav-btn';
+      nextBtn.innerHTML = renderIconHtml ? renderIconHtml('chevron-right', 14) : '&gt;';
+      nextBtn.title = 'Next selected control';
+      nextBtn.disabled = !(typeof drawerNav.nextIndex === 'number');
+      nextBtn.addEventListener('click', () => {
+        if (typeof drawerNav.nextIndex === 'number') focusDrawerSelectedEntry(drawerNav.nextIndex);
+      });
+      navRow.appendChild(prevBtn);
+      navRow.appendChild(status);
+      navRow.appendChild(nextBtn);
+      detailDrawerBody.appendChild(navRow);
+    }
     const buildCollapsibleField = (title, defaultOpen = false, stateKey = null) => {
       const field = document.createElement('div');
       field.className = 'detail-field detail-collapsible';
@@ -6313,6 +6375,9 @@ function hideDetailDrawer() {
     const pendingMeta = {
       kind: type === 'label' ? 'label' : type === 'button' ? 'button' : null,
       labelCount: type === 'label' && Number.isFinite(config?.labelCount) ? Number(config.labelCount) : null,
+      selectionInsertStartPos: type === 'label' && Number.isFinite(config?.labelSelectionSpan?.startPos)
+        ? Number(config.labelSelectionSpan.startPos)
+        : null,
       defaultValue: type === 'label' ? (labelDefault === 'closed' ? '0' : '1') : null,
       inputControl:
         type === 'slider' ? 'SliderControl'
@@ -6380,6 +6445,9 @@ function hideDetailDrawer() {
     const pendingMeta = {
       kind: type === 'label' ? 'label' : type === 'button' ? 'button' : null,
       labelCount: type === 'label' && Number.isFinite(config?.labelCount) ? Number(config.labelCount) : null,
+      selectionInsertStartPos: type === 'label' && Number.isFinite(config?.labelSelectionSpan?.startPos)
+        ? Number(config.labelSelectionSpan.startPos)
+        : null,
       defaultValue: type === 'label' ? (labelDefault === 'closed' ? '0' : '1') : null,
       inputControl:
         type === 'slider' ? 'SliderControl'
@@ -6424,7 +6492,21 @@ function hideDetailDrawer() {
       const currentOrder = state.parseResult.order || [];
       let pos = currentOrder.length;
       let anchored = false;
-      if (typeof activeDetailEntryIndex === 'number') {
+      if (String(metaWithPage?.kind || '').toLowerCase() === 'label') {
+        const selectedSet = state.parseResult?.selected instanceof Set ? state.parseResult.selected : null;
+        const selectedPositions = selectedSet
+          ? Array.from(selectedSet).map((idx) => currentOrder.indexOf(idx)).filter((idx) => idx >= 0).sort((a, b) => a - b)
+          : [];
+        if (selectedPositions.length) {
+          pos = selectedPositions[0];
+          anchored = true;
+        }
+      }
+      if (!anchored && Number.isFinite(metaWithPage?.selectionInsertStartPos)) {
+        pos = Math.max(0, Math.min(currentOrder.length, Number(metaWithPage.selectionInsertStartPos)));
+        anchored = true;
+      }
+      if (!anchored && typeof activeDetailEntryIndex === 'number') {
         const anchorPos = currentOrder.indexOf(activeDetailEntryIndex);
         if (anchorPos >= 0) {
           pos = anchorPos + 1;
@@ -6435,6 +6517,7 @@ function hideDetailDrawer() {
         pos = getInsertionPosUnderSelection();
       }
       state.parseResult.order = insertIndicesAt(currentOrder, [res.index], pos);
+      syncEntrySortIndicesToOrder(state.parseResult);
       try { logDiag(`autoPublishCreatedControl: idx=${res.index} pos=${pos}`); } catch (_) {}
       if (pageName && pageName !== 'Controls') {
         state.parseResult.pageOrder = state.parseResult.pageOrder || [];
@@ -6893,6 +6976,37 @@ function hideDetailDrawer() {
     renderDetailDrawer(index);
   }
 
+  function getSelectedDrawerNavigation(index) {
+    try {
+      if (!state.parseResult || !Array.isArray(state.parseResult.order)) return null;
+      const selected = state.parseResult.selected instanceof Set ? state.parseResult.selected : null;
+      if (!selected || selected.size < 2) return null;
+      const orderedSelected = state.parseResult.order.filter((entryIndex) => selected.has(entryIndex));
+      if (orderedSelected.length < 2) return null;
+      const currentPos = orderedSelected.indexOf(index);
+      if (currentPos < 0) return null;
+      return {
+        total: orderedSelected.length,
+        currentPos,
+        previousIndex: currentPos > 0 ? orderedSelected[currentPos - 1] : null,
+        nextIndex: currentPos < orderedSelected.length - 1 ? orderedSelected[currentPos + 1] : null,
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function focusDrawerSelectedEntry(index) {
+    try {
+      if (typeof index !== 'number' || index < 0) return;
+      if (typeof setPublishedDetailTarget === 'function') {
+        setPublishedDetailTarget(index);
+        return;
+      }
+      handleDetailTargetChange(index);
+    } catch (_) {}
+  }
+
   function updateDrawerToggleLabel() {
     if (!detailDrawerToggleBtn) return;
     const isCollapsed = detailDrawerCollapsed;
@@ -6989,6 +7103,8 @@ function hideDetailDrawer() {
   const addOrMovePublishedItemsAt = publishedControls.addOrMovePublishedItemsAt;
   const createIcon = publishedControls.createIcon;
   const getCurrentDropIndex = publishedControls.getCurrentDropIndex;
+  const getPublishedSelectionSpan = publishedControls.getSelectionSpan;
+  const setPublishedDetailTarget = publishedControls.setDetailTargetIndex;
   const refreshPageTabs = publishedControls.refreshPageTabs;
   const setEntryDisplayNameApi = publishedControls.setEntryDisplayName;
   const appendLauncherUiApi = publishedControls.appendLauncherUi;
@@ -7026,6 +7142,9 @@ function hideDetailDrawer() {
     hideReplacedEl,
     viewControlsBtn,
     viewControlsMenu,
+    showAllNodesBtn,
+    showPublishedNodesBtn,
+    collapseAllNodesBtn,
     showNodeTypeLabelsEl,
     showInstancedConnectionsEl,
     showNextNodeLinksEl,
@@ -11547,34 +11666,34 @@ async function handleFile(file) {
         if (!nodesList) return null;
 
         if (src) {
-          let el = nodesList.querySelector(`input.node-ctrl[data-source-op="${op}"][data-source="${src}"]`);
+          let el = nodesList.querySelector(`.node-published-indicator[data-source-op="${op}"][data-source="${src}"]`);
           if (el) return el;
 
           const base = deriveGroupBase(src);
           if (base) {
-            el = nodesList.querySelector(`input.node-ctrl.group[data-source-op="${op}"][data-group-base="${base}"]`);
+            el = nodesList.querySelector(`.node-published-indicator.group[data-source-op="${op}"][data-group-id="${base}"]`);
             if (el) return el;
           }
 
-          const inputs = nodesList.querySelectorAll('input.node-ctrl');
-          for (const input of inputs) {
-            if (!input.classList.contains('group')) {
-              if ((input.dataset.sourceOp || '') === op && (input.dataset.source || '') === src) return input;
+          const indicators = nodesList.querySelectorAll('.node-published-indicator');
+          for (const indicator of indicators) {
+            if (!indicator.classList.contains('group')) {
+              if ((indicator.dataset.sourceOp || '') === op && (indicator.dataset.source || '') === src) return indicator;
             } else {
-              const dsBase = input.dataset.groupBase || '';
-              if (dsBase && (input.dataset.sourceOp || '') === op) {
-                if (base && dsBase === base) return input;
+              const dsBase = indicator.dataset.groupId || '';
+              if (dsBase && (indicator.dataset.sourceOp || '') === op) {
+                if (base && dsBase === base) return indicator;
               }
             }
           }
           return null;
         }
 
-        const el = nodesList.querySelector(`input.node-ctrl.group[data-source-op="${op}"]`);
+        const el = nodesList.querySelector(`.node-published-indicator.group[data-source-op="${op}"]`);
         if (el) return el;
-        const inputs = nodesList.querySelectorAll('input.node-ctrl.group');
-        for (const input of inputs) {
-          if ((input.dataset.sourceOp || '') === op) return input;
+        const indicators = nodesList.querySelectorAll('.node-published-indicator.group');
+        for (const indicator of indicators) {
+          if ((indicator.dataset.sourceOp || '') === op) return indicator;
         }
         return null;
       };
@@ -12791,6 +12910,7 @@ async function handleFile(file) {
       updated = rewriteUpdateDataProtocolPaths(updated, fileMetaPath);
     }
     updated = applyMacroNameRename(updated, result, exportMacroName);
+    updated = ensureDefaultExtentSetOnGeneratorTools(updated, result, eol);
     updated = normalizeGroupUserControlsBlocks(updated, result, eol);
     refreshGroupUserControlState(updated);
     updated = ensureGroupInputsBlock(updated, result, eol);
@@ -12890,6 +13010,40 @@ async function handleFile(file) {
       snippetParts.push(`${newline}${innerIndent}},${newline}`);
       const snippet = snippetParts.join('');
       return text.slice(0, insertPos) + snippet + text.slice(insertPos);
+    } catch (_) {
+      return text;
+    }
+  }
+
+  function ensureDefaultExtentSetOnGeneratorTools(text, result, eol) {
+    try {
+      if (!text || !result) return text;
+      const bounds = locateMacroGroupBounds(text, result);
+      if (!bounds) return text;
+      const toolsBlock = findOrderedBlock(text, bounds.groupOpenIndex, bounds.groupCloseIndex, 'Tools');
+      if (!toolsBlock) return text;
+      const entries = parseOrderedBlockEntries(text, toolsBlock.open, toolsBlock.close);
+      if (!Array.isArray(entries) || !entries.length) return text;
+      const eligibleTypes = new Set(['background', 'fastnoise', 'srender']);
+      const newline = eol || detectNewline(text) || '\n';
+      let updated = text;
+      const reversedEntries = entries.slice().reverse();
+      reversedEntries.forEach((entry) => {
+        if (!entry || !Number.isFinite(entry.blockOpen) || !Number.isFinite(entry.blockClose)) return;
+        const toolType = String(getOrderedBlockEntryType(updated, entry) || '').trim().toLowerCase();
+        if (!eligibleTypes.has(toolType)) return;
+        const body = updated.slice(entry.blockOpen + 1, entry.blockClose);
+        if (/\bExtentSet\s*=/.test(body)) return;
+        const inputsBlock = findInputsInTool(updated, entry.blockOpen, entry.blockClose);
+        if (!inputsBlock) return;
+        const hasGlobalIn = !!findInputBlockInInputs(updated, inputsBlock.open, inputsBlock.close, 'GlobalIn');
+        const hasGlobalOut = !!findInputBlockInInputs(updated, inputsBlock.open, inputsBlock.close, 'GlobalOut');
+        if (hasGlobalIn || hasGlobalOut) return;
+        const indent = (getLineIndent(updated, entry.blockOpen) || '') + '\t';
+        const insert = `${newline}${indent}ExtentSet = true,`;
+        updated = updated.slice(0, entry.blockOpen + 1) + insert + updated.slice(entry.blockOpen + 1);
+      });
+      return updated;
     } catch (_) {
       return text;
     }
@@ -15351,6 +15505,16 @@ async function handleFile(file) {
       return a.idx - b.idx;
     });
     return decorated.map(item => item.idx);
+  }
+
+  function syncEntrySortIndicesToOrder(result) {
+    try {
+      if (!result || !Array.isArray(result.entries) || !Array.isArray(result.order)) return;
+      result.order.forEach((idx, pos) => {
+        const entry = result.entries[idx];
+        if (entry) entry.sortIndex = pos;
+      });
+    } catch (_) {}
   }
 
   function hydrateBlendToggleState(_text, result) {

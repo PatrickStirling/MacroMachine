@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, Menu, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, shell, nativeImage } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
@@ -188,10 +188,37 @@ function attachExternalLinkHandling(win) {
   });
 }
 
+function resolveAppIconPath() {
+  const devPath = path.join(__dirname, '..', 'Settings Gear.png');
+  if (fs.existsSync(devPath)) return devPath;
+  try {
+    if (process.resourcesPath) {
+      const packagedPath = path.join(process.resourcesPath, 'Settings Gear.png');
+      if (fs.existsSync(packagedPath)) return packagedPath;
+    }
+  } catch (_) {}
+  return '';
+}
+
+function applyAppIcon(win) {
+  try {
+    const iconPath = resolveAppIconPath();
+    if (!iconPath) return;
+    if (process.platform === 'darwin' && app.dock && typeof app.dock.setIcon === 'function') {
+      const iconImage = nativeImage.createFromPath(iconPath);
+      if (!iconImage.isEmpty()) app.dock.setIcon(iconImage);
+    }
+    if (win && !win.isDestroyed() && process.platform !== 'darwin') {
+      win.setIcon(iconPath);
+    }
+  } catch (_) {}
+}
+
 function createMainWindow() {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
+    icon: process.platform === 'darwin' ? undefined : resolveAppIconPath(),
     webPreferences: {
       // Simpler model for this local tool: allow Node APIs in the renderer
       // and avoid using a preload script (which has been causing load issues).
@@ -206,6 +233,7 @@ function createMainWindow() {
   const devIndexPath = path.join(__dirname, '..', 'FusionMacroReorderer', 'index.html');
   const prodIndexPath = path.join(__dirname, 'FusionMacroReorderer', 'index.html');
   const indexPath = fs.existsSync(devIndexPath) ? devIndexPath : prodIndexPath;
+  applyAppIcon(win);
   attachExternalLinkHandling(win);
   win.loadFile(indexPath);
   win.webContents.on('did-finish-load', () => {
@@ -226,6 +254,7 @@ function createExplorerWindow() {
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
+    icon: process.platform === 'darwin' ? undefined : resolveAppIconPath(),
     webPreferences: {
       contextIsolation: false,
       nodeIntegration: true,
@@ -234,6 +263,7 @@ function createExplorerWindow() {
   const devPath = path.join(__dirname, '..', 'FusionMacroReorderer', 'explorer.html');
   const prodPath = path.join(__dirname, 'FusionMacroReorderer', 'explorer.html');
   const explorerPath = fs.existsSync(devPath) ? devPath : prodPath;
+  applyAppIcon(win);
   attachExternalLinkHandling(win);
   win.loadFile(explorerPath);
   win.on('closed', () => {
@@ -1213,6 +1243,7 @@ ipcMain.handle('set-data-menu-state', async (_event, payload = {}) => {
   });
 
   app.whenReady().then(() => {
+    applyAppIcon(null);
     createMainWindow();
     try {
       app.setAsDefaultProtocolClient(PROTOCOL_NAME);

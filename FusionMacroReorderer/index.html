@@ -148,6 +148,11 @@
                 <div class="view-controls-wrap">
                   <button id="viewControlsBtn" type="button" aria-haspopup="menu" aria-expanded="false">View Controls &#9662;</button>
                   <div id="viewControlsMenu" class="view-controls-menu" hidden>
+                    <div class="view-controls-actions">
+                      <button id="showAllNodesBtn" type="button">Show all</button>
+                      <button id="showPublishedNodesBtn" type="button">Show published</button>
+                      <button id="collapseAllNodesBtn" type="button">Collapse all</button>
+                    </div>
                     <label>
                       <input type="checkbox" id="hideReplaced" />
                       Hide replaced controls
@@ -174,10 +179,6 @@
                 <input type="checkbox" id="autoUtilityNode" />
                 Auto-add Utility node
               </label>
-            </div>
-            <div class="nodes-actions">
-              <button id="publishSelectedBtn" type="button" disabled>Publish Selected</button>
-              <button id="clearNodeSelectionBtn" type="button" disabled>Clear Selection</button>
             </div>
             <div id="nodesList" class="nodes-list"></div>
             <div id="addControlModal" class="add-control-modal" hidden>
