@@ -78,10 +78,13 @@ function buildDefaultRoots() {
   const base = getFusionBasePath();
   const templates = path.join(base, 'Templates');
   const macros = path.join(base, 'Macros');
+  const fuses = path.join(base, 'Fuses');
+  const scripts = path.join(base, 'Scripts');
   return {
     Templates: templates,
     Macros: macros,
-    Custom: null,
+    Fuses: fuses,
+    Scripts: scripts,
   };
 }
 
@@ -114,13 +117,13 @@ function getFusionBasePath() {
 
 function initRootSelect() {
   rootSelect.innerHTML = '';
-  ['Templates', 'Macros', 'Custom'].forEach((key) => {
+  ['Templates', 'Macros', 'Fuses', 'Scripts'].forEach((key) => {
     const opt = document.createElement('option');
     opt.value = key;
     opt.textContent = key;
     rootSelect.appendChild(opt);
   });
-  currentRootKey = roots.Templates ? 'Templates' : 'Macros';
+  currentRootKey = roots.Templates ? 'Templates' : (roots.Macros ? 'Macros' : (roots.Fuses ? 'Fuses' : 'Scripts'));
   rootSelect.value = currentRootKey || 'Templates';
 }
 
@@ -1063,9 +1066,9 @@ async function chooseRootFolder() {
   try {
     const res = await ipcRenderer.invoke('select-folder', { defaultPath: currentPath });
     if (!res || res.canceled || !res.filePath) return;
-    roots.Custom = res.filePath;
-    rootSelect.value = 'Custom';
-    selectRoot('Custom');
+    currentRootKey = null;
+    rootSelect.selectedIndex = -1;
+    setCurrentPath(res.filePath);
   } catch (err) {
     setStatus(`Folder selection failed: ${err.message || err}`, true);
   }
