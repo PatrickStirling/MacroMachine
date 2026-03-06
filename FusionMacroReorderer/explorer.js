@@ -11,6 +11,7 @@ const DISABLED_SUFFIX = '.disabled';
 const rootSelect = document.getElementById('rootSelect');
 const chooseRootBtn = document.getElementById('chooseRootBtn');
 const refreshBtn = document.getElementById('refreshBtn');
+const openHereBtn = document.getElementById('openHereBtn');
 const exportFolderBtn = document.getElementById('exportFolderBtn');
 const currentPathEl = document.getElementById('currentPath');
 const pathBackBtn = document.getElementById('pathBackBtn');
@@ -155,8 +156,9 @@ function updateDrfxBulkActions() {
 }
 
 function updateExportFolderButton() {
-  if (!exportFolderBtn) return;
-  exportFolderBtn.disabled = !currentPath;
+  const disabled = !currentPath;
+  if (exportFolderBtn) exportFolderBtn.disabled = disabled;
+  if (openHereBtn) openHereBtn.disabled = disabled;
 }
 
 function updatePathNavButtons() {
@@ -1145,6 +1147,20 @@ function revealInExplorer(entryPath) {
   } catch (_) {}
 }
 
+async function openCurrentPathInExplorer() {
+  if (!currentPath) return;
+  try {
+    const openError = await shell.openPath(currentPath);
+    if (openError) {
+      setStatus(`Unable to open folder: ${openError}`, true);
+      return;
+    }
+    setStatus('Opened current folder in Explorer.');
+  } catch (err) {
+    setStatus(`Unable to open folder: ${err?.message || err}`, true);
+  }
+}
+
 function closeTextPrompt(value) {
   if (!textPromptModal) return;
   textPromptModal.hidden = true;
@@ -1549,6 +1565,7 @@ thumbFileInput?.addEventListener('change', async () => {
 rootSelect.addEventListener('change', () => selectRoot(rootSelect.value));
 chooseRootBtn.addEventListener('click', () => chooseRootFolder());
 refreshBtn.addEventListener('click', () => refreshList());
+openHereBtn?.addEventListener('click', () => openCurrentPathInExplorer());
 searchInput?.addEventListener('input', () => {
   clearSelection();
   const filtered = filterEntries(currentEntries);

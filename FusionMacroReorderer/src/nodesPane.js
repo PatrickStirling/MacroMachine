@@ -40,6 +40,7 @@ export function createNodesPane(options = {}) {
     enableNodeDrag = true,
     requestRenameNode = null,
     requestAddControl = null,
+    focusPublishedControl = null,
     getPendingControlMeta = () => null,
     consumePendingControlMeta = () => {},
     isPickSessionActive = () => false,
@@ -1576,6 +1577,7 @@ export function createNodesPane(options = {}) {
       if (!node || node.isMacroRoot) return false;
       const type = String(node.type || '').trim().toLowerCase();
       const name = String(node.name || '').trim().toLowerCase();
+      if (type === 'groupoperator' || type === 'macrooperator') return true;
       const blob = `${type} ${name}`;
       return /\bpiperouter\b|\baudiodisplay\b/.test(blob);
     } catch (_) {
@@ -1966,10 +1968,27 @@ export function createNodesPane(options = {}) {
           indicator.dataset.sourceOp = n.name;
           indicator.dataset.groupId = groupId;
           indicator.dataset.channels = (row._mmMeta.channels || []).map(ch => ch.source || ch.id).join('|');
+          indicator.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            if (yieldToPickSession(ev)) return;
+            if (typeof focusPublishedControl !== 'function') return;
+            const channelMeta = row._mmMeta && Array.isArray(row._mmMeta.channels) ? row._mmMeta.channels : [];
+            for (const ch of channelMeta) {
+              const chOp = String(ch?.sourceOp || n.name);
+              const chSrc = String(ch?.source || ch?.id || '').trim();
+              if (chSrc && isPublished(chOp, chSrc)) {
+                try { clearHighlights(); } catch (_) {}
+                try { focusPublishedControl(chOp, chSrc); } catch (_) {}
+                break;
+              }
+            }
+          });
           const publishGroup = () => {
             lastSelectIndex = parseInt(row.dataset.selectIndex || '-1', 10);
             const channelMeta = row._mmMeta && Array.isArray(row._mmMeta.channels) ? row._mmMeta.channels : [];
             const allIdxs = [];
+            let firstPublishedTarget = null;
             for (const ch of channelMeta) {
               const chOp = String(ch?.sourceOp || n.name);
               const chSrc = String(ch?.source || ch?.id || '').trim();
@@ -1982,9 +2001,22 @@ export function createNodesPane(options = {}) {
               const pos = getInsertionPosUnderSelection();
               try { logDiag(`Insert group count=${allIdxs.length} at pos ${pos}`); } catch (_) {}
               state.parseResult.order = insertIndicesAt(state.parseResult.order, allIdxs, pos);
+            } else {
+              for (const ch of channelMeta) {
+                const chOp = String(ch?.sourceOp || n.name);
+                const chSrc = String(ch?.source || ch?.id || '').trim();
+                if (chSrc && isPublished(chOp, chSrc)) {
+                  firstPublishedTarget = { sourceOp: chOp, source: chSrc };
+                  break;
+                }
+              }
             }
             renderPublishedList(state.parseResult.entries, state.parseResult.order);
             refreshNodesChecks();
+            if (!allIdxs.length && firstPublishedTarget && typeof focusPublishedControl === 'function') {
+              try { clearHighlights(); } catch (_) {}
+              try { focusPublishedControl(firstPublishedTarget.sourceOp, firstPublishedTarget.source); } catch (_) {}
+            }
           };
           const label = document.createElement('span'); label.className = 'ctrl-name'; label.textContent = c.groupLabel || (groupId + ' (group)');
           label.addEventListener('click', (ev) => {
@@ -2062,6 +2094,16 @@ export function createNodesPane(options = {}) {
         }
         const indicator = document.createElement('span'); indicator.className = 'node-published-indicator'; indicator.title = 'Published status';
         indicator.dataset.sourceOp = n.name; indicator.dataset.source = srcKey;
+        indicator.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (yieldToPickSession(ev)) return;
+          if (!srcKey || typeof focusPublishedControl !== 'function') return;
+          if (isPublished(srcOpTarget, srcKey)) {
+            try { clearHighlights(); } catch (_) {}
+            try { focusPublishedControl(srcOpTarget, srcKey); } catch (_) {}
+          }
+        });
         const label = document.createElement('span'); label.className = 'ctrl-name'; label.textContent = c.name || c.id;
         if (isControlled(c.id)) label.classList.add('replaced');
         label.addEventListener('click', (ev) => {
@@ -2084,7 +2126,10 @@ export function createNodesPane(options = {}) {
                 state.parseResult.order = insertIndicesAt(state.parseResult.order, [r.index], pos);
               }
             } else {
-              removePublished(srcOpTarget, srcKey);
+              if (typeof focusPublishedControl === 'function') {
+                try { clearHighlights(); } catch (_) {}
+                try { focusPublishedControl(srcOpTarget, srcKey); } catch (_) {}
+              }
             }
             renderPublishedList(state.parseResult.entries, state.parseResult.order);
             refreshNodesChecks();
@@ -2102,6 +2147,9 @@ export function createNodesPane(options = {}) {
             if (typeof consumePendingControlMeta === 'function') {
               consumePendingControlMeta(n.name, srcKey);
             }
+          } else if (typeof focusPublishedControl === 'function') {
+            try { clearHighlights(); } catch (_) {}
+            try { focusPublishedControl(srcOpTarget, srcKey); } catch (_) {}
           }
           renderPublishedList(state.parseResult.entries, state.parseResult.order);
           refreshNodesChecks();

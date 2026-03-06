@@ -7175,6 +7175,7 @@ function hideDetailDrawer() {
     getPendingControlMeta: (op, id) => getPendingControlMeta(op, id),
     consumePendingControlMeta: (op, id) => consumePendingControlMeta(op, id),
     isPickSessionActive: () => !!activePickSession,
+    focusPublishedControl: (sourceOp, source) => focusPublishedControl(sourceOp, source),
   });
 
   historyController = createHistoryController({
@@ -11724,6 +11725,44 @@ async function handleFile(file) {
       if (pulse) row.classList.add('pulse');
       scrollRowIntoView(row, nodesList);
       setTimeout(() => row.classList.remove('pulse'), 800);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function focusPublishedControl(sourceOp, source, pulse = true) {
+    try {
+      if (!state.parseResult || !Array.isArray(state.parseResult.entries)) return false;
+      const op = String(sourceOp || '').trim();
+      const src = String(source || '').trim();
+      if (!op || !src) return false;
+      const idx = state.parseResult.entries.findIndex((entry) => entry && entry.sourceOp === op && entry.source === src);
+      if (idx < 0) return false;
+      const entry = state.parseResult.entries[idx];
+      const targetPage = String(entry?.page || 'Controls').trim() || 'Controls';
+      if (state.parseResult.activePage !== targetPage) {
+        state.parseResult.activePage = targetPage;
+        try { refreshPageTabs(); } catch (_) {}
+      }
+      if (publishedSearch && publishedSearch.value) {
+        publishedSearch.value = '';
+        setPublishedFilter('');
+      }
+      const sel = new Set([idx]);
+      state.parseResult.selected = sel;
+      if (typeof setPublishedDetailTarget === 'function') {
+        try { setPublishedDetailTarget(idx, { render: false }); } catch (_) {}
+      }
+      renderList(state.parseResult.entries, state.parseResult.order);
+      const row = controlsList ? controlsList.querySelector(`li[data-index="${idx}"]`) : null;
+      if (!row) return true;
+      row.classList.add('hl-pub');
+      if (pulse) row.classList.add('pulse');
+      try { scrollRowIntoView(row, controlsList); } catch (_) {}
+      setTimeout(() => {
+        try { row.classList.remove('pulse'); } catch (_) {}
+      }, 800);
       return true;
     } catch (_) {
       return false;

@@ -39,6 +39,7 @@ export function createPublishedControls({
   let labelRangeCaptureIndex = null;
   let dragFromIndex = null;
   let currentDropIndex = null;
+  let documentDragCaptureAttached = false;
   const dropIndicator = document.createElement('li');
   dropIndicator.className = 'drop-indicator';
   const manualPageOptions = new Set();
@@ -1077,6 +1078,7 @@ export function createPublishedControls({
       const idx = parseInt(li.dataset.index || '-1', 10);
       dragFromIndex = idx;
       currentDropIndex = null;
+      attachDocumentDragCapture();
       e.dataTransfer?.setData('text/plain', String(idx));
       e.dataTransfer?.setDragImage(li, 10, 10);
     });
@@ -1095,30 +1097,81 @@ export function createPublishedControls({
       if (!state.parseResult || dragFromIndex === null || currentDropIndex === null) return;
       e.preventDefault();
       pushHistory('drag/drop');
-      const orderCopy = [...state.parseResult.order];
-      const selected = getDragSelection(dragFromIndex);
-      const positions = selected.map(v => orderCopy.indexOf(v)).sort((a, b) => a - b);
-      const selSet = new Set(selected);
-      const remaining = orderCopy.filter(v => !selSet.has(v));
-      let toPos = currentDropIndex;
-      const countLess = positions.filter(p => p < toPos).length;
-      toPos = Math.max(0, Math.min(remaining.length, toPos - countLess));
-      const selectedInOrder = orderCopy.filter(v => selSet.has(v));
-      remaining.splice(toPos, 0, ...selectedInOrder);
-      logDiag('row drop');
-      state.parseResult.order = remaining;
-      renderList(entries, remaining);
-      if (selectedInOrder.length) {
-        notifyEntryMutated(selectedInOrder[selectedInOrder.length - 1]);
-      }
+      applyCurrentDragDrop();
       cleanupDropIndicator();
     });
+  }
+
+  function applyCurrentDragDrop() {
+    if (!state.parseResult || dragFromIndex === null || currentDropIndex === null) return false;
+    const entries = state.parseResult.entries || [];
+    const orderCopy = Array.isArray(state.parseResult.order) ? [...state.parseResult.order] : [];
+    const selected = getDragSelection(dragFromIndex);
+    if (!selected.length) return false;
+    const positions = selected.map(v => orderCopy.indexOf(v)).sort((a, b) => a - b);
+    const selSet = new Set(selected);
+    const remaining = orderCopy.filter(v => !selSet.has(v));
+    let toPos = currentDropIndex;
+    const countLess = positions.filter(p => p < toPos).length;
+    toPos = Math.max(0, Math.min(remaining.length, toPos - countLess));
+    const selectedInOrder = orderCopy.filter(v => selSet.has(v));
+    remaining.splice(toPos, 0, ...selectedInOrder);
+    logDiag('row drop');
+    state.parseResult.order = remaining;
+    renderList(entries, remaining);
+    if (selectedInOrder.length) {
+      notifyEntryMutated(selectedInOrder[selectedInOrder.length - 1]);
+    }
+    return true;
+  }
+
+  function attachDocumentDragCapture() {
+    if (documentDragCaptureAttached) return;
+    try {
+      document.addEventListener('dragover', handleDocumentDragOver, true);
+      document.addEventListener('drop', handleDocumentDrop, true);
+      documentDragCaptureAttached = true;
+    } catch (_) {}
+  }
+
+  function detachDocumentDragCapture() {
+    if (!documentDragCaptureAttached) return;
+    try {
+      document.removeEventListener('dragover', handleDocumentDragOver, true);
+      document.removeEventListener('drop', handleDocumentDrop, true);
+    } catch (_) {}
+    documentDragCaptureAttached = false;
+  }
+
+  function handleDocumentDragOver(e) {
+    if (!state.parseResult || dragFromIndex === null) return;
+    e.preventDefault();
+    e.dataTransfer && (e.dataTransfer.dropEffect = 'move');
+    updateDropIndicatorPosition(e, state.parseResult.order || []);
+  }
+
+  function handleDocumentDrop(e) {
+    if (!state.parseResult || dragFromIndex === null) return;
+    e.preventDefault();
+    if (currentDropIndex === null) {
+      const order = state.parseResult.order || [];
+      const listRect = controlsList ? controlsList.getBoundingClientRect() : null;
+      if (listRect) {
+        currentDropIndex = e.clientY <= listRect.top ? 0 : order.length;
+      } else {
+        currentDropIndex = order.length;
+      }
+    }
+    pushHistory('drag/drop');
+    applyCurrentDragDrop();
+    cleanupDropIndicator();
   }
 
   function cleanupDropIndicator() {
     dragFromIndex = null;
     currentDropIndex = null;
     if (dropIndicator.parentElement) dropIndicator.parentElement.removeChild(dropIndicator);
+    detachDocumentDragCapture();
   }
 
   function updateDropIndicatorPosition(e, order) {
