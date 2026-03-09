@@ -705,41 +705,13 @@ export function createPublishedControls({
         li.style.removeProperty('--label-group-depth');
       }
       try {
-        if (e.sourceOp) {
+        if (e.sourceOp && !e.isLabel) {
           const cg = getContiguousColorGroupBlock(idx, entries, order);
           if (cg && cg.count >= 2) {
             li.classList.add('color-group');
           }
         }
       } catch (_) {}
-
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.title = 'Select row';
-      cb.checked = getSelectedSet().has(idx);
-      cb.addEventListener('change', (ev) => {
-        ev.stopPropagation();
-        if (labelRangeCaptureIndex != null) {
-          cb.checked = getSelectedSet().has(idx);
-          return;
-        }
-        if (ev.shiftKey) {
-          if (applySelectionRange(order, idx, cb.checked)) {
-            renderList(entries, order);
-          }
-          return;
-        }
-        const sel = getSelectedSet();
-        if (cb.checked) sel.add(idx); else sel.delete(idx);
-        state.parseResult.selected = sel;
-        li.classList.toggle('selected', cb.checked);
-        selectionAnchorIndex = idx;
-        const p = order.indexOf(idx);
-        if (cb.checked) insertionAnchorPos = (insertionAnchorPos == null) ? p : Math.max(insertionAnchorPos, p);
-        else refreshAnchorFromSelection(order);
-        updateRemoveSelectedState();
-        syncDetailTarget(cb.checked ? idx : null);
-      });
 
       const handle = document.createElement('div');
       handle.className = 'handle';
@@ -871,7 +843,7 @@ export function createPublishedControls({
         });
         twistyCell.appendChild(twisty);
       }
-      if (cgBlk && cgBlk.firstIndex === idx && cgBlk.count >= 2 && e.sourceOp) {
+      if (!e.isLabel && cgBlk && cgBlk.firstIndex === idx && cgBlk.count >= 2 && e.sourceOp) {
         const key = getCgKey(e);
         const cgTwisty = document.createElement('span');
         cgTwisty.className = 'twisty twisty-group';
@@ -989,7 +961,6 @@ export function createPublishedControls({
       buttons.appendChild(pageCell);
       buttons.appendChild(goBtn);
 
-      li.appendChild(cb);
       li.appendChild(handle);
       li.appendChild(twistyCell);
       li.appendChild(textCol);
@@ -1266,21 +1237,6 @@ export function createPublishedControls({
         return pos;
       }
     }
-    try {
-      const checked = controlsList ? controlsList.querySelectorAll('input[type="checkbox"]:checked[data-index]') : [];
-      if (checked && checked.length) {
-        let maxPos = -1;
-        Array.from(checked).forEach(cb => {
-          const idx = parseInt(cb.dataset.index || '-1', 10);
-          const p = order.indexOf(idx);
-          if (p > maxPos) maxPos = p;
-        });
-        if (maxPos >= 0) {
-          try { logDiag(`Anchor pos via checked boxes = ${maxPos}, insert at ${maxPos + 1}`); } catch (_) {}
-          return maxPos + 1;
-        }
-      }
-    } catch (_) {}
     try { logDiag('Anchor pos default = end'); } catch (_) {}
     return order.length;
   }
@@ -1613,7 +1569,7 @@ export function createPublishedControls({
   }
 
   function getCgKey(e) {
-    if (!e || !e.sourceOp) return '';
+    if (!e || !e.sourceOp || e.isLabel) return '';
     if (Number.isFinite(e.controlGroup)) return `${e.sourceOp}::${e.controlGroup}`;
     return getFlipPairToken(e) || '';
   }
@@ -1626,7 +1582,7 @@ export function createPublishedControls({
 
   function getContiguousColorGroupBlock(idx, entries, order) {
     const entry = entries[idx];
-    if (!entry || !entry.sourceOp) return null;
+    if (!entry || !entry.sourceOp || entry.isLabel) return null;
     const key = getCgKey(entry);
     if (!key) return null;
     const startPos = order.indexOf(idx);

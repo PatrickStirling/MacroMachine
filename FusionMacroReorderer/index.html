@@ -31,7 +31,8 @@
           <section class="file-loader drop-zone" id="dropZone" aria-label="Drop .setting file here">
             <label for="fileInput" class="file-label">Select or drop a .setting file</label>
             <div class="file-actions">
-              <input type="file" id="fileInput" accept=".setting,.setting.txt,.txt" />
+              <button id="openNativeBtn" type="button">Import from file</button>
+              <input type="file" id="fileInput" accept=".setting,.setting.txt,.txt" hidden />
               <button id="importClipboardBtn" type="button">Import from clipboard</button>
             </div>
             <div class="file-info" id="fileInfo">No file loaded</div>
@@ -85,6 +86,10 @@
                       &#9662;
                     </button>
                     <div id="exportMenu" class="export-menu" hidden></div>
+                  </div>
+                  <div id="publishedFeatureBadges" class="published-feature-badges">
+                    <button id="presetCountBadge" type="button" class="published-feature-badge published-feature-badge-presets" hidden></button>
+                    <button id="versionsCountBadge" type="button" class="published-feature-badge published-feature-badge-versions" hidden></button>
                   </div>
                 </div>
 
@@ -168,6 +173,10 @@
                     <label>
                       <input type="checkbox" id="showNextNodeLinks" checked />
                       Next node links
+                    </label>
+                    <label>
+                      <input type="checkbox" id="autoGroupQuickSets" />
+                      Auto-group Quick Sets
                     </label>
                   </div>
                 </div>

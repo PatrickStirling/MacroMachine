@@ -15,6 +15,7 @@ export function createNodesPane(options = {}) {
     showNodeTypeLabelsEl = null,
     showInstancedConnectionsEl = null,
     showNextNodeLinksEl = null,
+    autoGroupQuickSetsEl = null,
     publishSelectedBtn,
     clearNodeSelectionBtn,
     importCatalogBtn,
@@ -57,11 +58,14 @@ export function createNodesPane(options = {}) {
   let modifierProfiles = null;
   let modifierBindingContext = new Map();
   let modifierContextDiagSeen = new Set();
+  let maskPathDriverNodeNames = new Set();
+  let maskPathDriverNodeNamesLower = new Set();
   let nodeFilter = '';
   let hideReplaced = false;
   let showNodeTypeLabels = true;
   let showInstancedConnections = true;
   let showNextNodeLinks = true;
+  let autoGroupQuickSets = false;
   let highlightCallback = initialHighlightNode || (() => {});
   let lastNodeNames = [];
   let nodeContextMenu = null;
@@ -76,6 +80,7 @@ export function createNodesPane(options = {}) {
     showNodeTypeLabels = savedViewOptions.showNodeTypeLabels !== false;
     showInstancedConnections = savedViewOptions.showInstancedConnections !== false;
     showNextNodeLinks = savedViewOptions.showNextNodeLinks !== false;
+    autoGroupQuickSets = savedViewOptions.autoGroupQuickSets === true;
   }
 
   function loadQuickSetStore() {
@@ -152,6 +157,7 @@ export function createNodesPane(options = {}) {
         showNodeTypeLabels: !!showNodeTypeLabels,
         showInstancedConnections: !!showInstancedConnections,
         showNextNodeLinks: !!showNextNodeLinks,
+        autoGroupQuickSets: !!autoGroupQuickSets,
       }));
     } catch (_) {}
   }
@@ -175,6 +181,7 @@ export function createNodesPane(options = {}) {
       if (showNodeTypeLabelsEl) showNodeTypeLabelsEl.checked = !!showNodeTypeLabels;
       if (showInstancedConnectionsEl) showInstancedConnectionsEl.checked = !!showInstancedConnections;
       if (showNextNodeLinksEl) showNextNodeLinksEl.checked = !!showNextNodeLinks;
+      if (autoGroupQuickSetsEl) autoGroupQuickSetsEl.checked = !!autoGroupQuickSets;
     } catch (_) {}
   }
 
@@ -204,14 +211,12 @@ export function createNodesPane(options = {}) {
           if (isSectionHeaderControl(c)) return false;
           if (isGroupedControl(c)) {
             return (c.channels || []).some((ch) => {
-              const chId = resolveControlSource(ch);
-              const chOp = resolvePublishSourceOp(n, ch);
-              return !!chId && isPublished(chOp, chId);
+              const src = resolveControlSource(ch);
+              return !!src && isPublished(resolvePublishSourceOp(n, ch), src);
             });
           }
-          const key = resolveControlSource(c);
-          const op = resolvePublishSourceOp(n, c);
-          return key ? isPublished(op, key) : false;
+          const src = resolveControlSource(c);
+          return src ? isPublished(resolvePublishSourceOp(n, c), src) : false;
         });
         if (mode === 'closed') {
           collapsed.add(n.name);
@@ -608,13 +613,11 @@ export function createNodesPane(options = {}) {
       };
 
       const resolveAndAddControl = (sourceOp, source, displayName, controlDef) => {
-        const id = String(source || '').trim();
-        let effectiveSourceOp = String(sourceOp || '').trim();
-        if (String(node?.name || '').trim() && effectiveSourceOp === String(node.name).trim()) {
-          effectiveSourceOp = resolvePublishSourceOp(node, controlDef);
-        }
-        if (!resolveToDrivers || !id) {
-          addPublishItem(effectiveSourceOp, id, displayName, controlDef);
+        const effectiveSource = String(source || '').trim();
+        const effectiveSourceOp = String(sourceOp || '').trim();
+        const effectiveDisplayName = displayName;
+        if (!resolveToDrivers || !effectiveSource) {
+          addPublishItem(effectiveSourceOp, effectiveSource, effectiveDisplayName, controlDef);
           return;
         }
         const mods = [];
@@ -622,16 +625,16 @@ export function createNodesPane(options = {}) {
           for (const ref of (refs || [])) {
             if (!ref) continue;
             if (String(ref.tool || '') !== String(effectiveSourceOp || '')) continue;
-            if (String(ref.id || '') !== id) continue;
+            if (String(ref.id || '') !== effectiveSource) continue;
             mods.push({ name: modName, source: String(ref.source || '').trim() });
           }
         }
         const exprRefs = (node && String(node.name || '') === String(effectiveSourceOp || '') && node.expressionDriven)
-          ? (typeof node.expressionDriven.get === 'function' ? (node.expressionDriven.get(id) || []) : (node.expressionDriven[id] || []))
+          ? (typeof node.expressionDriven.get === 'function' ? (node.expressionDriven.get(effectiveSource) || []) : (node.expressionDriven[effectiveSource] || []))
           : [];
         const hasDrivers = (mods.length > 0) || (exprRefs && exprRefs.length > 0);
         if (!hasDrivers) {
-          addPublishItem(effectiveSourceOp, id, displayName, controlDef);
+          addPublishItem(effectiveSourceOp, effectiveSource, effectiveDisplayName, controlDef);
           return;
         }
         redirected += 1;
@@ -643,7 +646,7 @@ export function createNodesPane(options = {}) {
           driverAdded = addDriverControl(modInfo?.name, modInfo?.source) || driverAdded;
         }
         if (!driverAdded) {
-          addPublishItem(effectiveSourceOp, id, displayName, controlDef);
+          addPublishItem(effectiveSourceOp, effectiveSource, effectiveDisplayName, controlDef);
         }
       };
 
@@ -677,9 +680,45 @@ export function createNodesPane(options = {}) {
         const idx = ensureEntryExists(item.sourceOp, item.source, item.displayName, meta);
         if (idx != null) idxs.push(idx);
       }
-      if (idxs.length) {
+      const indicesToInsert = [...idxs];
+      if (autoGroupQuickSets && idxs.length) {
+        const nodeLabelBase = String(node.name || node.type || 'Node').trim() || 'Node';
+        const labelDisplayName = `${nodeLabelBase} Controls`;
+        const sourceOp = String(node.name || '').trim();
+        const sourceBase = `MM_QuickSetLabel_${sanitizeIdent(nodeLabelBase) || 'Node'}`;
+        let sourceId = sourceBase;
+        let suffix = 2;
+        const entries = Array.isArray(state.parseResult?.entries) ? state.parseResult.entries : [];
+        while (entries.some((entry) => entry && String(entry.source || '') === sourceId)) {
+          sourceId = `${sourceBase}_${suffix}`;
+          suffix += 1;
+        }
+        let anchorControlGroup = null;
+        for (const controlIdx of idxs) {
+          const targetEntry = entries[controlIdx];
+          if (!targetEntry) continue;
+          const cg = Number(targetEntry.controlGroup);
+          if (Number.isFinite(cg) && cg > 0) {
+            anchorControlGroup = cg;
+            break;
+          }
+        }
+        const labelIdx = ensureEntryExists(sourceOp, sourceId, labelDisplayName, {
+          kind: 'label',
+          labelCount: idxs.length,
+          inputControl: 'LabelControl',
+          defaultValue: '0',
+          page: 'Controls',
+          controlGroup: anchorControlGroup,
+          syntheticToolUserControl: true,
+        });
+        if (labelIdx != null) {
+          indicesToInsert.unshift(labelIdx);
+        }
+      }
+      if (indicesToInsert.length) {
         const pos = getInsertionPosUnderSelection();
-        state.parseResult.order = insertIndicesAt(state.parseResult.order, idxs, pos);
+        state.parseResult.order = insertIndicesAt(state.parseResult.order, indicesToInsert, pos);
       }
       renderPublishedList(state.parseResult.entries, state.parseResult.order);
       refreshNodesChecks();
@@ -699,6 +738,7 @@ export function createNodesPane(options = {}) {
     if (control.page) { meta.page = String(control.page); touched = true; }
     if (control.defaultValue != null) { meta.defaultValue = control.defaultValue; touched = true; }
     if (Array.isArray(control.choiceOptions) && control.choiceOptions.length) { meta.choiceOptions = [...control.choiceOptions]; touched = true; }
+    if (control.multiButtonShowBasic != null && String(control.multiButtonShowBasic).trim() !== '') { meta.multiButtonShowBasic = String(control.multiButtonShowBasic).trim(); touched = true; }
     if (control.defaultX != null) { meta.defaultX = control.defaultX; touched = true; }
     if (control.defaultY != null) { meta.defaultY = control.defaultY; touched = true; }
     if (Number.isFinite(control.controlGroup) && control.controlGroup > 0) { meta.controlGroup = Number(control.controlGroup); touched = true; }
@@ -954,6 +994,7 @@ export function createNodesPane(options = {}) {
       showNodeTypeLabels = !!(showNodeTypeLabelsEl ? showNodeTypeLabelsEl.checked : true);
       showInstancedConnections = !!(showInstancedConnectionsEl ? showInstancedConnectionsEl.checked : true);
       showNextNodeLinks = !!(showNextNodeLinksEl ? showNextNodeLinksEl.checked : true);
+      autoGroupQuickSets = !!(autoGroupQuickSetsEl ? autoGroupQuickSetsEl.checked : false);
       saveViewControlOptions();
       if (state.parseResult) parseAndRenderNodes();
     } catch (_) {}
@@ -963,6 +1004,7 @@ export function createNodesPane(options = {}) {
   showNodeTypeLabelsEl?.addEventListener('change', applyViewControlChange);
   showInstancedConnectionsEl?.addEventListener('change', applyViewControlChange);
   showNextNodeLinksEl?.addEventListener('change', applyViewControlChange);
+  autoGroupQuickSetsEl?.addEventListener('change', applyViewControlChange);
 
   viewControlsBtn?.addEventListener('click', (ev) => {
     ev.preventDefault();
@@ -1162,6 +1204,9 @@ export function createNodesPane(options = {}) {
         grp = { name: state.parseResult.macroName || 'Unknown', groupOpenIndex: 0, groupCloseIndex: state.originalText.length };
       }
       const tools = parseToolsInGroup(state.originalText, grp.groupOpenIndex, grp.groupCloseIndex);
+      const maskPathDriverOps = collectMaskPathDriverOps(tools);
+      maskPathDriverNodeNames = new Set(maskPathDriverOps);
+      maskPathDriverNodeNamesLower = new Set(Array.from(maskPathDriverOps).map((name) => String(name || '').trim().toLowerCase()).filter(Boolean));
       const modifiers = parseModifiersInGroup(state.originalText, grp.groupOpenIndex, grp.groupCloseIndex);
       const downstream = buildDownstreamMap(tools);
       const modifierBindings = buildModifierBindings(tools);
@@ -1181,6 +1226,7 @@ export function createNodesPane(options = {}) {
           isModifier: isMod,
           external: false,
           instanceSourceOp: t.instanceSourceOp || null,
+          isMaskPathDriver: maskPathDriverOps.has(t.name) && /bezierspline/i.test(String(t.type || '')),
         };
       }).concat(modifiers.map(m => ({
         name: m.name,
@@ -1194,6 +1240,7 @@ export function createNodesPane(options = {}) {
         isModifier: true,
         external: false,
         instanceSourceOp: m.instanceSourceOp || null,
+        isMaskPathDriver: false,
       })));
       const controlledBy = buildControlledByMap(modifierBindings);
       nodes = nodes.map(n => ({
@@ -1212,6 +1259,7 @@ export function createNodesPane(options = {}) {
         bindings: modifierBindings.get(n.name) || (n.bindings || []),
         controlledBy: (controlledBy.get(n.name) || n.controlledBy || new Map()),
         expressionDriven: (expressionBindings.get(n.name) || n.expressionDriven || new Map()),
+        isMaskPathDriver: !!(n.isMaskPathDriver || (maskPathDriverOps.has(n.name) && /bezierspline/i.test(String(n.type || '')))),
       }));
       nodes = nodes.filter((n) => !shouldHideNodeFromList(n));
       lastNodeNames = Array.from(new Set(
@@ -1365,13 +1413,15 @@ export function createNodesPane(options = {}) {
     try {
       const existingNames = new Set(nodes.map(n => n.name));
       const reAll = /(^|\n)\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*\{/g;
+      const disallowedTypes = new Set(['groupinfo', 'operatorinfo', 'input', 'instanceinput', 'instanceoutput', 'polyline', 'fuid']);
       let mAll;
       while ((mAll = reAll.exec(state.originalText)) !== null) {
         const name = mAll[2];
         const type = mAll[3];
         if (!name || existingNames.has(name)) continue;
         const typeStr = String(type || '');
-        if (/^(GroupInfo|OperatorInfo)$/i.test(typeStr)) continue;
+        if (disallowedTypes.has(typeStr.toLowerCase())) continue;
+        if (/^value$/i.test(String(name || '').trim())) continue;
         const t = findToolByNameAnywhere(state.originalText, name);
         if (!t) continue;
         const isMod = isModifierType(typeStr);
@@ -1434,6 +1484,45 @@ export function createNodesPane(options = {}) {
       }
     }
     return idStr;
+  }
+
+  function isMaskToolTypeForPath(type) {
+    try {
+      const t = String(type || '').trim().toLowerCase();
+      if (!t) return false;
+      return /(?:multipoly|mask|polygon|polyline|bspline|spolygon|spolyline|sbspline)/.test(t);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function isPathControlId(id) {
+    try {
+      const key = String(id || '').trim().toLowerCase();
+      if (!key) return false;
+      return /(?:polyline|polygon|bspline|spline|path)/.test(key);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function collectMaskPathDriverOps(tools) {
+    const out = new Set();
+    try {
+      for (const tool of (tools || [])) {
+        if (!tool || !isMaskToolTypeForPath(tool.type)) continue;
+        const entries = parseToolInputEntries(String(tool.body || ''));
+        for (const entry of entries) {
+          if (!entry || !isPathControlId(entry.id)) continue;
+          const body = String(entry.inputBody || '');
+          if (!body) continue;
+          const sourceOp = String(extractQuotedProp(body, 'SourceOp') || '').trim();
+          const source = String(extractQuotedProp(body, 'Source') || '').trim().toLowerCase();
+          if (sourceOp && source === 'value') out.add(sourceOp);
+        }
+      }
+    } catch (_) {}
+    return out;
   }
 
   function escapeRegex(text) {
@@ -1554,7 +1643,7 @@ export function createNodesPane(options = {}) {
       if (hasType(/^s(?:render|rectangle|ellipse|polygon|bspline|polyline|outline|text|transform|merge|duplicate|bitmap|shape)\b/)) {
         return { key: 'shape-system', label: 'Shape' };
       }
-      if (hasType(/^(?:multipoly|polymask|maskpaint|bitmapmask|paintmask|rectangle|ellipse|polygon|bspline|polypath|polyline|mask|outline)\b/)) {
+      if (hasType(/^(?:multipoly|polymask|maskpaint|bitmapmask|paintmask|rectangle(?:mask)?|ellipse(?:mask)?|polygon(?:mask)?|polyline(?:mask)?|bspline(?:mask)?|spline(?:mask)?|polypath|mask|outline)\b/)) {
         return { key: 'mask', label: 'Mask' };
       }
       if (has(/multitext|loader|mediain|background|textplus|text3d|text|generator|solid|checker|gradient|fastnoise|noise/)) {
@@ -1575,7 +1664,13 @@ export function createNodesPane(options = {}) {
   function shouldHideNodeFromList(node) {
     try {
       if (!node || node.isMacroRoot) return false;
+      const nodeNameRaw = String(node.name || '').trim();
+      const nodeNameLower = nodeNameRaw.toLowerCase();
+      if (nodeNameRaw && (maskPathDriverNodeNames.has(nodeNameRaw) || maskPathDriverNodeNamesLower.has(nodeNameLower))) return true;
+      if (node.isMaskPathDriver) return true;
       const type = String(node.type || '').trim().toLowerCase();
+      if (/bezierspline/.test(type)) return true;
+      if (type === 'bezierspline' && /(?:polyline|polygon|bspline|spline|path)/i.test(nodeNameRaw)) return true;
       const name = String(node.name || '').trim().toLowerCase();
       if (type === 'groupoperator' || type === 'macrooperator') return true;
       const blob = `${type} ${name}`;
@@ -1614,14 +1709,12 @@ export function createNodesPane(options = {}) {
         const hasPublished = (n.controls || []).some(c => {
           if (isGroupedControl(c)) {
             return (c.channels || []).some((ch) => {
-              const chId = resolveControlSource(ch);
-              const chOp = resolvePublishSourceOp(n, ch);
-              return !!chId && isPublished(chOp, chId);
+              const src = resolveControlSource(ch);
+              return !!src && isPublished(resolvePublishSourceOp(n, ch), src);
             });
           }
-          const key = resolveControlSource(c);
-          const op = resolvePublishSourceOp(n, c);
-          return key ? isPublished(op, key) : false;
+          const src = resolveControlSource(c);
+          return src ? isPublished(resolvePublishSourceOp(n, c), src) : false;
         });
         if (hasPublished) state.parseResult.nodesPublishedOnly.add(n.name);
         else state.parseResult.nodesCollapsed.add(n.name);
@@ -1696,14 +1789,12 @@ export function createNodesPane(options = {}) {
       const hasAnyPublished = (nodeControls || []).some(c => {
         if (isGroupedControl(c)) {
           return (c.channels || []).some((ch) => {
-            const chId = resolveControlSource(ch);
-            const chOp = resolvePublishSourceOp(n, ch);
-            return !!chId && isPublished(chOp, chId);
+            const src = resolveControlSource(ch);
+            return !!src && isPublished(resolvePublishSourceOp(n, ch), src);
           });
         }
-        const key = resolveControlSource(c);
-        const op = resolvePublishSourceOp(n, c);
-        return key ? isPublished(op, key) : false;
+        const src = resolveControlSource(c);
+        return src ? isPublished(resolvePublishSourceOp(n, c), src) : false;
       });
       const allowSourceControl = /switch/i.test(String(n.type || n.name || ''));
       if (!hasAnyPublished) publishedOnlyNodes.delete(n.name);
@@ -1854,30 +1945,47 @@ export function createNodesPane(options = {}) {
       quickRow.appendChild(quickPublishBtn);
       quickRow.appendChild(quickEditBtn);
       list.appendChild(quickRow);
-      const isControlled = (id) => {
+      const getControlMods = (controlId) => {
         try {
           const m = n && n.controlledBy;
+          if (!m) return [];
+          if (typeof m.get === 'function') return Array.isArray(m.get(controlId)) ? m.get(controlId) : [];
+          return Array.isArray(m[controlId]) ? m[controlId] : [];
+        } catch (_) {
+          return [];
+        }
+      };
+      const getControlExprRefs = (controlId) => {
+        try {
           const exprMap = n && n.expressionDriven;
-          let modDriven = false;
-          if (m) {
-            if (typeof m.get === 'function') {
-              const arr = m.get(id);
-              modDriven = !!(arr && arr.length);
-            } else {
-              const arr = m[id];
-              modDriven = !!(arr && arr.length);
-            }
-          }
-          let exprDriven = false;
-          if (exprMap) {
-            if (typeof exprMap.get === 'function') {
-              const arr = exprMap.get(id);
-              exprDriven = !!(arr && arr.length);
-            } else {
-              const arr = exprMap[id];
-              exprDriven = !!(arr && arr.length);
-            }
-          }
+          if (!exprMap) return [];
+          if (typeof exprMap.get === 'function') return Array.isArray(exprMap.get(controlId)) ? exprMap.get(controlId) : [];
+          return Array.isArray(exprMap[controlId]) ? exprMap[controlId] : [];
+        } catch (_) {
+          return [];
+        }
+      };
+      const filterDisplayMods = (controlId, mods) => {
+        try {
+          const list = Array.isArray(mods) ? mods : [];
+          if (!list.length) return list;
+          if (!isMaskToolTypeForPath(n?.type) || !isPathControlId(controlId)) return list;
+          return list.filter((modName) => {
+            const raw = String(modName || '').trim();
+            if (!raw) return false;
+            const lower = raw.toLowerCase();
+            if (maskPathDriverNodeNames.has(raw)) return false;
+            if (maskPathDriverNodeNamesLower.has(lower)) return false;
+            return true;
+          });
+        } catch (_) {
+          return Array.isArray(mods) ? mods : [];
+        }
+      };
+      const isControlled = (id) => {
+        try {
+          const modDriven = filterDisplayMods(id, getControlMods(id)).length > 0;
+          const exprDriven = getControlExprRefs(id).length > 0;
           return modDriven || exprDriven;
         } catch (_) { return false; }
       };
@@ -1915,9 +2023,8 @@ export function createNodesPane(options = {}) {
           }
           if (showPublishedOnly) {
             const allPublished = (c.channels || []).length > 0 && (c.channels || []).every((ch) => {
-              const chId = resolveControlSource(ch);
-              const chOp = resolvePublishSourceOp(n, ch);
-              return !!chId && isPublished(chOp, chId);
+              const src = resolveControlSource(ch);
+              return !!src && isPublished(resolvePublishSourceOp(n, ch), src);
             });
             if (!allPublished) continue;
           }
@@ -1933,11 +2040,11 @@ export function createNodesPane(options = {}) {
             sourceOp: n.name,
             groupBase: groupId,
             channels: (c.channels || []).map((ch) => {
-              const chSource = resolveControlSource(ch);
+              const source = resolveControlSource(ch);
               return {
                 sourceOp: resolvePublishSourceOp(n, ch),
-                source: chSource,
-                id: chSource,
+                source,
+                id: source,
                 name: ch.name || ch.id,
                 control: ch.control || null,
               };
@@ -2048,10 +2155,10 @@ export function createNodesPane(options = {}) {
         const row = document.createElement('div'); row.className = 'node-row';
         row.dataset.selectIndex = String(selectIndex++);
         row.dataset.kind = 'control';
-        row.dataset.sourceOp = n.name;
+        row.dataset.sourceOp = srcOpTarget;
         row.dataset.source = srcKey;
         row.dataset.name = c.name || c.id;
-        const pendingMeta = typeof getPendingControlMeta === 'function' ? getPendingControlMeta(n.name, srcKey) : null;
+        const pendingMeta = typeof getPendingControlMeta === 'function' ? getPendingControlMeta(srcOpTarget, srcKey) : null;
         if (pendingMeta) {
           if (pendingMeta.kind && !c.kind) c.kind = pendingMeta.kind === 'label' ? 'Label' : pendingMeta.kind === 'button' ? 'Button' : c.kind;
           if (pendingMeta.labelCount != null && c.labelCount == null) c.labelCount = pendingMeta.labelCount;
@@ -2078,7 +2185,7 @@ export function createNodesPane(options = {}) {
             try {
               const payload = {
                 kind: 'control',
-                sourceOp: n.name,
+                sourceOp: srcOpTarget,
                 source: srcKey,
                 name: c.name || c.id,
                 controlKind: row.dataset.controlKind || '',
@@ -2093,7 +2200,7 @@ export function createNodesPane(options = {}) {
           });
         }
         const indicator = document.createElement('span'); indicator.className = 'node-published-indicator'; indicator.title = 'Published status';
-        indicator.dataset.sourceOp = n.name; indicator.dataset.source = srcKey;
+        indicator.dataset.sourceOp = srcOpTarget; indicator.dataset.source = srcKey;
         indicator.addEventListener('click', (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
@@ -2145,7 +2252,7 @@ export function createNodesPane(options = {}) {
               state.parseResult.order = insertIndicesAt(state.parseResult.order, [r.index], pos);
             }
             if (typeof consumePendingControlMeta === 'function') {
-              consumePendingControlMeta(n.name, srcKey);
+              consumePendingControlMeta(srcOpTarget, srcKey);
             }
           } else if (typeof focusPublishedControl === 'function') {
             try { clearHighlights(); } catch (_) {}
@@ -2165,10 +2272,8 @@ export function createNodesPane(options = {}) {
         }
         let byEl = null;
         try {
-          const mods = (n && n.controlledBy) ? (typeof n.controlledBy.get === 'function' ? (n.controlledBy.get(c.id) || []) : (n.controlledBy[c.id] || [])) : [];
-          const exprRefs = (n && n.expressionDriven)
-            ? (typeof n.expressionDriven.get === 'function' ? (n.expressionDriven.get(c.id) || []) : (n.expressionDriven[c.id] || []))
-            : [];
+          const mods = filterDisplayMods(c.id, getControlMods(c.id));
+          const exprRefs = getControlExprRefs(c.id);
           if ((mods && mods.length > 0) || (exprRefs && exprRefs.length > 0)) {
             const by = document.createElement('span'); by.className = 'ctrl-by';
             if (mods && mods.length > 0) {
@@ -2724,10 +2829,12 @@ export function createNodesPane(options = {}) {
     try {
       const name = String(toolName);
       const re = new RegExp('(^|\\n)\\s*' + name.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') + '\\s*=\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\{', 'g');
+      const disallowedTypes = new Set(['input', 'instanceinput', 'instanceoutput', 'polyline', 'fuid']);
       let m;
       while ((m = re.exec(text)) !== null) {
         const type = m[2];
-        if (/^(Input|InstanceInput|InstanceOutput)$/i.test(type)) continue;
+        if (disallowedTypes.has(String(type || '').toLowerCase())) continue;
+        if (/^value$/i.test(name)) continue;
         const openIndex = m.index + m[0].lastIndexOf('{');
         const closeIndex = findMatchingBrace(text, openIndex);
         if (closeIndex < 0) continue;
@@ -2796,6 +2903,8 @@ export function createNodesPane(options = {}) {
         inputControl: c.inputControl || existing.inputControl || null,
         labelCount: Number.isFinite(c.labelCount) ? c.labelCount : (Number.isFinite(existing.labelCount) ? existing.labelCount : null),
         defaultValue: c.defaultValue != null ? c.defaultValue : existing.defaultValue,
+        choiceOptions: Array.isArray(c.choiceOptions) && c.choiceOptions.length ? [...c.choiceOptions] : (Array.isArray(existing.choiceOptions) ? [...existing.choiceOptions] : []),
+        multiButtonShowBasic: c.multiButtonShowBasic || existing.multiButtonShowBasic || '',
       });
     }
     const catControls = getCatalogControls(catalog, tool.type);
@@ -2843,6 +2952,7 @@ export function createNodesPane(options = {}) {
       const adjusted = applyPrimaryColorOverrides(ordered, overrides);
       let finalControls = applyDissolveMixOverrides(tool, adjusted);
       finalControls = applySwitchSourceOverrides(tool, finalControls);
+      finalControls = applyMaskPathControlOrdering(tool, finalControls);
       finalControls = groupColorControls(tool.name, finalControls, overrides);
       finalControls = applyProfileGroups(finalControls, profileControls);
       finalControls = expandDynamicSlotDefaults(tool, finalControls);
@@ -2859,6 +2969,7 @@ export function createNodesPane(options = {}) {
     const adjusted = applyPrimaryColorOverrides(merged, overrides);
     let finalControls = applyDissolveMixOverrides(tool, adjusted);
     finalControls = applySwitchSourceOverrides(tool, finalControls);
+    finalControls = applyMaskPathControlOrdering(tool, finalControls);
     finalControls = groupColorControls(tool.name, finalControls, overrides);
     finalControls = applyProfileGroups(finalControls, profileControls);
     finalControls = expandDynamicSlotDefaults(tool, finalControls);
@@ -3406,6 +3517,40 @@ export function createNodesPane(options = {}) {
     if (close < 0) return [];
     const uc = body.slice(open + 1, close);
     const controls = [];
+    const extractControlStringPropList = (segment, prop) => {
+      try {
+        if (!segment || !prop) return [];
+        const escapedProp = String(prop).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const re = new RegExp(`(?:\\{\\s*)?${escapedProp}\\s*=\\s*("(?:\\\\.|[^"])*"|[^,}\\r\\n]+)\\s*(?:\\})?`, 'ig');
+        const values = [];
+        let match;
+        while ((match = re.exec(segment))) {
+          let value = (match[1] || '').trim();
+          if (!value) continue;
+          if (value.endsWith(',')) value = value.slice(0, -1).trim();
+          value = value.replace(/\}\s*$/, '').trim();
+          if (!value) continue;
+          if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+            value = value.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+          }
+          if (value) values.push(value);
+        }
+        return values;
+      } catch (_) {
+        return [];
+      }
+    };
+    const extractChoiceOptionsFromBody = (segment) => {
+      try {
+        const combo = extractControlStringPropList(segment, 'CCS_AddString');
+        if (combo.length) return combo;
+        const buttons = extractControlStringPropList(segment, 'MBTNC_AddButton');
+        if (buttons.length) return buttons;
+        return [];
+      } catch (_) {
+        return [];
+      }
+    };
     let i = 0, depth = 0, inStr = false;
     while (i < uc.length) {
       const ch = uc[i];
@@ -3452,7 +3597,10 @@ export function createNodesPane(options = {}) {
         const labelCount = labelCountMatch ? parseInt(labelCountMatch[1], 10) : null;
         const defaultMatch = cBody.match(/INP_Default\s*=\s*([0-9\.\-]+)/i);
         const defaultValue = defaultMatch ? defaultMatch[1] : null;
-        controls.push({ id, name: disp, kind, launchUrl, inputControl, labelCount, defaultValue });
+        const choiceOptions = extractChoiceOptionsFromBody(cBody);
+        const basicMatch = cBody.match(/MBTNC_ShowBasicButton\s*=\s*([A-Za-z0-9_."']+)/i);
+        const multiButtonShowBasic = basicMatch ? String(basicMatch[1]).replace(/,$/, '').trim() : '';
+        controls.push({ id, name: disp, kind, launchUrl, inputControl, labelCount, defaultValue, choiceOptions, multiButtonShowBasic });
         i = cClose + 1; continue;
       }
       i++;
@@ -3967,6 +4115,33 @@ export function createNodesPane(options = {}) {
         }
       }
       return expanded;
+    } catch (_) {
+      return controls;
+    }
+  }
+
+  function applyMaskPathControlOrdering(tool, controls) {
+    try {
+      if (!tool || !Array.isArray(controls) || controls.length < 2) return controls;
+      if (!isMaskToolTypeForPath(tool.type)) return controls;
+      const rankFor = (control) => {
+        const id = String(control?.id || '').trim();
+        if (!id) return null;
+        if (/^polyline$/i.test(id)) return 0;
+        if (/^(?:polygon|bspline|spline|path)$/i.test(id)) return 1;
+        if (isPathControlId(id)) return 2;
+        return null;
+      };
+      const prioritized = [];
+      const remainder = [];
+      for (const control of controls) {
+        const rank = rankFor(control);
+        if (rank == null) remainder.push(control);
+        else prioritized.push({ control, rank });
+      }
+      if (!prioritized.length) return controls;
+      prioritized.sort((a, b) => a.rank - b.rank);
+      return [...prioritized.map((item) => item.control), ...remainder];
     } catch (_) {
       return controls;
     }

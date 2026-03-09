@@ -16,13 +16,92 @@ export function createDocTabsController(options = {}) {
     onOpenContextMenu,
     onCloseDocument,
     onCreateBlankDocument,
+    onCreateFromFile,
+    onCreateFromClipboard,
     onUpdateExportPathDisplay,
     onSelectCsvBatch,
     getDocDisplayName,
   } = options;
 
+  let addMenu = null;
+  let addMenuCleanup = null;
+  let overflowRaf = 0;
+
+  const scheduleOverflowUpdate = () => {
+    if (overflowRaf) return;
+    overflowRaf = requestAnimationFrame(() => {
+      overflowRaf = 0;
+      try { updateOverflow(); } catch (_) {}
+    });
+  };
+
+  const closeAddMenu = () => {
+    if (addMenuCleanup) {
+      addMenuCleanup();
+      addMenuCleanup = null;
+    }
+    if (addMenu) {
+      try { addMenu.remove(); } catch (_) {}
+      addMenu = null;
+    }
+  };
+
+  const openAddMenu = (x, y) => {
+    closeAddMenu();
+    const root = document.createElement('div');
+    root.className = 'doc-tab-menu';
+    root.setAttribute('role', 'menu');
+    const addItem = (label, onClick) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'doc-tab-menu-item';
+      btn.textContent = label;
+      btn.addEventListener('click', () => {
+        closeAddMenu();
+        onClick?.();
+      });
+      root.appendChild(btn);
+    };
+    addItem('Import from file', () => (onCreateFromFile || onCreateBlankDocument)?.());
+    addItem('Import from clipboard', () => onCreateFromClipboard?.());
+    document.body.appendChild(root);
+    addMenu = root;
+    const pad = 8;
+    const placeMenu = () => {
+      const rect = root.getBoundingClientRect();
+      let left = Number.isFinite(x) ? x : pad;
+      let top = Number.isFinite(y) ? y : pad;
+      if (left + rect.width > window.innerWidth - pad) left = window.innerWidth - rect.width - pad;
+      if (top + rect.height > window.innerHeight - pad) top = window.innerHeight - rect.height - pad;
+      if (left < pad) left = pad;
+      if (top < pad) top = pad;
+      root.style.left = `${left}px`;
+      root.style.top = `${top}px`;
+    };
+    placeMenu();
+    requestAnimationFrame(placeMenu);
+    const onMouseDown = (ev) => {
+      if (!root.contains(ev.target)) closeAddMenu();
+    };
+    const onKeyDown = (ev) => {
+      if (ev.key === 'Escape') closeAddMenu();
+    };
+    const onViewportChange = () => closeAddMenu();
+    document.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('keydown', onKeyDown);
+    window.addEventListener('resize', onViewportChange);
+    window.addEventListener('scroll', onViewportChange, true);
+    addMenuCleanup = () => {
+      document.removeEventListener('mousedown', onMouseDown);
+      document.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('resize', onViewportChange);
+      window.removeEventListener('scroll', onViewportChange, true);
+    };
+  };
+
   const render = () => {
     if (!docTabsEl) return;
+    closeAddMenu();
     const documents = getDocuments();
     if (documents.length === 0) {
       if (docTabsWrap) docTabsWrap.hidden = true;
@@ -52,8 +131,8 @@ export function createDocTabsController(options = {}) {
     }
     if (!docTabsEl.dataset.docScroll) {
       docTabsEl.dataset.docScroll = '1';
-      docTabsEl.addEventListener('scroll', () => updateOverflow());
-      window.addEventListener('resize', () => updateOverflow());
+      docTabsEl.addEventListener('scroll', scheduleOverflowUpdate);
+      window.addEventListener('resize', scheduleOverflowUpdate);
       docTabsPrev?.addEventListener('click', () => scroll(-1));
       docTabsNext?.addEventListener('click', () => scroll(1));
     }
@@ -163,12 +242,17 @@ export function createDocTabsController(options = {}) {
     addBtn.type = 'button';
     addBtn.className = 'doc-tab doc-tab-add';
     addBtn.textContent = '+';
-    addBtn.title = 'Open .setting';
-    addBtn.addEventListener('click', () => onCreateBlankDocument?.());
+    addBtn.title = 'Import from file (right-click for options)';
+    addBtn.addEventListener('click', () => (onCreateFromFile || onCreateBlankDocument)?.());
+    addBtn.addEventListener('contextmenu', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      openAddMenu(ev.clientX, ev.clientY);
+    });
     addBtn.draggable = false;
     docTabsEl.appendChild(addBtn);
     onUpdateExportPathDisplay?.();
-    requestAnimationFrame(() => updateOverflow());
+    scheduleOverflowUpdate();
   };
 
   const updateOverflow = () => {
@@ -192,6 +276,7 @@ export function createDocTabsController(options = {}) {
   return {
     render,
     updateOverflow,
+    closeAddMenu,
   };
 }
 
