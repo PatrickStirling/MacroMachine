@@ -2126,6 +2126,7 @@ function updateDocExportPathDisplay() {
   const addControlQuickMenu = document.getElementById('addControlQuickMenu');
 
   const hideReplacedEl = document.getElementById('hideReplaced');
+  const quickClickHintEl = document.getElementById('quickClickHint');
   const viewControlsBtn = document.getElementById('viewControlsBtn');
   const viewControlsMenu = document.getElementById('viewControlsMenu');
   const showAllNodesBtn = document.getElementById('showAllNodesBtn');
@@ -2135,6 +2136,7 @@ function updateDocExportPathDisplay() {
   const showInstancedConnectionsEl = document.getElementById('showInstancedConnections');
   const showNextNodeLinksEl = document.getElementById('showNextNodeLinks');
   const autoGroupQuickSetsEl = document.getElementById('autoGroupQuickSets');
+  const nameClickQuickSetEl = document.getElementById('nameClickQuickSet');
 
   const macroNameEl = document.getElementById('macroName');
   const setMacroNameDisplay = (value) => {
@@ -8163,6 +8165,7 @@ function hideDetailDrawer() {
     nodesList,
     nodesSearch,
     hideReplacedEl,
+    quickClickHintEl,
     viewControlsBtn,
     viewControlsMenu,
     showAllNodesBtn,
@@ -8172,6 +8175,7 @@ function hideDetailDrawer() {
     showInstancedConnectionsEl,
     showNextNodeLinksEl,
     autoGroupQuickSetsEl,
+    nameClickQuickSetEl,
     publishSelectedBtn,
     clearNodeSelectionBtn,
     importCatalogBtn,

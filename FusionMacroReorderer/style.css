@@ -546,10 +546,44 @@ body.nodes-hidden .controls .pane-left {
   overflow: auto;
 }
 .nodes-toolbar { display: flex; justify-content: space-between; align-items: center; gap: var(--space-sm); margin: var(--space-sm) 0 var(--space-md); flex-wrap: wrap; font-size: var(--font-label); }
-.nodes-toolbar .toolbar-left { flex: 1 1 220px; min-width: 200px; }
+.nodes-toolbar .toolbar-left {
+  flex: 1 1 220px;
+  min-width: 200px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .nodes-toolbar .toolbar-right { display: flex; flex-wrap: wrap; gap: var(--space-sm); align-items: center; justify-content: flex-end; flex: 0 0 auto; }
-.nodes-toolbar input[type="text"] { width: 100%; background: #222739; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: var(--font-label); }
+.nodes-toolbar input[type="text"] {
+  width: 100%;
+  flex: 1 1 auto;
+  min-width: 140px;
+  background: #222739;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: var(--font-label);
+}
 .nodes-toolbar label { font-size: var(--font-label); }
+.quick-click-hint {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(245, 191, 81, 0.55);
+  background: rgba(245, 191, 81, 0.14);
+  color: #f4cb75;
+  font-size: var(--font-small);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.quick-click-hint[hidden] {
+  display: none !important;
+}
 .view-controls-wrap {
   position: relative;
 }
@@ -963,6 +997,12 @@ body.nodes-hidden .controls .pane-left {
 .node-header-tail { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; }
 .node-meta-links + .node-header-tail { margin-left: 8px; }
 .node-title { display: flex; align-items: center; gap: 8px; }
+.node-title.node-title-quick {
+  cursor: pointer;
+}
+.node-title.node-title-quick:hover {
+  color: #eef4ff;
+}
 .node-title .chev { color: var(--muted); width: 18px; }
 .node-title .chev svg { width: 18px; height: 18px; }
 .node-type { color: var(--muted); font-size: 12px; }

@@ -7,6 +7,7 @@ export function createNodesPane(options = {}) {
     nodesList,
     nodesSearch,
     hideReplacedEl,
+    quickClickHintEl = null,
     viewControlsBtn = null,
     viewControlsMenu = null,
     showAllNodesBtn = null,
@@ -16,6 +17,7 @@ export function createNodesPane(options = {}) {
     showInstancedConnectionsEl = null,
     showNextNodeLinksEl = null,
     autoGroupQuickSetsEl = null,
+    nameClickQuickSetEl = null,
     publishSelectedBtn,
     clearNodeSelectionBtn,
     importCatalogBtn,
@@ -66,6 +68,7 @@ export function createNodesPane(options = {}) {
   let showInstancedConnections = true;
   let showNextNodeLinks = true;
   let autoGroupQuickSets = false;
+  let nameClickQuickSet = false;
   let highlightCallback = initialHighlightNode || (() => {});
   let lastNodeNames = [];
   let nodeContextMenu = null;
@@ -81,6 +84,7 @@ export function createNodesPane(options = {}) {
     showInstancedConnections = savedViewOptions.showInstancedConnections !== false;
     showNextNodeLinks = savedViewOptions.showNextNodeLinks !== false;
     autoGroupQuickSets = savedViewOptions.autoGroupQuickSets === true;
+    nameClickQuickSet = savedViewOptions.nameClickQuickSet === true;
   }
 
   function loadQuickSetStore() {
@@ -158,6 +162,7 @@ export function createNodesPane(options = {}) {
         showInstancedConnections: !!showInstancedConnections,
         showNextNodeLinks: !!showNextNodeLinks,
         autoGroupQuickSets: !!autoGroupQuickSets,
+        nameClickQuickSet: !!nameClickQuickSet,
       }));
     } catch (_) {}
   }
@@ -182,6 +187,11 @@ export function createNodesPane(options = {}) {
       if (showInstancedConnectionsEl) showInstancedConnectionsEl.checked = !!showInstancedConnections;
       if (showNextNodeLinksEl) showNextNodeLinksEl.checked = !!showNextNodeLinks;
       if (autoGroupQuickSetsEl) autoGroupQuickSetsEl.checked = !!autoGroupQuickSets;
+      if (nameClickQuickSetEl) nameClickQuickSetEl.checked = !!nameClickQuickSet;
+      if (quickClickHintEl) {
+        quickClickHintEl.hidden = !nameClickQuickSet;
+        quickClickHintEl.textContent = 'Quick-click ON';
+      }
     } catch (_) {}
   }
 
@@ -995,7 +1005,9 @@ export function createNodesPane(options = {}) {
       showInstancedConnections = !!(showInstancedConnectionsEl ? showInstancedConnectionsEl.checked : true);
       showNextNodeLinks = !!(showNextNodeLinksEl ? showNextNodeLinksEl.checked : true);
       autoGroupQuickSets = !!(autoGroupQuickSetsEl ? autoGroupQuickSetsEl.checked : false);
+      nameClickQuickSet = !!(nameClickQuickSetEl ? nameClickQuickSetEl.checked : false);
       saveViewControlOptions();
+      syncViewControlInputs();
       if (state.parseResult) parseAndRenderNodes();
     } catch (_) {}
   };
@@ -1005,6 +1017,7 @@ export function createNodesPane(options = {}) {
   showInstancedConnectionsEl?.addEventListener('change', applyViewControlChange);
   showNextNodeLinksEl?.addEventListener('change', applyViewControlChange);
   autoGroupQuickSetsEl?.addEventListener('change', applyViewControlChange);
+  nameClickQuickSetEl?.addEventListener('change', applyViewControlChange);
 
   viewControlsBtn?.addEventListener('click', (ev) => {
     ev.preventDefault();
@@ -1913,6 +1926,26 @@ export function createNodesPane(options = {}) {
         ev.stopPropagation();
         applyQuickSetToNode(n, nodeControls, allowSourceControl);
       });
+      if (effectiveQuickSetCount > 0) {
+        header.title = 'Ctrl/Cmd+Click to Quick Publish';
+        header.addEventListener('click', (ev) => {
+          if (!ev || ev.button !== 0) return;
+          if (!(ev.ctrlKey || ev.metaKey)) return;
+          ev.preventDefault();
+          ev.stopPropagation();
+          applyQuickSetToNode(n, nodeControls, allowSourceControl);
+        });
+        if (nameClickQuickSet) {
+          title.classList.add('node-title-quick');
+          title.title = 'Click to Quick Publish';
+          title.addEventListener('click', (ev) => {
+            if (!ev || ev.button !== 0) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+            applyQuickSetToNode(n, nodeControls, allowSourceControl);
+          });
+        }
+      }
       const quickEditBtn = document.createElement('button');
       quickEditBtn.type = 'button';
       quickEditBtn.className = 'node-quick-edit-btn';

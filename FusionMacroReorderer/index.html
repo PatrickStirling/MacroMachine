@@ -148,10 +148,11 @@
             <div class="nodes-toolbar">
               <div class="toolbar-left">
                 <input type="text" id="nodesSearch" placeholder="Search nodes and controls" />
+                <span id="quickClickHint" class="quick-click-hint" hidden>Quick-click ON</span>
               </div>
               <div class="toolbar-right">
                 <div class="view-controls-wrap">
-                  <button id="viewControlsBtn" type="button" aria-haspopup="menu" aria-expanded="false">View Controls &#9662;</button>
+                  <button id="viewControlsBtn" type="button" aria-haspopup="menu" aria-expanded="false">Settings &#9662;</button>
                   <div id="viewControlsMenu" class="view-controls-menu" hidden>
                     <div class="view-controls-actions">
                       <button id="showAllNodesBtn" type="button">Show all</button>
@@ -177,6 +178,10 @@
                     <label>
                       <input type="checkbox" id="autoGroupQuickSets" />
                       Auto-group Quick Sets
+                    </label>
+                    <label>
+                      <input type="checkbox" id="nameClickQuickSet" />
+                      Name click = Quick Set
                     </label>
                   </div>
                 </div>
