@@ -18,6 +18,7 @@ export function createNodesPane(options = {}) {
     showNextNodeLinksEl = null,
     autoGroupQuickSetsEl = null,
     nameClickQuickSetEl = null,
+    quickSetBlendToCheckboxEl = null,
     publishSelectedBtn,
     clearNodeSelectionBtn,
     importCatalogBtn,
@@ -69,6 +70,7 @@ export function createNodesPane(options = {}) {
   let showNextNodeLinks = true;
   let autoGroupQuickSets = false;
   let nameClickQuickSet = false;
+  let quickSetBlendToCheckbox = false;
   let highlightCallback = initialHighlightNode || (() => {});
   let lastNodeNames = [];
   let nodeContextMenu = null;
@@ -85,6 +87,7 @@ export function createNodesPane(options = {}) {
     showNextNodeLinks = savedViewOptions.showNextNodeLinks !== false;
     autoGroupQuickSets = savedViewOptions.autoGroupQuickSets === true;
     nameClickQuickSet = savedViewOptions.nameClickQuickSet === true;
+    quickSetBlendToCheckbox = savedViewOptions.quickSetBlendToCheckbox === true;
   }
 
   function loadQuickSetStore() {
@@ -163,6 +166,7 @@ export function createNodesPane(options = {}) {
         showNextNodeLinks: !!showNextNodeLinks,
         autoGroupQuickSets: !!autoGroupQuickSets,
         nameClickQuickSet: !!nameClickQuickSet,
+        quickSetBlendToCheckbox: !!quickSetBlendToCheckbox,
       }));
     } catch (_) {}
   }
@@ -188,6 +192,7 @@ export function createNodesPane(options = {}) {
       if (showNextNodeLinksEl) showNextNodeLinksEl.checked = !!showNextNodeLinks;
       if (autoGroupQuickSetsEl) autoGroupQuickSetsEl.checked = !!autoGroupQuickSets;
       if (nameClickQuickSetEl) nameClickQuickSetEl.checked = !!nameClickQuickSet;
+      if (quickSetBlendToCheckboxEl) quickSetBlendToCheckboxEl.checked = !!quickSetBlendToCheckbox;
       if (quickClickHintEl) {
         quickClickHintEl.hidden = !nameClickQuickSet;
         quickClickHintEl.textContent = 'Quick-click ON';
@@ -291,9 +296,174 @@ export function createNodesPane(options = {}) {
     return false;
   }
 
-  function buildQuickSetCandidates(nodeControls, allowSourceControl) {
+  function isProcessChannelQuickControlId(id) {
+    const text = String(id || '').trim();
+    if (!text) return false;
+    return /^Process(?:Red|Green|Blue|Alpha)$/i.test(text);
+  }
+
+  function isBlendQuickControlId(id) {
+    const text = String(id || '').trim();
+    if (!text) return false;
+    return /^Blend$/i.test(text);
+  }
+
+  function isBlendQuickControl(control) {
+    if (!control) return false;
+    if (isBlendQuickControlId(control.id)) return true;
+    if (isBlendQuickControlId(control.source)) return true;
+    if (isBlendQuickControlId(control.name)) return true;
+    return false;
+  }
+
+  function isGamutControlId(id) {
+    const text = String(id || '').trim();
+    if (!text) return false;
+    return /^Gamut(?:\.|$)/i.test(text);
+  }
+
+  function isGamutQuickControl(control) {
+    if (!control) return false;
+    if (isGamutControlId(control.id)) return true;
+    if (isGamutControlId(control.source)) return true;
+    if (isGamutControlId(control.name)) return true;
+    return false;
+  }
+
+  function isGamutQuickCandidate(candidate) {
+    if (!candidate) return false;
+    if (candidate.kind === 'group') {
+      const channels = Array.isArray(candidate.channels) ? candidate.channels : [];
+      if (!channels.length) return false;
+      return channels.every((ch) => isGamutQuickControl(ch));
+    }
+    if (candidate.kind === 'control') {
+      return isGamutQuickControl(candidate.control || { id: candidate.id, name: candidate.label });
+    }
+    return false;
+  }
+
+  function isBoilerplateDisplayControlId(id, node = null) {
+    try {
+      const text = String(id || '').trim();
+      if (!text) return false;
+      if (/^Global(In|Out)$/i.test(text)) return true;
+      if (/^ProcessMode$/i.test(text)) return true;
+      if (/^PixelAspect$/i.test(text)) return true;
+      if (/^UseFrameFormatSettings$/i.test(text)) return true;
+      if (/^Depth$/i.test(text)) return true;
+      if (/^(Width|Height)$/i.test(text)) {
+        const nodeType = String(node?.type || '').trim();
+        if (nodeType && isMaskToolTypeForPath(nodeType)) return false;
+        return true;
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function prioritizeQuickSetCandidates(list) {
+    const items = Array.isArray(list) ? [...list] : [];
+    if (!items.length) return items;
+    const priority = (cand) => {
+      if (!cand) return 10;
+      if (cand.kind === 'control' && isBlendQuickControl(cand.control || { id: cand.id, name: cand.label })) return 0;
+      if (cand.kind === 'group') {
+        const channels = Array.isArray(cand.channels) ? cand.channels : [];
+        if (channels.some((ch) => isBlendQuickControl(ch))) return 1;
+      }
+      return 5;
+    };
+    return items
+      .map((cand, idx) => ({ cand, idx, p: priority(cand) }))
+      .sort((a, b) => (a.p - b.p) || (a.idx - b.idx))
+      .map((it) => it.cand);
+  }
+
+  function isBlendNodeControl(control) {
+    if (!control) return false;
+    if (isGroupedControl(control)) {
+      const channels = Array.isArray(control.channels) ? control.channels : [];
+      return channels.some((ch) => isBlendQuickControl(ch));
+    }
+    return isBlendQuickControl(control);
+  }
+
+  function isDeprioritizedExpandedControl(control, node = null) {
+    try {
+      if (!control) return false;
+      if (isGroupedControl(control)) {
+        const channels = Array.isArray(control.channels) ? control.channels : [];
+        if (!channels.length) return false;
+        return channels.every((ch) => {
+          const id = String(ch?.id || '').trim();
+          return isGamutControlId(id) || isBoilerplateDisplayControlId(id, node);
+        });
+      }
+      const id = String(control.id || control.source || '').trim();
+      return isGamutControlId(id) || isBoilerplateDisplayControlId(id, node);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function prioritizeBlendControlsFlat(controls, node = null) {
+    const list = Array.isArray(controls) ? controls : [];
+    if (!list.length) return list;
+    const blend = [];
+    const rest = [];
+    const deprioritized = [];
+    for (const control of list) {
+      if (isBlendNodeControl(control)) blend.push(control);
+      else if (isDeprioritizedExpandedControl(control, node)) deprioritized.push(control);
+      else rest.push(control);
+    }
+    const next = blend.concat(rest, deprioritized);
+    return next.length ? next : list;
+  }
+
+  function prioritizeExpandedNodeControls(controls, node = null) {
+    const list = Array.isArray(controls) ? controls : [];
+    if (!list.length) return list;
+    const hasSectionHeaders = list.some((control) => isSectionHeaderControl(control));
+    if (!hasSectionHeaders) return prioritizeBlendControlsFlat(list, node);
+    const out = [];
+    let cursor = 0;
+    while (cursor < list.length) {
+      const current = list[cursor];
+      if (isSectionHeaderControl(current)) {
+        let end = cursor + 1;
+        while (end < list.length && !isSectionHeaderControl(list[end])) end += 1;
+        out.push(current, ...prioritizeBlendControlsFlat(list.slice(cursor + 1, end), node));
+        cursor = end;
+        continue;
+      }
+      let end = cursor;
+      while (end < list.length && !isSectionHeaderControl(list[end])) end += 1;
+      out.push(...prioritizeBlendControlsFlat(list.slice(cursor, end), node));
+      cursor = end;
+    }
+    return out;
+  }
+
+  function isColorFocusedQuickSetNode(nodeType, nodeName = '') {
+    try {
+      const typeText = String(nodeType || '').trim();
+      const nameText = String(nodeName || '').trim();
+      const combined = `${typeText} ${nameText}`.toLowerCase();
+      if (!combined) return false;
+      // Broad color-tool matcher to keep process channel toggles only where useful.
+      return /(color|hue|saturation|gamma|gain|contrast|lut|white\s*balance|chroma|luma|tint)/i.test(combined);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function buildQuickSetCandidates(nodeControls, allowSourceControl, nodeMeta = null) {
     const list = [];
     const map = new Map();
+    void nodeMeta;
     for (const c of (nodeControls || [])) {
       if (!c) continue;
       if (isGroupedControl(c)) {
@@ -301,6 +471,7 @@ export function createNodesPane(options = {}) {
         if (!base) continue;
         const key = `group:${base}`;
         const channels = Array.isArray(c.channels) ? c.channels.map(ch => ({ id: ch.id, name: ch.name || ch.id })) : [];
+        if (!channels.length) continue;
         const item = {
           key,
           kind: 'group',
@@ -328,17 +499,26 @@ export function createNodesPane(options = {}) {
       list.push(item);
       map.set(key, item);
     }
-    return { list, map };
+    return { list: prioritizeQuickSetCandidates(list), map };
   }
 
-  function buildSuggestedQuickSetKeys(candidates) {
+  function buildSuggestedQuickSetKeys(candidates, nodeMeta = null) {
+    const typePreferred = buildTypePreferredQuickSetKeys(candidates, nodeMeta);
+    if (typePreferred.length) return typePreferred.slice(0, QUICK_SET_FALLBACK_COUNT);
+    const keepProcessChannels = isColorFocusedQuickSetNode(nodeMeta?.type, nodeMeta?.name);
     const primary = [];
     for (const cand of (candidates || [])) {
       if (!cand) continue;
+      if (isGamutQuickCandidate(cand)) continue;
       if (cand.kind === 'group') {
+        if (!keepProcessChannels) {
+          const channels = Array.isArray(cand.channels) ? cand.channels : [];
+          if (channels.length && channels.every((ch) => isProcessChannelQuickControlId(ch?.id))) continue;
+        }
         primary.push(cand.key);
         continue;
       }
+      if (!keepProcessChannels && isProcessChannelQuickControlId(cand.id)) continue;
       if (isBoilerplateQuickControlId(cand.id)) continue;
       primary.push(cand.key);
     }
@@ -347,14 +527,352 @@ export function createNodesPane(options = {}) {
     return preferred.slice(0, QUICK_SET_FALLBACK_COUNT);
   }
 
+  function buildTypePreferredQuickSetKeys(candidates, nodeMeta = null) {
+    try {
+      const list = Array.isArray(candidates) ? candidates : [];
+      if (!list.length) return [];
+      const type = String(nodeMeta?.type || '').trim().toLowerCase();
+      const isShapeSystemType = /^s[a-z]/i.test(type);
+      const controls = list.filter((entry) => entry && entry.kind === 'control');
+      const groups = list.filter((entry) => entry && entry.kind === 'group');
+      const out = [];
+      const seen = new Set();
+      const pushKey = (key) => {
+        const next = String(key || '').trim();
+        if (!next || seen.has(next)) return;
+        seen.add(next);
+        out.push(next);
+      };
+      const pickControl = (id) => {
+        const target = String(id || '').trim().toLowerCase();
+        if (!target) return '';
+        const cand = controls.find((entry) => String(entry.id || '').trim().toLowerCase() === target);
+        return cand && cand.key ? cand.key : '';
+      };
+      const pickFirstControl = (ids = []) => {
+        for (const id of (ids || [])) {
+          const key = pickControl(id);
+          if (key) return key;
+        }
+        return '';
+      };
+      const pickGroupByMatcher = (matcher) => {
+        const isMatch = (value) => {
+          const text = String(value || '').trim();
+          if (!text) return false;
+          if (matcher instanceof RegExp) return matcher.test(text);
+          return text.toLowerCase() === String(matcher || '').trim().toLowerCase();
+        };
+        const cand = groups.find((entry) => isMatch(entry.label) || isMatch(entry.base));
+        return cand && cand.key ? cand.key : '';
+      };
+      const addControl = (id) => pushKey(pickControl(id));
+      const addFirstControl = (ids = []) => pushKey(pickFirstControl(ids));
+      const addGroup = (matcher) => pushKey(pickGroupByMatcher(matcher));
+      const addControlsMatching = (regex, sorter = null) => {
+        const matches = controls.filter((entry) => regex.test(String(entry.id || '')));
+        if (!matches.length) return;
+        const sorted = sorter ? matches.slice().sort(sorter) : matches;
+        sorted.forEach((entry) => pushKey(entry.key));
+      };
+
+      if (type === 'transform') {
+        ['Center', 'Size', 'Angle'].forEach(addControl);
+        return out;
+      }
+
+      if (type.includes('textplus')) {
+        addControl('StyledText');
+        addGroup(/font\s*\/\s*style/i);
+        if (!out.some((key) => /^group:/i.test(key))) {
+          addControl('Font');
+          addControl('Style');
+        }
+        addGroup(/^color$/i);
+        addControl('Size');
+        addFirstControl(['Tracking', 'CharacterSpacing']);
+        addFirstControl(['VerticalTopCenterBottom', 'VerticallyJustified']);
+        addFirstControl(['HorizontalLeftCenterRight', 'HorizontallyJustified']);
+        return out;
+      }
+
+      if (type.includes('background')) {
+        addGroup(/^color$/i);
+        if (!out.length) {
+          addControl('TopLeftRed');
+          addControl('TopLeftGreen');
+          addControl('TopLeftBlue');
+          addControl('TopLeftAlpha');
+        }
+        return out;
+      }
+
+      if (type === 'merge') {
+        ['Blend', 'Center', 'Size', 'Angle'].forEach(addControl);
+        return out;
+      }
+
+      if (type.includes('brightnesscontrast')) {
+        ['Gain', 'Lift', 'Gamma', 'Contrast', 'Brightness', 'Saturation'].forEach(addControl);
+        return out;
+      }
+
+      if (type.includes('colorcorrector')) {
+        ['Hue', 'Saturation', 'Contrast', 'Gain', 'Lift', 'Gamma', 'Brightness'].forEach(addControl);
+        return out;
+      }
+
+      if (type.includes('softglow')) {
+        ['Blend', 'Threshold', 'Gain', 'XGlowSize'].forEach(addControl);
+        return out;
+      }
+
+      if (type === 'glow') {
+        ['Blend', 'XGlowSize', 'Glow'].forEach(addControl);
+        return out;
+      }
+
+      if (type === 'blur') {
+        ['Blend', 'LockXY', 'XBlurSize', 'YBlurSize'].forEach(addControl);
+        return out;
+      }
+
+      if (type.includes('gaussianblur')) {
+        ['Blend', 'IsSplitHV', 'HStrength', 'VStrength'].forEach(addControl);
+        return out;
+      }
+
+      if (type.includes('directionalblur')) {
+        ['Blend', 'Length', 'Angle', 'Glow'].forEach(addControl);
+        return out;
+      }
+
+      if (type.startsWith('switch')) {
+        addControl('Source');
+        return out;
+      }
+
+      if (type.includes('dissolve')) {
+        addControl('Mix');
+        return out;
+      }
+
+      // Shape System (s*) defaults
+      if (type === 'sboolean') {
+        addControl('Operation');
+        addControl('StyleMode');
+        addGroup(/^color\b/i);
+        if (!out.some((key) => /^group:/i.test(key))) {
+          ['Red', 'Green', 'Blue', 'Alpha'].forEach(addControl);
+        }
+        addControl('Opacity');
+        return out;
+      }
+
+      if (type === 'sbspline') {
+        ['Solid', 'BorderWidth', 'WritePosition', 'WriteLength', 'Polyline'].forEach(addControl);
+        return out;
+      }
+
+      if (type === 'schangestyle') {
+        addGroup(/^color\b/i);
+        if (!out.some((key) => /^group:/i.test(key))) {
+          ['Red', 'Green', 'Blue', 'Alpha'].forEach(addControl);
+        }
+        addControl('Opacity');
+        return out;
+      }
+
+      if (type === 'sduplicate') {
+        ['Copies', 'TimeOffset', 'XOffset', 'YOffset', 'XSize', 'YSize', 'ZRotation'].forEach(addControl);
+        return out;
+      }
+
+      if (type === 'sellipse') {
+        ['Solid', 'BorderWidth', 'Width', 'Height', 'WritePosition', 'WriteLength'].forEach(addControl);
+        return out;
+      }
+
+      if (type === 'sexpand') {
+        ['Amount', 'JoinStyle'].forEach(addControl);
+        return out;
+      }
+
+      if (type === 'sgrid') {
+        ['CellsX', 'CellsY', 'XOffset', 'YOffset'].forEach(addControl);
+        return out;
+      }
+
+      if (type === 'sjitter') {
+        addGroup(/shape\s*offset\s*x/i);
+        addGroup(/shape\s*offset\s*y/i);
+        addGroup(/shape\s*size\s*x/i);
+        addGroup(/shape\s*size\s*y/i);
+        addGroup(/shape\s*rotate/i);
+        return out;
+      }
+
+      if (type === 'smerge') {
+        return out;
+      }
+
+      if (type === 'sngon') {
+        ['Sides', 'Solid', 'BorderWidth', 'WritePosition', 'WriteLength', 'Height', 'Width'].forEach(addControl);
+        return out;
+      }
+
+      if (type === 'soutline') {
+        ['Thickness', 'JoinStyle', 'CapStyle', 'WritePosition', 'WriteLength'].forEach(addControl);
+        return out;
+      }
+
+      if (type === 'spolygon') {
+        ['Polyline', 'BorderWidth', 'Solid', 'CapStyle', 'WritePosition', 'WriteLength'].forEach(addControl);
+        return out;
+      }
+
+      if (type === 'srectangle') {
+        // sRectangle uses per-axis translate controls instead of a point-center control.
+        addFirstControl(['Center', 'Translate.X']);
+        addControl('Translate.Y');
+        ['Width', 'Height', 'CornerRadius', 'BorderWidth', 'Solid', 'CapStyle', 'WritePosition', 'WriteLength'].forEach(addControl);
+        return out;
+      }
+
+      if (type === 'srender') {
+        return out;
+      }
+
+      if (type === 'sstar') {
+        ['Points', 'Depth', 'Solid', 'BorderWidth', 'WritePosition', 'WriteLength', 'Height', 'Width'].forEach(addControl);
+        return out;
+      }
+
+      if (type === 'stext') {
+        addControl('StyledText');
+        addGroup(/font\s*\/\s*style/i);
+        if (!out.some((key) => /^group:/i.test(key))) {
+          addControl('Font');
+          addControl('Style');
+        }
+        addGroup(/^color\b/i);
+        if (!out.some((key) => /^group:/i.test(key))) {
+          addFirstControl(['Red1Clone', 'Red1']);
+          addFirstControl(['Green1Clone', 'Green1']);
+          addFirstControl(['Blue1Clone', 'Blue1']);
+          addFirstControl(['Alpha1Clone', 'Alpha1']);
+        }
+        addControl('Size');
+        addFirstControl(['Tracking', 'CharacterSpacingClone', 'CharacterSpacing']);
+        addFirstControl(['VerticalJustificationNew', 'VerticalTopCenterBottom', 'VerticallyJustified']);
+        addFirstControl(['HorizontalJustificationNew', 'HorizontalLeftCenterRight', 'HorizontallyJustified']);
+        return out;
+      }
+
+      if (type === 'stransform') {
+        ['XOffset', 'YOffset', 'XSize', 'YSize', 'ZRotation'].forEach(addControl);
+        return out;
+      }
+
+      if (!isShapeSystemType && (type.includes('polygon') || type.includes('polyline') || type.includes('bspline'))) {
+        ['Level', 'ShowViewControls', 'Polyline', 'BorderWidth', 'SoftEdge', 'Solid', 'CapStyle', 'WritePosition', 'WriteLength']
+          .forEach((id) => addFirstControl([id, id.toLowerCase()]));
+        return out;
+      }
+
+      if (!isShapeSystemType && type.includes('rectangle')) {
+        ['Level', 'ShowViewControls', 'Center', 'Width', 'Height', 'CornerRadius', 'BorderWidth', 'SoftEdge', 'Solid', 'CapStyle', 'WritePosition', 'WriteLength']
+          .forEach((id) => addFirstControl([id, id.toLowerCase()]));
+        return out;
+      }
+
+      if (!isShapeSystemType && type.includes('ellipse')) {
+        ['Level', 'ShowViewControls', 'Center', 'Width', 'Height', 'BorderWidth', 'Solid', 'CapStyle', 'WritePosition', 'WriteLength']
+          .forEach((id) => addFirstControl([id, id.toLowerCase()]));
+        return out;
+      }
+
+      if (type.includes('multimerge')) {
+        const fieldOrder = { center: 0, size: 1, angle: 2 };
+        addControlsMatching(/^Layer\d+\.(Center|Size|Angle)$/i, (a, b) => {
+          const ma = String(a.id || '').match(/^Layer(\d+)\.(.+)$/i);
+          const mb = String(b.id || '').match(/^Layer(\d+)\.(.+)$/i);
+          const ai = ma ? Number(ma[1]) : Number.MAX_SAFE_INTEGER;
+          const bi = mb ? Number(mb[1]) : Number.MAX_SAFE_INTEGER;
+          if (ai !== bi) return ai - bi;
+          const af = ma ? String(ma[2] || '').toLowerCase() : '';
+          const bf = mb ? String(mb[2] || '').toLowerCase() : '';
+          return (fieldOrder[af] ?? 99) - (fieldOrder[bf] ?? 99);
+        });
+        return out;
+      }
+
+      if (type.includes('multitext')) {
+        const fieldOrder = { styledtext: 0, style: 1, size: 2, textfill: 3, center: 4 };
+        addControlsMatching(/^Text\d+\.(StyledText|Style|Size|Text\d+Fill|Center)$/i, (a, b) => {
+          const ma = String(a.id || '').match(/^Text(\d+)\.(.+)$/i);
+          const mb = String(b.id || '').match(/^Text(\d+)\.(.+)$/i);
+          const ai = ma ? Number(ma[1]) : Number.MAX_SAFE_INTEGER;
+          const bi = mb ? Number(mb[1]) : Number.MAX_SAFE_INTEGER;
+          if (ai !== bi) return ai - bi;
+          const normalizeField = (field) => {
+            const raw = String(field || '').toLowerCase();
+            if (/^text\d+fill$/.test(raw)) return 'textfill';
+            return raw;
+          };
+          const af = normalizeField(ma ? ma[2] : '');
+          const bf = normalizeField(mb ? mb[2] : '');
+          return (fieldOrder[af] ?? 99) - (fieldOrder[bf] ?? 99);
+        });
+        return out;
+      }
+
+      if (type.includes('multipoly')) {
+        const fieldOrder = { level: 0, polyline: 1, polyline2: 2 };
+        addControlsMatching(/^PolyMask\d+\.(Level|Polyline2?)$/i, (a, b) => {
+          const ma = String(a.id || '').match(/^PolyMask(\d+)\.(.+)$/i);
+          const mb = String(b.id || '').match(/^PolyMask(\d+)\.(.+)$/i);
+          const ai = ma ? Number(ma[1]) : Number.MAX_SAFE_INTEGER;
+          const bi = mb ? Number(mb[1]) : Number.MAX_SAFE_INTEGER;
+          if (ai !== bi) return ai - bi;
+          const af = ma ? String(ma[2] || '').toLowerCase() : '';
+          const bf = mb ? String(mb[2] || '').toLowerCase() : '';
+          return (fieldOrder[af] ?? 99) - (fieldOrder[bf] ?? 99);
+        });
+        addFirstControl(['Level']);
+        addFirstControl(['Polyline']);
+        return out;
+      }
+
+      if (type.includes('erodedilate')) {
+        addControl('Amount');
+        return out;
+      }
+
+      if (type.includes('displace')) {
+        ['Center', 'Offset', 'RefractionStrength'].forEach(addControl);
+        return out;
+      }
+
+      if (type.includes('letterbox')) {
+        ['Mode', 'Width', 'Height', 'HiQOnly'].forEach(addControl);
+        return out;
+      }
+
+      return out;
+    } catch (_) {
+      return [];
+    }
+  }
+
   function openQuickSetModal(node, nodeControls, allowSourceControl) {
     if (!node || !Array.isArray(nodeControls)) return;
-    const { list, map } = buildQuickSetCandidates(nodeControls, allowSourceControl);
+    const { list, map } = buildQuickSetCandidates(nodeControls, allowSourceControl, node);
     if (!list.length) {
       info('No eligible controls found for quick set editing on this node.');
       return;
     }
-    const suggested = buildSuggestedQuickSetKeys(list);
+    const suggested = buildSuggestedQuickSetKeys(list, node);
     const existing = getQuickSetForType(node.type, map);
     const initial = existing.length ? existing : suggested;
     const selected = new Set(initial);
@@ -500,14 +1018,14 @@ export function createNodesPane(options = {}) {
     try {
       if (!state.parseResult || !node || !Array.isArray(nodeControls)) return;
       const resolveToDrivers = getQuickSetResolveToDrivers();
-      const { list, map } = buildQuickSetCandidates(nodeControls, allowSourceControl);
+      const { list, map } = buildQuickSetCandidates(nodeControls, allowSourceControl, node);
       if (!list.length) {
         info('No eligible controls to publish from quick set.');
         return;
       }
       let keys = getQuickSetForType(node.type, map);
       if (!keys.length) {
-        keys = buildSuggestedQuickSetKeys(list);
+        keys = buildSuggestedQuickSetKeys(list, node);
         if (keys.length) {
           setQuickSetForType(node.type, keys);
         }
@@ -590,7 +1108,7 @@ export function createNodesPane(options = {}) {
 
         if (isMod) {
           const allowSource = /switch/i.test(String(tool.type || tool.name || ''));
-          const quick = buildQuickSetCandidates(controls, allowSource);
+          const quick = buildQuickSetCandidates(controls, allowSource, { type: tool.type, name: tool.name });
           const savedKeys = getQuickSetForType(tool.type, quick.map);
           let changed = false;
           for (const key of (savedKeys || [])) {
@@ -686,8 +1204,9 @@ export function createNodesPane(options = {}) {
       for (const item of publishMap.values()) {
         if (isPublished(item.sourceOp, item.source)) already += 1;
         else added += 1;
-        const meta = buildControlMetaFromDefinition(item.controlDef);
-        const idx = ensureEntryExists(item.sourceOp, item.source, item.displayName, meta);
+        const meta = buildQuickSetPublishMeta(item);
+        const displayName = buildQuickSetPublishDisplayName(item, node);
+        const idx = ensureEntryExists(item.sourceOp, item.source, displayName, meta);
         if (idx != null) idxs.push(idx);
       }
       const indicesToInsert = [...idxs];
@@ -738,6 +1257,51 @@ export function createNodesPane(options = {}) {
     }
   }
 
+  function toBlendCheckboxDefault(rawValue) {
+    try {
+      if (rawValue == null) return '1';
+      const text = String(rawValue).trim();
+      if (!text) return '1';
+      if (/^(true|yes|on)$/i.test(text)) return '1';
+      if (/^(false|no|off)$/i.test(text)) return '0';
+      const num = Number(text);
+      if (Number.isFinite(num)) return num <= 0 ? '0' : '1';
+      return '1';
+    } catch (_) {
+      return '1';
+    }
+  }
+
+  function shouldForceBlendCheckbox(item) {
+    try {
+      if (!quickSetBlendToCheckbox) return false;
+      if (!item) return false;
+      if (isBlendQuickControlId(item.source)) return true;
+      return isBlendQuickControl(item.controlDef);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function buildQuickSetPublishMeta(item) {
+    const meta = buildControlMetaFromDefinition(item?.controlDef);
+    if (!shouldForceBlendCheckbox(item)) return meta;
+    const out = { ...(meta || {}) };
+    out.inputControl = 'CheckboxControl';
+    out.defaultValue = toBlendCheckboxDefault(out.defaultValue);
+    return out;
+  }
+
+  function buildQuickSetPublishDisplayName(item, node) {
+    const fallback = String(item?.displayName || '').trim()
+      || humanizeName(item?.source || '')
+      || String(item?.source || '').trim()
+      || 'Control';
+    if (!shouldForceBlendCheckbox(item)) return fallback;
+    const nodeName = String(node?.name || '').trim() || String(node?.type || '').trim() || 'Effect';
+    return `${nodeName} On/Off`;
+  }
+
   function buildControlMetaFromDefinition(control) {
     if (!control) return null;
     const meta = {};
@@ -757,11 +1321,23 @@ export function createNodesPane(options = {}) {
   }
 
   function isGroupedControl(control) {
-    return !!(control && (control.type === 'color-group' || control.type === 'linked-group'));
+    return !!(control && (control.type === 'color-group' || control.type === 'linked-group' || control.type === 'range-group'));
   }
 
   function isSectionHeaderControl(control) {
     return !!(control && (control.type === 'slot-header' || control.type === 'common-header'));
+  }
+
+  function shouldDefaultCollapsedSlotHeader(control) {
+    try {
+      if (!control || !isSectionHeaderControl(control)) return false;
+      const slotType = String(control.slotType || '').trim().toLowerCase();
+      if (slotType === 'textplus-element') return true;
+      if (slotType === 'textplus-shading') return true;
+      return false;
+    } catch (_) {
+      return false;
+    }
   }
 
   function getNodeSelection() {
@@ -1006,6 +1582,7 @@ export function createNodesPane(options = {}) {
       showNextNodeLinks = !!(showNextNodeLinksEl ? showNextNodeLinksEl.checked : true);
       autoGroupQuickSets = !!(autoGroupQuickSetsEl ? autoGroupQuickSetsEl.checked : false);
       nameClickQuickSet = !!(nameClickQuickSetEl ? nameClickQuickSetEl.checked : false);
+      quickSetBlendToCheckbox = !!(quickSetBlendToCheckboxEl ? quickSetBlendToCheckboxEl.checked : false);
       saveViewControlOptions();
       syncViewControlInputs();
       if (state.parseResult) parseAndRenderNodes();
@@ -1018,6 +1595,7 @@ export function createNodesPane(options = {}) {
   showNextNodeLinksEl?.addEventListener('change', applyViewControlChange);
   autoGroupQuickSetsEl?.addEventListener('change', applyViewControlChange);
   nameClickQuickSetEl?.addEventListener('change', applyViewControlChange);
+  quickSetBlendToCheckboxEl?.addEventListener('change', applyViewControlChange);
 
   viewControlsBtn?.addEventListener('click', (ev) => {
     ev.preventDefault();
@@ -1643,6 +2221,200 @@ export function createNodesPane(options = {}) {
       const type = String(node.type || '').trim();
       const name = String(node.name || '').trim();
       const typeLower = type.toLowerCase();
+      const explicitTypeMap = new Map([
+        // Matte
+        ['alphadivide', { key: 'matte', label: 'Matte' }],
+        ['alphamultiply', { key: 'matte', label: 'Matte' }],
+        ['chromakeyer', { key: 'matte', label: 'Matte' }],
+        ['cleanplate', { key: 'matte', label: 'Matte' }],
+        ['cryptomatte', { key: 'matte', label: 'Matte' }],
+        ['deltakeyer', { key: 'matte', label: 'Matte' }],
+        ['depthmap', { key: 'matte', label: 'Matte' }],
+        ['differencekeyer', { key: 'matte', label: 'Matte' }],
+        ['lumakeyer', { key: 'matte', label: 'Matte' }],
+        ['magicmask', { key: 'matte', label: 'Matte' }],
+        ['mattecontrol', { key: 'matte', label: 'Matte' }],
+        ['relight', { key: 'matte', label: 'Matte' }],
+        ['ultrakeyer', { key: 'matte', label: 'Matte' }],
+        // Tracking
+        ['cameratracker', { key: 'tracking', label: 'Tracking' }],
+        ['dimension.cameratracker', { key: 'tracking', label: 'Tracking' }],
+        ['planartracker', { key: 'tracking', label: 'Tracking' }],
+        ['dimension.planartracker', { key: 'tracking', label: 'Tracking' }],
+        ['surfacetracker', { key: 'tracking', label: 'Tracking' }],
+        ['tracker', { key: 'tracking', label: 'Tracking' }],
+        // Warp
+        ['coordinatespace', { key: 'warp', label: 'Warp' }],
+        ['coordspace', { key: 'warp', label: 'Warp' }],
+        ['cornerpositioner', { key: 'warp', label: 'Warp' }],
+        ['displace', { key: 'warp', label: 'Warp' }],
+        ['gridwarp', { key: 'warp', label: 'Warp' }],
+        ['lensdistort', { key: 'warp', label: 'Warp' }],
+        ['perspectivepositioner', { key: 'warp', label: 'Warp' }],
+        ['vectordistortion', { key: 'warp', label: 'Warp' }],
+        ['vectorwarp', { key: 'warp', label: 'Warp' }],
+        ['vortex', { key: 'warp', label: 'Warp' }],
+        // VR
+        ['immersivepatcher', { key: 'vr', label: 'VR' }],
+        ['latlongpatcher', { key: 'vr', label: 'VR' }],
+        ['panomap', { key: 'vr', label: 'VR' }],
+        ['sphericalstabilizer', { key: 'vr', label: 'VR' }],
+        // Stereo
+        ['anaglyph', { key: 'stereo', label: 'Stereo' }],
+        ['combiner', { key: 'stereo', label: 'Stereo' }],
+        ['disparity', { key: 'stereo', label: 'Stereo' }],
+        ['dimension.disparity', { key: 'stereo', label: 'Stereo' }],
+        ['disparitytoz', { key: 'stereo', label: 'Stereo' }],
+        ['dimension.disparitytoz', { key: 'stereo', label: 'Stereo' }],
+        ['globalalign', { key: 'stereo', label: 'Stereo' }],
+        ['dimension.globalalign', { key: 'stereo', label: 'Stereo' }],
+        ['neweye', { key: 'stereo', label: 'Stereo' }],
+        ['dimension.neweye', { key: 'stereo', label: 'Stereo' }],
+        ['splitter', { key: 'stereo', label: 'Stereo' }],
+        ['stereoalign', { key: 'stereo', label: 'Stereo' }],
+        ['dimension.stereoalign', { key: 'stereo', label: 'Stereo' }],
+        ['ztodisparity', { key: 'stereo', label: 'Stereo' }],
+        ['dimension.ztodisparity', { key: 'stereo', label: 'Stereo' }],
+        // Layer
+        ['layermuxer', { key: 'layer', label: 'Layer' }],
+        ['layerregex', { key: 'layer', label: 'Layer' }],
+        ['layerremover', { key: 'layer', label: 'Layer' }],
+        ['swizzler', { key: 'layer', label: 'Layer' }],
+        // I/O
+        ['loader', { key: 'io', label: 'I/O' }],
+        ['mediain', { key: 'io', label: 'I/O' }],
+        ['mediaout', { key: 'io', label: 'I/O' }],
+        ['saver', { key: 'io', label: 'I/O' }],
+        // Paint
+        ['paint', { key: 'paint', label: 'Paint' }],
+        // Film
+        ['cineonlog', { key: 'film', label: 'Film' }],
+        ['filmgrain', { key: 'film', label: 'Film' }],
+        ['grain', { key: 'film', label: 'Film' }],
+        ['lighttrim', { key: 'film', label: 'Film' }],
+        ['removenoise', { key: 'film', label: 'Film' }],
+        // Color
+        ['acestransform', { key: 'color', label: 'Color' }],
+        ['autogain', { key: 'color', label: 'Color' }],
+        ['brightnesscontrast', { key: 'color', label: 'Color' }],
+        ['channelboolean', { key: 'color', label: 'Color' }],
+        ['channelbooleans', { key: 'color', label: 'Color' }],
+        ['chromaticaberrationremoval', { key: 'color', label: 'Color' }],
+        ['chromaticadaptation', { key: 'color', label: 'Color' }],
+        ['colorspacetransform', { key: 'color', label: 'Color' }],
+        ['filmlookcreator', { key: 'color', label: 'Color' }],
+        ['filelut', { key: 'color', label: 'Color' }],
+        ['colorcorrector', { key: 'color', label: 'Color' }],
+        ['colorcurves', { key: 'color', label: 'Color' }],
+        ['colorgain', { key: 'color', label: 'Color' }],
+        ['colormatrix', { key: 'color', label: 'Color' }],
+        ['customcolormatrix', { key: 'color', label: 'Color' }],
+        ['colorspace', { key: 'color', label: 'Color' }],
+        ['copyaux', { key: 'color', label: 'Color' }],
+        ['gamut', { key: 'color', label: 'Color' }],
+        ['gamutconvert', { key: 'color', label: 'Color' }],
+        ['gamutlimiter', { key: 'color', label: 'Color' }],
+        ['gamutmapping', { key: 'color', label: 'Color' }],
+        ['huecurves', { key: 'color', label: 'Color' }],
+        ['ociocdltransform', { key: 'color', label: 'Color' }],
+        ['ociocolorspace', { key: 'color', label: 'Color' }],
+        ['ociodisplay', { key: 'color', label: 'Color' }],
+        ['ociofiletransform', { key: 'color', label: 'Color' }],
+        ['setcanvascolor', { key: 'color', label: 'Color' }],
+        ['tintensity', { key: 'color', label: 'Color' }],
+        // Deep
+        ['dcrop', { key: 'deep', label: 'Deep' }],
+        ['deeptoimage', { key: 'deep', label: 'Deep' }],
+        ['deeptopoints', { key: 'deep', label: 'Deep' }],
+        ['defocus', { key: 'deep', label: 'Deep' }],
+        ['dholdout', { key: 'deep', label: 'Deep' }],
+        ['dmerge', { key: 'deep', label: 'Deep' }],
+        ['drecolor', { key: 'deep', label: 'Deep' }],
+        ['dresize', { key: 'deep', label: 'Deep' }],
+        ['dtransform', { key: 'deep', label: 'Deep' }],
+        ['fog', { key: 'deep', label: 'Deep' }],
+        ['imagetodeep', { key: 'deep', label: 'Deep' }],
+        ['shader', { key: 'deep', label: 'Deep' }],
+        ['ssao', { key: 'deep', label: 'Deep' }],
+        ['texture', { key: 'deep', label: 'Deep' }],
+        // Miscellaneous
+        ['autodomain', { key: 'misc', label: 'Misc' }],
+        ['changedepth', { key: 'misc', label: 'Misc' }],
+        ['custom', { key: 'misc', label: 'Misc' }],
+        ['fields', { key: 'misc', label: 'Misc' }],
+        ['frameaverage', { key: 'misc', label: 'Misc' }],
+        ['keyframestretcher', { key: 'misc', label: 'Misc' }],
+        ['runcommand', { key: 'misc', label: 'Misc' }],
+        ['setdomain', { key: 'misc', label: 'Misc' }],
+        ['timespeed', { key: 'misc', label: 'Misc' }],
+        ['timestretcher', { key: 'misc', label: 'Misc' }],
+        // Filter
+        ['createbumpmap', { key: 'filter', label: 'Filter' }],
+        ['customfilter', { key: 'filter', label: 'Filter' }],
+        ['erodedilate', { key: 'filter', label: 'Filter' }],
+        ['filter', { key: 'filter', label: 'Filter' }],
+        ['rankfilter', { key: 'filter', label: 'Filter' }],
+        // Transform
+        ['camerashake', { key: 'transform', label: 'Transform' }],
+        ['crop', { key: 'transform', label: 'Transform' }],
+        ['dve', { key: 'transform', label: 'Transform' }],
+        ['letterbox', { key: 'transform', label: 'Transform' }],
+        ['planartransform', { key: 'transform', label: 'Transform' }],
+        ['resize', { key: 'transform', label: 'Transform' }],
+        ['scale', { key: 'transform', label: 'Transform' }],
+        ['transform', { key: 'transform', label: 'Transform' }],
+        // Effect
+        ['duplicate', { key: 'effect', label: 'Effect' }],
+        ['highlight', { key: 'effect', label: 'Effect' }],
+        ['hotspot', { key: 'effect', label: 'Effect' }],
+        ['objectremoval', { key: 'effect', label: 'Effect' }],
+        ['pseudocolor', { key: 'effect', label: 'Effect' }],
+        ['rays', { key: 'effect', label: 'Effect' }],
+        ['shadow', { key: 'effect', label: 'Effect' }],
+        ['trails', { key: 'effect', label: 'Effect' }],
+        // Explicit one-offs from prior tests
+        ['daysky', { key: 'generator', label: 'Generator' }],
+        ['mandel', { key: 'generator', label: 'Generator' }],
+        ['dent', { key: 'warp', label: 'Warp' }],
+        ['distort', { key: 'effect', label: 'Effect' }],
+        ['drip', { key: 'warp', label: 'Warp' }],
+        ['plasma', { key: 'generator', label: 'Generator' }],
+        ['bumpmap', { key: 'three-d', label: '3D' }],
+        ['cubemap', { key: 'three-d', label: '3D' }],
+        ['falloffoperator', { key: 'three-d', label: '3D' }],
+        ['spheremap', { key: 'three-d', label: '3D' }],
+        ['texcatcher', { key: 'three-d', label: '3D' }],
+        ['rangesmask', { key: 'mask', label: 'Mask' }],
+        ['trianglemask', { key: 'mask', label: 'Mask' }],
+        ['tv', { key: 'effect', label: 'Effect' }],
+        ['volumefog', { key: 'position', label: 'Position' }],
+        ['volumemask', { key: 'position', label: 'Position' }],
+        ['wandmask', { key: 'mask', label: 'Mask' }],
+        ['whitebalance', { key: 'color', label: 'Color' }],
+        ['ztoworldpos', { key: 'position', label: 'Position' }],
+      ]);
+      if (explicitTypeMap.has(typeLower)) return explicitTypeMap.get(typeLower);
+      const shapeSystemTypes = new Set([
+        'sboolean',
+        'sbspline',
+        'schangestyle',
+        'sduplicate',
+        'sellipse',
+        'sexpand',
+        'sgrid',
+        'sjitter',
+        'smerge',
+        'sngon',
+        'soutline',
+        'spolygon',
+        'srectangle',
+        'srender',
+        'sstar',
+        'stext',
+        'stransform',
+        'sbitmap',
+        'sshape',
+      ]);
       const blob = `${type} ${name}`.toLowerCase();
       const has = (re) => re.test(blob);
       const hasType = (re) => re.test(typeLower);
@@ -1650,10 +2422,27 @@ export function createNodesPane(options = {}) {
       if (has(/\b3d\b|camera3d|renderer3d|light3d|merge3d|transform3d|material|imageplane3d|shape3d/)) {
         return { key: 'three-d', label: '3D' };
       }
+      if (hasType(/^u[a-z0-9]/)) {
+        return { key: 'three-d', label: '3D' };
+      }
+      if (hasType(/^(?:light(?:ambient|directional|dome|point|spot|trim)|mtl|dimension\.)/)) {
+        return { key: 'three-d', label: '3D' };
+      }
+      const looksLikeParticlePrefix = /^p[A-Z]/.test(type);
       if (hasType(/^p(?:emitter|render|turbulence|bounce|directionalforce|drag|friction|imageemitter|kill|line|pointforce|randomforce|sprite|stylize|vortex|wind)\b/) || has(/\bparticle\b/)) {
         return { key: 'particle', label: 'Particle' };
       }
-      if (hasType(/^s(?:render|rectangle|ellipse|polygon|bspline|polyline|outline|text|transform|merge|duplicate|bitmap|shape)\b/)) {
+      if (looksLikeParticlePrefix) {
+        return { key: 'particle', label: 'Particle' };
+      }
+      if (hasType(/^ofx\./)) {
+        return { key: 'ofx', label: 'OFX' };
+      }
+      if (hasType(/^fuse[._]/)) {
+        return { key: 'fuse', label: 'Fuse' };
+      }
+      const looksLikeShapeSystemPrefix = /^s[A-Z]/.test(type);
+      if (shapeSystemTypes.has(typeLower) || looksLikeShapeSystemPrefix) {
         return { key: 'shape-system', label: 'Shape' };
       }
       if (hasType(/^(?:multipoly|polymask|maskpaint|bitmapmask|paintmask|rectangle(?:mask)?|ellipse(?:mask)?|polygon(?:mask)?|polyline(?:mask)?|bspline(?:mask)?|spline(?:mask)?|polypath|mask|outline)\b/)) {
@@ -1796,6 +2585,7 @@ export function createNodesPane(options = {}) {
       })();
       const nodeControlsRaw = ensureDissolveMixControl(n, n.controls || []);
       const nodeControls = dedupeControlsByResolvedSource(nodeControlsRaw);
+      const nodeControlsDisplay = prioritizeExpandedNodeControls(nodeControls, n);
       const slotCollapseState = getNodeSlotCollapseState();
       let activeSectionHidden = false;
       let activeSectionKey = '';
@@ -1914,9 +2704,9 @@ export function createNodesPane(options = {}) {
       }
       const headerTail = document.createElement('div');
       headerTail.className = 'node-header-tail';
-      const quickCandidates = buildQuickSetCandidates(nodeControls, allowSourceControl);
+      const quickCandidates = buildQuickSetCandidates(nodeControls, allowSourceControl, n);
       const savedQuickSet = getQuickSetForType(n.type, quickCandidates.map);
-      const effectiveQuickSetCount = (savedQuickSet.length ? savedQuickSet : buildSuggestedQuickSetKeys(quickCandidates.list)).length;
+      const effectiveQuickSetCount = (savedQuickSet.length ? savedQuickSet : buildSuggestedQuickSetKeys(quickCandidates.list, n)).length;
       const quickPublishBtn = document.createElement('button');
       quickPublishBtn.type = 'button';
       quickPublishBtn.className = 'node-quick-publish-btn';
@@ -2022,11 +2812,14 @@ export function createNodesPane(options = {}) {
           return modDriven || exprDriven;
         } catch (_) { return false; }
       };
-        for (const c of (nodeControls || [])) {
+        for (const c of (nodeControlsDisplay || [])) {
           if (c.id === 'SourceOp') continue;
           if (c.id === 'Source' && !allowSourceControl) continue;
           if (isSectionHeaderControl(c)) {
             activeSectionKey = `${n.name}::${String(c.groupKey || c.id || '').trim()}`;
+            if (!slotCollapseState.has(activeSectionKey) && shouldDefaultCollapsedSlotHeader(c)) {
+              slotCollapseState.set(activeSectionKey, true);
+            }
             activeSectionHidden = !!slotCollapseState.get(activeSectionKey);
             const sectionKey = activeSectionKey;
             const row = document.createElement('div');
@@ -2989,10 +3782,13 @@ export function createNodesPane(options = {}) {
       let finalControls = applyDissolveMixOverrides(tool, adjusted);
       finalControls = applySwitchSourceOverrides(tool, finalControls);
       finalControls = applyMaskPathControlOrdering(tool, finalControls);
+      finalControls = expandTextPlusElementDefaults(tool, finalControls);
       finalControls = groupColorControls(tool.name, finalControls, overrides);
+      finalControls = groupRangeControls(tool.name, finalControls);
       finalControls = applyProfileGroups(finalControls, profileControls);
       finalControls = expandDynamicSlotDefaults(tool, finalControls);
       finalControls = applyDynamicSlotGroups(tool, finalControls);
+      finalControls = applyTextPlusShadingGroups(tool, finalControls);
       finalControls = applyModifierContextOverrides(tool, finalControls, contextBindings);
       if (debugDynamic) {
         try {
@@ -3006,10 +3802,13 @@ export function createNodesPane(options = {}) {
     let finalControls = applyDissolveMixOverrides(tool, adjusted);
     finalControls = applySwitchSourceOverrides(tool, finalControls);
     finalControls = applyMaskPathControlOrdering(tool, finalControls);
+    finalControls = expandTextPlusElementDefaults(tool, finalControls);
     finalControls = groupColorControls(tool.name, finalControls, overrides);
+    finalControls = groupRangeControls(tool.name, finalControls);
     finalControls = applyProfileGroups(finalControls, profileControls);
     finalControls = expandDynamicSlotDefaults(tool, finalControls);
     finalControls = applyDynamicSlotGroups(tool, finalControls);
+    finalControls = applyTextPlusShadingGroups(tool, finalControls);
     finalControls = applyModifierContextOverrides(tool, finalControls, contextBindings);
     if (debugDynamic) {
       try {
@@ -3080,6 +3879,300 @@ export function createNodesPane(options = {}) {
           }),
         ]));
       return [...commonSection, ...slotSections];
+    } catch (_) {
+      return controls;
+    }
+  }
+
+  function parseTextPlusElementControlMeta(id) {
+    try {
+      const raw = String(id || '').trim();
+      if (!raw) return null;
+      const m = raw.match(/^([A-Za-z_][A-Za-z0-9_]*?)([1-8])(Clone)?$/i);
+      if (!m) return null;
+      const prefix = String(m[1] || '').trim();
+      const slotIndex = Number(m[2]);
+      const suffix = String(m[3] || '');
+      if (!prefix || !Number.isFinite(slotIndex)) return null;
+      if (/^text$/i.test(prefix)) return null;
+      return {
+        prefix,
+        slotIndex,
+        suffix,
+        templateKey: `${prefix}__${suffix || ''}`,
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function applyTextPlusElementSlotMeta(control, slotMeta) {
+    if (!control || !slotMeta) return control;
+    const slotIndex = Number(slotMeta.slotIndex);
+    if (!Number.isFinite(slotIndex)) return control;
+    return {
+      ...control,
+      groupKey: `TextElement${slotIndex}`,
+      groupLabel: `Element ${slotIndex}`,
+      slotType: 'textplus-element',
+      slotIndex,
+      dynamicSlotOrder: Number.isFinite(slotMeta.order) ? Number(slotMeta.order) : Number.MAX_SAFE_INTEGER,
+    };
+  }
+
+  function buildTextPlusElementDisplayName(templateControl, nextId, slotIndex) {
+    try {
+      const fallback = humanizeName(nextId);
+      const baseName = String(templateControl?.name || '').trim();
+      if (!baseName) return fallback;
+      const replaced = baseName.replace(/\b1\b/g, String(slotIndex));
+      return replaced || fallback;
+    } catch (_) {
+      return humanizeName(nextId);
+    }
+  }
+
+  function expandTextPlusElementDefaults(tool, controls) {
+    try {
+      if (!tool || !Array.isArray(controls) || !controls.length) return controls;
+      const type = String(tool.type || '').toLowerCase();
+      if (!type.includes('textplus')) return controls;
+      if (controls.some((control) => isSectionHeaderControl(control))) return controls;
+
+      const parsedById = new Map();
+      const existingIds = new Set();
+      let hasElementSchema = false;
+      for (const control of controls) {
+        if (!control || control.type || !control.id) continue;
+        const rawId = String(control.id || '').trim();
+        if (!rawId) continue;
+        existingIds.add(rawId);
+        const parsed = parseTextPlusElementControlMeta(rawId);
+        if (!parsed) continue;
+        parsedById.set(rawId, parsed);
+        if (/^(?:Element|Enable|Name)$/i.test(parsed.prefix)) hasElementSchema = true;
+      }
+      if (!hasElementSchema) return controls;
+
+      const templateOrder = [];
+      const templateOrderIndex = new Map();
+      const templateControl = new Map();
+      for (const control of controls) {
+        if (!control || control.type || !control.id) continue;
+        const rawId = String(control.id || '').trim();
+        const parsed = parsedById.get(rawId);
+        if (!parsed) continue;
+        if (!templateOrderIndex.has(parsed.templateKey)) {
+          templateOrderIndex.set(parsed.templateKey, templateOrder.length);
+          templateOrder.push(parsed.templateKey);
+        }
+        if (parsed.slotIndex === 1 && !templateControl.has(parsed.templateKey)) {
+          templateControl.set(parsed.templateKey, control);
+        }
+      }
+      if (!templateOrder.length) return controls;
+
+      const next = [];
+      for (const control of controls) {
+        if (!control || control.type || !control.id) {
+          next.push(control);
+          continue;
+        }
+        const rawId = String(control.id || '').trim();
+        const parsed = parsedById.get(rawId);
+        if (!parsed) {
+          next.push(control);
+          continue;
+        }
+        const slotMeta = {
+          slotIndex: parsed.slotIndex,
+          order: templateOrderIndex.get(parsed.templateKey),
+        };
+        next.push(applyTextPlusElementSlotMeta(control, slotMeta));
+      }
+
+      const synthetic = [];
+      for (const templateKey of templateOrder) {
+        const seed = templateControl.get(templateKey);
+        if (!seed || !seed.id) continue;
+        const parsedSeed = parseTextPlusElementControlMeta(seed.id);
+        if (!parsedSeed) continue;
+        for (let slot = 2; slot <= 8; slot += 1) {
+          const nextId = `${parsedSeed.prefix}${slot}${parsedSeed.suffix || ''}`;
+          if (!nextId || existingIds.has(nextId)) continue;
+          existingIds.add(nextId);
+          synthetic.push(applyTextPlusElementSlotMeta({
+            ...seed,
+            id: nextId,
+            name: buildTextPlusElementDisplayName(seed, nextId, slot),
+            isSyntheticDynamicSlot: true,
+          }, {
+            slotIndex: slot,
+            order: templateOrderIndex.get(templateKey),
+          }));
+        }
+      }
+
+      return synthetic.length ? [...next, ...synthetic] : next;
+    } catch (_) {
+      return controls;
+    }
+  }
+
+  function getTextPlusShadingSlotFromId(id) {
+    try {
+      const raw = String(id || '').trim();
+      if (!raw) return null;
+      const lower = raw.toLowerCase();
+
+      let match = lower.match(/(?:^|\.)(?:red|green|blue|alpha)([123])(?:clone)?$/);
+      if (match) return Number(match[1]);
+
+      match = lower.match(/(?:enable|opacity|softnessx|softnessy|softnessglow|softnessblend|softness)([123])$/);
+      if (match) return Number(match[1]);
+
+      match = lower.match(/^text([123])fill$/);
+      if (match) return Number(match[1]);
+
+      if (lower === 'thickness'
+        || lower === 'adaptthicknesstoperspective'
+        || lower === 'outsideonly'
+        || lower === 'cleanintersections'
+        || lower === 'joinstyle'
+        || lower === 'miterlimit'
+        || lower === 'linestyle'
+        || lower === 'separatoroutline') return 2;
+
+      if (lower === 'shadowposition' || lower === 'separatorshadow') return 3;
+
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function getTextPlusShadingSlot(control) {
+    try {
+      if (!control) return null;
+      if (isGroupedControl(control)) {
+        const channels = Array.isArray(control.channels) ? control.channels : [];
+        const slots = new Set();
+        for (const ch of channels) {
+          const slot = getTextPlusShadingSlotFromId(ch?.id || '');
+          if (Number.isFinite(slot)) slots.add(slot);
+        }
+        return slots.size === 1 ? Array.from(slots)[0] : null;
+      }
+      return getTextPlusShadingSlotFromId(control.id || '');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function applyTextPlusShadingGroups(tool, controls) {
+    try {
+      if (!tool || !Array.isArray(controls) || !controls.length) return controls;
+      const type = String(tool.type || '').toLowerCase();
+      if (!type.includes('textplus')) return controls;
+      if (controls.some((c) => isSectionHeaderControl(c))) return controls;
+
+      const elementCommon = [];
+      const elementSlots = new Map();
+      let hasElementSlots = false;
+      for (const control of controls) {
+        const slotType = String(control?.slotType || '').trim().toLowerCase();
+        const slotIndex = Number(control?.slotIndex);
+        if (slotType === 'textplus-element' && Number.isFinite(slotIndex)) {
+          if (!elementSlots.has(slotIndex)) elementSlots.set(slotIndex, []);
+          elementSlots.get(slotIndex).push(control);
+          hasElementSlots = true;
+        } else {
+          elementCommon.push(control);
+        }
+      }
+      if (hasElementSlots) {
+        const out = [];
+        if (elementCommon.length) {
+          out.push(
+            {
+              id: 'common-header',
+              type: 'common-header',
+              groupLabel: 'Common',
+              groupKey: 'common',
+            },
+            ...elementCommon,
+          );
+        }
+        const slotOrder = Array.from(elementSlots.keys()).sort((a, b) => a - b);
+        for (const slotIndex of slotOrder) {
+          const slotControls = (elementSlots.get(slotIndex) || []).slice();
+          slotControls.sort((a, b) => {
+            const ao = Number.isFinite(a?.dynamicSlotOrder) ? Number(a.dynamicSlotOrder) : Number.MAX_SAFE_INTEGER;
+            const bo = Number.isFinite(b?.dynamicSlotOrder) ? Number(b.dynamicSlotOrder) : Number.MAX_SAFE_INTEGER;
+            if (ao !== bo) return ao - bo;
+            return String(a?.name || a?.id || '').localeCompare(String(b?.name || b?.id || ''));
+          });
+          out.push(
+            {
+              id: `slot-header:textplus-element-${slotIndex}`,
+              type: 'slot-header',
+              groupLabel: `Element ${slotIndex}`,
+              groupKey: `TextElement${slotIndex}`,
+              slotType: 'textplus-element',
+              slotIndex,
+            },
+            ...slotControls,
+          );
+        }
+        return out.length ? out : controls;
+      }
+
+      const common = [];
+      const shading = new Map([[1, []], [2, []], [3, []]]);
+      let hasShading = false;
+
+      for (const control of controls) {
+        const slot = getTextPlusShadingSlot(control);
+        if (Number.isFinite(slot) && shading.has(slot)) {
+          shading.get(slot).push(control);
+          hasShading = true;
+          continue;
+        }
+        common.push(control);
+      }
+
+      if (!hasShading) return controls;
+
+      const out = [];
+      if (common.length) {
+        out.push(
+          {
+            id: 'common-header',
+            type: 'common-header',
+            groupLabel: 'Common',
+            groupKey: 'common',
+          },
+          ...common,
+        );
+      }
+
+      const labels = new Map([[1, 'Fill'], [2, 'Outline'], [3, 'Shadow']]);
+      for (const slotIndex of [1, 2, 3]) {
+        const slotControls = shading.get(slotIndex) || [];
+        if (!slotControls.length) continue;
+        out.push(
+          {
+            id: `slot-header:textplus-shading-${slotIndex}`,
+            type: 'slot-header',
+            groupLabel: labels.get(slotIndex) || `Shading ${slotIndex}`,
+            groupKey: `textplus-shading-${slotIndex}`,
+            slotType: 'textplus-shading',
+            slotIndex,
+          },
+          ...slotControls,
+        );
+      }
+      return out.length ? out : controls;
     } catch (_) {
       return controls;
     }
@@ -3363,10 +4456,11 @@ export function createNodesPane(options = {}) {
         groupLabelOverrides.set(primaryBase, 'Color');
       }
       if (!channelNameOverrides.size && !groupLabelOverrides.size) return null;
+      const preferTopPlacement = !isTextPlus;
       return {
         channelNameOverrides,
         groupLabelOverrides,
-        primaryGroupBase: primaryBase || null,
+        primaryGroupBase: preferTopPlacement ? (primaryBase || null) : null,
       };
     } catch (_) {
       return null;
@@ -4293,9 +5387,36 @@ export function createNodesPane(options = {}) {
     const grouped = [];
     for (const [base, ch] of groups.entries()) {
       const sorted = ['Red','Green','Blue','Alpha'].map(s => ch.find(v => v.colorChannel === s)).filter(Boolean);
+      const sharedString = (getter) => {
+        const values = sorted
+          .map((entry) => String(getter(entry) || '').trim())
+          .filter(Boolean);
+        if (!values.length) return '';
+        const first = values[0];
+        return values.every((value) => value === first) ? first : '';
+      };
+      const sharedNumber = (getter) => {
+        const values = sorted
+          .map((entry) => getter(entry))
+          .filter((value) => Number.isFinite(value))
+          .map((value) => Number(value));
+        if (!values.length) return null;
+        const first = values[0];
+        return values.every((value) => value === first) ? first : null;
+      };
+      const sharedGroupKey = sharedString((entry) => entry.groupKey);
+      const sharedGroupLabel = sharedString((entry) => entry.groupLabel);
+      const sharedSlotType = sharedString((entry) => entry.slotType);
+      const sharedSlotIndex = sharedNumber((entry) => entry.slotIndex);
+      const sharedDynamicOrder = sharedNumber((entry) => entry.dynamicSlotOrder);
       grouped.push({
-        id: base, base, type: 'color-group', groupLabel: groupLabelOverrides.get(base) || `${humanizeName(base)} (RGB)`,
+        id: base, base, type: 'color-group',
         channels: sorted.map(c => ({ id: c.id, name: c.name })),
+        groupKey: sharedGroupKey || null,
+        groupLabel: (groupLabelOverrides.get(base) || sharedGroupLabel || `${humanizeName(base)} (RGB)`),
+        slotType: sharedSlotType || null,
+        slotIndex: Number.isFinite(sharedSlotIndex) ? Number(sharedSlotIndex) : null,
+        dynamicSlotOrder: Number.isFinite(sharedDynamicOrder) ? Number(sharedDynamicOrder) : null,
       });
     }
     if (primaryGroupBase) {
@@ -4307,6 +5428,95 @@ export function createNodesPane(options = {}) {
     }
     for (const o of others) grouped.push(o);
     return grouped;
+  }
+
+  function parseRangeBoundMeta(id) {
+    const raw = String(id || '').trim();
+    if (!raw) return null;
+    const separatorMatch = raw.match(/^(.*?)[._](Min|Max)$/i);
+    if (separatorMatch && separatorMatch[1]) {
+      return {
+        base: separatorMatch[1],
+        bound: separatorMatch[2].charAt(0).toUpperCase() + separatorMatch[2].slice(1).toLowerCase(),
+      };
+    }
+    return null;
+  }
+
+  function groupRangeControls(sourceOp, controls) {
+    try {
+      if (!Array.isArray(controls) || controls.length < 2) return controls;
+      const byBase = new Map();
+      for (let i = 0; i < controls.length; i += 1) {
+        const control = controls[i];
+        if (!control || control.type || !control.id) continue;
+        const meta = parseRangeBoundMeta(control.id);
+        if (!meta || !meta.base) continue;
+        if (!byBase.has(meta.base)) {
+          byBase.set(meta.base, { base: meta.base, min: null, max: null, firstIndex: i });
+        }
+        const entry = byBase.get(meta.base);
+        if (meta.bound === 'Min') entry.min = control;
+        if (meta.bound === 'Max') entry.max = control;
+        if (i < entry.firstIndex) entry.firstIndex = i;
+      }
+      const eligible = new Map();
+      for (const [base, entry] of byBase.entries()) {
+        if (entry && entry.min && entry.max) eligible.set(base, entry);
+      }
+      if (!eligible.size) return controls;
+
+      const emitted = new Set();
+      const consumedIds = new Set();
+      const out = [];
+      for (const control of controls) {
+        if (!control) {
+          out.push(control);
+          continue;
+        }
+        if (control.type || !control.id) {
+          out.push(control);
+          continue;
+        }
+        const id = String(control.id);
+        if (consumedIds.has(id)) continue;
+        const meta = parseRangeBoundMeta(id);
+        if (!meta || !eligible.has(meta.base)) {
+          out.push({ ...control, sourceOp });
+          continue;
+        }
+        const entry = eligible.get(meta.base);
+        if (!entry || emitted.has(meta.base)) {
+          consumedIds.add(id);
+          continue;
+        }
+        const minControl = entry.min;
+        const maxControl = entry.max;
+        if (!minControl || !maxControl) {
+          out.push({ ...control, sourceOp });
+          continue;
+        }
+        // Keep range child labels compact in Fusion inspector.
+        const minName = 'Min';
+        const maxName = 'Max';
+        out.push({
+          id: `range:${meta.base}`,
+          base: meta.base,
+          type: 'range-group',
+          groupLabel: `${humanizeName(meta.base)} Range`,
+          channels: [
+            { id: minControl.id, name: minName, control: minControl },
+            { id: maxControl.id, name: maxName, control: maxControl },
+          ],
+        });
+        emitted.add(meta.base);
+        consumedIds.add(String(minControl.id));
+        consumedIds.add(String(maxControl.id));
+      }
+      return out;
+    } catch (_) {
+      return controls;
+    }
   }
 
   function extractReferencedOpsFromTools(tools) {
@@ -4465,4 +5675,5 @@ export function createNodesPane(options = {}) {
     },
   };
 }
+
 

@@ -1,5 +1,5 @@
 export function createExportMenuController(options = {}) {
-  const { button, toggleButton, menu, getItems } = options;
+  const { button, toggleButton, menu, getItems, onItemInvoke } = options;
   const trigger = toggleButton || button;
   let cleanup = null;
 
@@ -34,6 +34,7 @@ export function createExportMenuController(options = {}) {
       btn.disabled = !item.enabled;
       btn.addEventListener('click', () => {
         close();
+        try { onItemInvoke?.(item); } catch (_) {}
         item.action?.();
       });
       menu.appendChild(btn);

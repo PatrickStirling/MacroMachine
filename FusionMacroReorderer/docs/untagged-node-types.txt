@@ -1,0 +1,29 @@
+Total untagged types: 0
+
+Tag counts:
+  color: 24
+  deep: 14
+  effect: 19
+  film: 5
+  filter: 5
+  flow: 4
+  fuse: 10
+  generator: 12
+  io: 4
+  layer: 4
+  mask: 10
+  matte: 13
+  misc: 8
+  ofx: 79
+  paint: 1
+  particle: 20
+  position: 3
+  shape-system: 17
+  stereo: 9
+  three-d: 50
+  tracking: 4
+  transform: 6
+  vr: 4
+  warp: 10
+
+Untagged types:

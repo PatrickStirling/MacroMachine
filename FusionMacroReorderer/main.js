@@ -1860,6 +1860,17 @@ function updateDocExportPathDisplay() {
     });
   }
 
+  const EXPORT_PRIMARY_MODE_DEFAULT = 'file';
+  const EXPORT_PRIMARY_MODE_LABELS = Object.freeze({
+    clipboard: 'Export to Clipboard',
+    file: 'Export to File',
+    edit: 'Export to Edit Page',
+    source: 'Export to Source',
+    'source-bulk': 'Export to Source DRFX',
+    drfx: 'Export to DRFX',
+  });
+  let exportPrimaryMode = EXPORT_PRIMARY_MODE_DEFAULT;
+
   function buildExportMenuItems() {
     const hasMacro = !!state.parseResult;
     const activeDrfxLinked = !!(state.drfxLink && state.drfxLink.linked);
@@ -1888,12 +1899,58 @@ function updateDocExportPathDisplay() {
     return items;
   }
 
+  function getExportPrimaryLabel(modeId) {
+    const key = String(modeId || '').trim();
+    return EXPORT_PRIMARY_MODE_LABELS[key] || EXPORT_PRIMARY_MODE_LABELS[EXPORT_PRIMARY_MODE_DEFAULT];
+  }
+
+  function resolveCurrentPrimaryExportItem() {
+    try {
+      const items = buildExportMenuItems()
+        .filter((item) => item && item.id && item.type !== 'sep' && typeof item.action === 'function');
+      if (!items.length) return null;
+      const byId = new Map(items.map((item) => [String(item.id || '').trim(), item]));
+      const currentId = String(exportPrimaryMode || '').trim();
+      const currentItem = byId.get(currentId);
+      if (currentItem && currentItem.enabled) return currentItem;
+      const fileItem = byId.get(EXPORT_PRIMARY_MODE_DEFAULT);
+      if (currentId !== EXPORT_PRIMARY_MODE_DEFAULT && fileItem && fileItem.enabled) {
+        exportPrimaryMode = EXPORT_PRIMARY_MODE_DEFAULT;
+        return fileItem;
+      }
+      // Keep existing mode on startup/disabled states instead of drifting to first menu item.
+      if (currentItem) return currentItem;
+      if (fileItem) return fileItem;
+      return items[0] || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function syncPrimaryExportButtonLabel() {
+    const current = resolveCurrentPrimaryExportItem();
+    const label = getExportPrimaryLabel(current?.id || exportPrimaryMode);
+    if (exportMenuBtn) exportMenuBtn.textContent = label;
+  }
+
+  function setPrimaryExportMode(modeId) {
+    const key = String(modeId || '').trim();
+    if (!key) return;
+    exportPrimaryMode = key;
+    syncPrimaryExportButtonLabel();
+  }
+
   exportMenuController = createExportMenuController({
     button: exportMenuBtn,
     toggleButton: exportMenuCaretBtn,
     menu: exportMenuEl,
     getItems: buildExportMenuItems,
+    onItemInvoke: (item) => {
+      if (!item || item.type === 'sep' || !item.id) return;
+      setPrimaryExportMode(item.id);
+    },
   });
+  syncPrimaryExportButtonLabel();
 
   function requestMiniExplorerCreateFolder() {
     try {
@@ -2151,6 +2208,7 @@ function updateDocExportPathDisplay() {
   const showNextNodeLinksEl = document.getElementById('showNextNodeLinks');
   const autoGroupQuickSetsEl = document.getElementById('autoGroupQuickSets');
   const nameClickQuickSetEl = document.getElementById('nameClickQuickSet');
+  const quickSetBlendToCheckboxEl = document.getElementById('quickSetBlendToCheckbox');
 
   const macroNameEl = document.getElementById('macroName');
   const setMacroNameDisplay = (value) => {
@@ -8424,6 +8482,7 @@ function hideDetailDrawer() {
     showNextNodeLinksEl,
     autoGroupQuickSetsEl,
     nameClickQuickSetEl,
+    quickSetBlendToCheckboxEl,
     publishSelectedBtn,
     clearNodeSelectionBtn,
     importCatalogBtn,
@@ -8493,9 +8552,7 @@ function hideDetailDrawer() {
   function setExportButtonLabel(label) {
     const next = label || DEFAULT_EXPORT_LABEL;
     if (exportBtn) exportBtn.textContent = next;
-    if (exportMenuBtn) {
-      exportMenuBtn.textContent = next === DRFX_EXPORT_LABEL ? 'Export to Source' : 'Export to File';
-    }
+    syncPrimaryExportButtonLabel();
   }
 
   async function updateExportButtonLabelFromPath(filePath) {
@@ -10150,11 +10207,13 @@ async function handleFile(file) {
       });
       return;
     }
-    if (state.drfxLink && state.drfxLink.linked) {
-      exportToSourceDrfx();
-    } else {
-      exportToFile();
+    const actionItem = resolveCurrentPrimaryExportItem();
+    if (!actionItem || typeof actionItem.action !== 'function' || actionItem.enabled === false) {
+      error('No export action is currently available.');
+      return;
     }
+    syncPrimaryExportButtonLabel();
+    await Promise.resolve(actionItem.action());
   };
 
   exportBtn?.addEventListener('click', runDefaultExportAction);
@@ -10660,8 +10719,8 @@ async function handleFile(file) {
       return {
         key,
         targetType,
-        sourceOp: String(entry.sourceOp || '').trim(),
-        source: String(entry.source || '').trim(),
+        sourceOp: unquoteSettingValue(entry.sourceOp),
+        source: unquoteSettingValue(entry.source),
         entryKey: key,
         page,
         displayName,
@@ -10684,8 +10743,8 @@ async function handleFile(file) {
         const derived = buildPresetScopeEntry(result, matchedEntry);
         if (derived) return derived;
       }
-      const sourceOp = String(raw.sourceOp || '').trim();
-      const source = String(raw.source || '').trim();
+      const sourceOp = unquoteSettingValue(raw.sourceOp);
+      const source = unquoteSettingValue(raw.source);
       const targetType = String(raw.targetType || (sourceOp && source ? 'publishedInput' : 'unknown')).trim();
       return {
         key: rawKey,
@@ -10962,17 +11021,30 @@ async function handleFile(file) {
         // from the authored switch tool itself instead of the published proxy input.
         const explicitSwitchSource = getExplicitSwitchSourcePresetValue(text, result, entry);
         if (explicitSwitchSource != null) return explicitSwitchSource;
+        const sourceOp = unquoteSettingValue(entry.sourceOp);
+        const sourceInput = unquoteSettingValue(entry.source);
+        if (!sourceOp || !sourceInput) return getPublishedPresetFallbackValue(text, result, entry);
         const bounds = locateMacroGroupBounds(text, result);
         if (!bounds) return getPublishedPresetFallbackValue(text, result, entry);
-        const toolBlock = findToolBlockInGroup(text, bounds.groupOpenIndex, bounds.groupCloseIndex, entry.sourceOp);
+        const toolBlock = findToolBlockInGroup(text, bounds.groupOpenIndex, bounds.groupCloseIndex, sourceOp);
         if (!toolBlock) return getPublishedPresetFallbackValue(text, result, entry);
         const inputsBlock = findInputsInTool(text, toolBlock.open, toolBlock.close);
         if (!inputsBlock) return getPublishedPresetFallbackValue(text, result, entry);
-        const inputBlock = findInputBlockInInputs(text, inputsBlock.open, inputsBlock.close, entry.source);
+        const inputBlock = findInputBlockInInputs(text, inputsBlock.open, inputsBlock.close, sourceInput);
         if (!inputBlock) return getPublishedPresetFallbackValue(text, result, entry);
         body = text.slice(inputBlock.open + 1, inputBlock.close);
       }
       let value = extractControlPropLiteral(body, 'Value') || '';
+      if (resolved.targetType !== 'groupUserControl' && entry && isPathEntryForDrawMode(entry)) {
+        const sourceOp = unquoteSettingValue(entry?.sourceOp);
+        const source = unquoteSettingValue(entry?.source);
+        if (sourceOp && source) {
+          const polyBody = extractPathPolylineBodyForTarget(text, result, sourceOp, source);
+          if (polyBody && String(polyBody).trim()) {
+            value = `Polyline {${polyBody}}`;
+          }
+        }
+      }
       if (isTextControl(entry)) {
         const directPlain = extractStyledTextPlainTextFromInput(body);
         if (directPlain != null) value = directPlain;
@@ -11278,8 +11350,8 @@ async function handleFile(file) {
           key,
           runtimeId,
           targetType: resolved.targetType,
-          sourceOp: String(resolved.scopeEntry?.sourceOp || resolved.entry?.sourceOp || '').trim(),
-          sourceInput: String(resolved.scopeEntry?.source || resolved.entry?.source || '').trim(),
+          sourceOp: unquoteSettingValue(resolved.scopeEntry?.sourceOp || resolved.entry?.sourceOp || ''),
+          sourceInput: unquoteSettingValue(resolved.scopeEntry?.source || resolved.entry?.source || ''),
           valueMeta,
         });
       });
@@ -17772,6 +17844,7 @@ async function handleFile(file) {
 
   function findInputBlockInInputs(text, inputsOpen, inputsClose, controlName) {
     try {
+      const wantedName = normalizeId(controlName);
       let i = inputsOpen + 1;
       let depth = 0;
       let inStr = false;
@@ -17818,7 +17891,7 @@ async function handleFile(file) {
           const blockOpen = i;
           const blockClose = findMatchingBrace(text, blockOpen);
           if (blockClose < 0) break;
-          if (String(norm) === String(controlName)) {
+          if (String(norm) === String(wantedName)) {
             return { open: blockOpen, close: blockClose };
           }
           i = blockClose + 1;
@@ -20346,9 +20419,23 @@ function applyBlendCheckboxesToTool(text, bounds, toolName, controls, eol, resul
     const body = raw.slice(open + 1, close);
     const tail = raw.slice(close);
 
+    const rangeBoundLabel = (() => {
+      const raw = String(entry?.source || '').trim();
+      const m = raw.match(/(?:[._])(Min|Max)$/i);
+      if (!m) return '';
+      return ' ';
+    })();
+    const isRangeBound = !!rangeBoundLabel;
+
     if (entry.isLabel) {
       const cleaned = removeInstanceInputProp(body, 'Name');
       return head + cleaned + tail;
+    }
+
+    if (isRangeBound) {
+      let normalized = removeInstanceInputProp(body, 'Name');
+      const insert = `${eol}Name = "${escapeQuotes(rangeBoundLabel)}",`;
+      return head + insert + normalized + tail;
     }
 
     if (!entry.name) return raw;
@@ -20420,6 +20507,24 @@ function applyBlendCheckboxesToTool(text, bounds, toolName, controls, eol, resul
     }
     out = applyBlendToggleOverride(entry, out, newline);
     try {
+      const rangeBoundLabel = (() => {
+        const rawSource = String(entry?.source || '').trim();
+        const m = rawSource.match(/(?:[._])(Min|Max)$/i);
+        if (!m) return '';
+        return ' ';
+      })();
+      if (rangeBoundLabel) {
+        const open = out.indexOf('{');
+        const close = out.lastIndexOf('}');
+        if (open >= 0 && close > open) {
+          let body = out.slice(open + 1, close);
+          body = removeInstanceInputProp(body, 'Name');
+          body = setInstanceInputProp(body, 'Name', `"${escapeQuotes(rangeBoundLabel)}"`, getLineIndent(out, open + 1), newline);
+          out = out.slice(0, open + 1) + body + out.slice(close);
+        }
+      }
+    } catch (_) {}
+    try {
       const inputControlChanged = !!(
         (metaDiff && Object.prototype.hasOwnProperty.call(metaDiff, 'inputControl')) || entry?.controlTypeEdited
       );
@@ -20457,7 +20562,9 @@ function applyBlendCheckboxesToTool(text, bounds, toolName, controls, eol, resul
     if (!key) return false;
     const trimmed = String(key).trim();
     if (!trimmed) return false;
-    return /[A-Za-z0-9_]/.test(trimmed);
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed)) return true;
+    if (/^\[\s*"(?:\\.|[^"\\])+"\s*\]$/.test(trimmed)) return true;
+    return false;
   }
 
   function deriveFallbackEntryKey(entry) {
@@ -20475,7 +20582,7 @@ function applyBlendCheckboxesToTool(text, bounds, toolName, controls, eol, resul
     if (!match) return raw;
     const currentKey = match[2] || '';
     if (isKeyLikelyValid(currentKey)) return raw;
-    const fallback = deriveFallbackEntryKey(entry);
+    const fallback = formatToolInputId(deriveFallbackEntryKey(entry));
     if (!fallback) return raw;
     return raw.replace(/^(\s*)([^\s=]+)\s*=\s*InstanceInput\b/, `$1${fallback} = InstanceInput`);
   }
@@ -20879,13 +20986,21 @@ function applyBlendCheckboxesToTool(text, bounds, toolName, controls, eol, resul
 
     const b = [];
 
-    b.push(`${key} = InstanceInput {`);
+    const safeKey = formatToolInputId(key);
+    b.push(`${safeKey || key} = InstanceInput {`);
 
     if (sourceOp) b.push(`SourceOp = "${escapeQuotes(sourceOp)}",`);
 
     if (source) b.push(`Source = "${escapeQuotes(source)}",`);
 
-    if (displayName) b.push(`Name = "${escapeQuotes(displayName)}",`);
+    const rangeBoundLabel = (() => {
+      const raw = String(source || '').trim();
+      const m = raw.match(/(?:[._])(Min|Max)$/i);
+      if (!m) return '';
+      return ' ';
+    })();
+    const effectiveDisplayName = rangeBoundLabel || displayName;
+    if (effectiveDisplayName) b.push(`Name = "${escapeQuotes(effectiveDisplayName)}",`);
 
     if (Number.isFinite(controlGroup)) b.push(`ControlGroup = ${controlGroup},`);
     const normalizedPage = page && String(page).trim();
@@ -20911,7 +21026,8 @@ function applyBlendCheckboxesToTool(text, bounds, toolName, controls, eol, resul
 
     const segments = [];
 
-    segments.push(`${key} = InstanceInput {`);
+    const safeKey = formatToolInputId(key);
+    segments.push(`${safeKey || key} = InstanceInput {`);
 
     if (entry?.sourceOp) segments.push(`SourceOp = "${escapeQuotes(entry.sourceOp)}",`);
 
