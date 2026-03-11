@@ -2918,6 +2918,9 @@ export function createNodesPane(options = {}) {
         groupLabel: c.groupLabel || existing.groupLabel || null,
         slotType: c.slotType || existing.slotType || null,
         slotIndex: Number.isFinite(c.slotIndex) ? c.slotIndex : (Number.isFinite(existing.slotIndex) ? existing.slotIndex : null),
+        inputSourceOp: c.inputSourceOp || existing.inputSourceOp || null,
+        inputSource: c.inputSource || existing.inputSource || null,
+        isConnected: c.isConnected === true || existing.isConnected === true,
       });
     }
     if (debugDynamic) {
@@ -4182,7 +4185,10 @@ export function createNodesPane(options = {}) {
 
   function parseToolInputs(body) {
     const entries = parseToolInputEntries(body);
-    return entries.map(({ id, name, kind, groupKey, groupLabel, slotType, slotIndex }) => ({
+    return entries.map(({ id, name, kind, groupKey, groupLabel, slotType, slotIndex, inputBody }) => {
+      const inputSourceOp = String(extractQuotedProp(String(inputBody || ''), 'SourceOp') || '').trim();
+      const inputSource = String(extractQuotedProp(String(inputBody || ''), 'Source') || '').trim();
+      return ({
       id,
       name,
       kind,
@@ -4190,7 +4196,11 @@ export function createNodesPane(options = {}) {
       groupLabel: groupLabel || null,
       slotType: slotType || null,
       slotIndex: Number.isFinite(slotIndex) ? slotIndex : null,
-    }));
+      inputSourceOp: inputSourceOp || null,
+      inputSource: inputSource || null,
+      isConnected: !!inputSourceOp,
+    });
+    });
   }
 
   function parseInstanceInputStateMap(body) {

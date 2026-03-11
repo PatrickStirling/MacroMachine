@@ -1936,6 +1936,7 @@ function updateDocExportPathDisplay() {
 
   const nodesList = document.getElementById('nodesList');
   const nodesPaneEl = document.getElementById('nodesPane');
+  const routingBtn = document.getElementById('routingBtn');
   const hideNodesBtn = document.getElementById('hideNodesBtn');
   const showNodesBtn = document.getElementById('showNodesBtn');
 
@@ -2039,6 +2040,10 @@ function updateDocExportPathDisplay() {
         extras.macroNameOriginal = state.parseResult.macroNameOriginal || null;
         extras.operatorType = state.parseResult.operatorType || null;
         extras.operatorTypeOriginal = state.parseResult.operatorTypeOriginal || null;
+        extras.routingInputs = Array.isArray(state.parseResult.routingInputs)
+          ? state.parseResult.routingInputs.map((row) => ({ ...(row || {}) }))
+          : [];
+        extras.routingManagedNames = Array.from(state.parseResult.routingManagedNames || []);
       }
       return extras;
     } catch (_) {
@@ -2060,6 +2065,14 @@ function updateDocExportPathDisplay() {
         if (extra.macroNameOriginal !== undefined) state.parseResult.macroNameOriginal = extra.macroNameOriginal;
         if (extra.operatorType !== undefined) state.parseResult.operatorType = extra.operatorType;
         if (extra.operatorTypeOriginal !== undefined) state.parseResult.operatorTypeOriginal = extra.operatorTypeOriginal;
+        state.parseResult.routingInputs = Array.isArray(extra.routingInputs)
+          ? extra.routingInputs.map((row) => ({ ...(row || {}) }))
+          : [];
+        state.parseResult.routingManagedNames = new Set(
+          Array.isArray(extra.routingManagedNames)
+            ? extra.routingManagedNames
+            : state.parseResult.routingInputs.map((row) => row?.macroInput).filter(Boolean)
+        );
       }
       setMacroNameDisplay(state.parseResult?.macroName || 'Unknown');
       syncOperatorSelect();
@@ -2085,6 +2098,7 @@ function updateDocExportPathDisplay() {
   setNodesHidden(false);
   hideNodesBtn?.addEventListener('click', () => setNodesHidden(true));
   showNodesBtn?.addEventListener('click', () => setNodesHidden(false));
+  routingBtn?.addEventListener('click', () => openRoutingIOModal());
 
 
   // Insert a cross-platform URL launcher into a ButtonControl block if it has none
@@ -3642,7 +3656,7 @@ function hideDetailDrawer() {
       const iconSpan = document.createElement('span');
       iconSpan.className = 'icon';
       if (typeof createIcon === 'function') iconSpan.innerHTML = createIcon('chevron-right', 12);
-      else iconSpan.textContent = '▶';
+      else iconSpan.textContent = '>';
       const titleSpan = document.createElement('span');
       titleSpan.textContent = title;
       header.appendChild(iconSpan);
@@ -3666,7 +3680,7 @@ function hideDetailDrawer() {
         if (typeof createIcon === 'function') {
           iconSpan.innerHTML = createIcon(open ? 'chevron-down' : 'chevron-right', 12);
         } else {
-          iconSpan.textContent = open ? '▼' : '▶';
+          iconSpan.textContent = open ? 'v' : '>';
         }
       };
       header.addEventListener('click', () => {
@@ -5296,6 +5310,240 @@ function hideDetailDrawer() {
           logDiag(`[Path DrawMode export] direct=${direct}, legacy=${legacy}, patched=${patched}, clamped=${clamped}`);
         } catch (_) {}
       }
+      return updated;
+    } catch (_) {
+      return text;
+    }
+  }
+
+  function appendEntryChunkToOrderedBlock(text, blockOpen, blockClose, chunk, eol) {
+    try {
+      if (!text || !chunk || !Number.isFinite(blockOpen) || !Number.isFinite(blockClose)) return text;
+      const newline = eol || '\n';
+      let cursor = Math.max(blockOpen + 1, blockClose - 1);
+      while (cursor > blockOpen && /\s/.test(text[cursor])) cursor -= 1;
+      const prev = text[cursor];
+      const isEmpty = prev === '{';
+      const needsComma = !isEmpty && prev !== ',';
+      const needsLeadingNl = text[blockClose - 1] !== '\n' && text[blockClose - 1] !== '\r';
+      const prefix = (needsComma ? ',' : '') + (needsLeadingNl ? newline : '');
+      return text.slice(0, blockClose) + prefix + chunk + newline + text.slice(blockClose);
+    } catch (_) {
+      return text;
+    }
+  }
+
+  function ensurePresetPathSwitchToolInGroup(text, result, switchToolName, defaultIndex, numberOfInputs, eol) {
+    try {
+      const cleanName = String(switchToolName || '').trim();
+      if (!text || !result || !cleanName) return { text, toolBlock: null, created: false };
+      let updated = text;
+      const newline = eol || '\n';
+      let bounds = locateMacroGroupBounds(updated, result);
+      if (!bounds) return { text, toolBlock: null, created: false };
+      let toolsBlock = findOrderedBlock(updated, bounds.groupOpenIndex, bounds.groupCloseIndex, 'Tools');
+      if (!toolsBlock) return { text, toolBlock: null, created: false };
+      let entries = parseOrderedBlockEntries(updated, toolsBlock.open, toolsBlock.close) || [];
+      let existing = entries.find((entry) => String(entry?.name || '').trim() === cleanName);
+      if (!existing) {
+        const entryIndent = (getLineIndent(updated, toolsBlock.open) || '') + '\t';
+        const switchChunk = [
+          `${entryIndent}${cleanName} = SwitchPolyLine {`,
+          `${entryIndent}\tCtrlWZoom = false,`,
+          `${entryIndent}\tInputs = {`,
+          `${entryIndent}\t\tNumberOfInputs = Input { Value = ${Math.max(2, Number(numberOfInputs) || 2)}, },`,
+          `${entryIndent}\t\tSource = Input { Value = ${Math.max(0, Number(defaultIndex) || 0)}, },`,
+          `${entryIndent}\t},`,
+          `${entryIndent}},`,
+        ].join(newline);
+        updated = appendEntryChunkToOrderedBlock(updated, toolsBlock.open, toolsBlock.close, switchChunk, newline);
+        bounds = locateMacroGroupBounds(updated, result) || bounds;
+        toolsBlock = findOrderedBlock(updated, bounds.groupOpenIndex, bounds.groupCloseIndex, 'Tools');
+        if (!toolsBlock) return { text: updated, toolBlock: null, created: true };
+        entries = parseOrderedBlockEntries(updated, toolsBlock.open, toolsBlock.close) || [];
+        existing = entries.find((entry) => String(entry?.name || '').trim() === cleanName);
+        if (!existing) return { text: updated, toolBlock: null, created: true };
+        return {
+          text: updated,
+          toolBlock: { open: existing.blockOpen, close: existing.blockClose },
+          created: true,
+        };
+      }
+      return {
+        text: updated,
+        toolBlock: { open: existing.blockOpen, close: existing.blockClose },
+        created: false,
+      };
+    } catch (_) {
+      return { text, toolBlock: null, created: false };
+    }
+  }
+
+  function upsertPresetPathSwitchInputValue(text, result, toolName, toolBlock, inputName, valueLiteral, eol) {
+    try {
+      if (!text || !result || !toolBlock || !inputName) return { text, toolBlock, changed: false };
+      const cleanToolName = String(toolName || '').trim();
+      if (!cleanToolName) return { text, toolBlock, changed: false };
+      const newline = eol || '\n';
+      let updated = text;
+      const ensured = ensureInputsBlockInToolBlock(updated, toolBlock, newline);
+      updated = ensured.text;
+      let currentToolBlock = ensured.toolBlock || toolBlock;
+      let inputsBlock = ensured.inputsBlock || findInputsInTool(updated, currentToolBlock.open, currentToolBlock.close);
+      if (!inputsBlock) return { text: updated, toolBlock: currentToolBlock, changed: false };
+      let inputBlock = findInputBlockInInputs(updated, inputsBlock.open, inputsBlock.close, inputName);
+      let changed = false;
+      if (!inputBlock) {
+        const itemIndent = (getLineIndent(updated, inputsBlock.open) || '') + '\t';
+        const inputChunk = [
+          `${itemIndent}${inputName} = Input {`,
+          `${itemIndent}\tValue = ${valueLiteral},`,
+          `${itemIndent}},`,
+        ].join(newline);
+        updated = appendEntryChunkToOrderedBlock(updated, inputsBlock.open, inputsBlock.close, inputChunk, newline);
+        changed = true;
+      } else {
+        const indent = (getLineIndent(updated, inputBlock.open) || '') + '\t';
+        let body = updated.slice(inputBlock.open + 1, inputBlock.close);
+        const nextBody = upsertControlProp(body, 'Value', valueLiteral, indent, newline);
+        if (nextBody !== body) {
+          updated = updated.slice(0, inputBlock.open + 1) + nextBody + updated.slice(inputBlock.close);
+          changed = true;
+        }
+      }
+      const group = locateMacroGroupBounds(updated, result);
+      if (group) {
+        const refreshed = findToolBlockInGroup(updated, group.groupOpenIndex, group.groupCloseIndex, cleanToolName);
+        if (refreshed) currentToolBlock = refreshed;
+      }
+      return { text: updated, toolBlock: currentToolBlock, changed };
+    } catch (_) {
+      return { text, toolBlock, changed: false };
+    }
+  }
+
+  function rewirePresetPathTargetInputToSwitch(text, result, sourceOp, sourceInput, switchToolName, eol) {
+    try {
+      const toolName = String(sourceOp || '').trim();
+      const inputName = String(sourceInput || '').trim();
+      const switchName = String(switchToolName || '').trim();
+      if (!text || !result || !toolName || !inputName || !switchName) return { text, changed: false };
+      const newline = eol || '\n';
+      let updated = text;
+      let bounds = locateMacroGroupBounds(updated, result);
+      if (!bounds) return { text, changed: false };
+      let toolBlock = findToolBlockInGroup(updated, bounds.groupOpenIndex, bounds.groupCloseIndex, toolName);
+      if (!toolBlock) return { text, changed: false };
+      const ensured = ensureInputsBlockInToolBlock(updated, toolBlock, newline);
+      updated = ensured.text;
+      toolBlock = ensured.toolBlock || toolBlock;
+      let inputsBlock = ensured.inputsBlock || findInputsInTool(updated, toolBlock.open, toolBlock.close);
+      if (!inputsBlock) return { text: updated, changed: false };
+      let inputBlock = findInputBlockInInputs(updated, inputsBlock.open, inputsBlock.close, inputName);
+      if (!inputBlock) {
+        updated = insertToolInputStubBlock(updated, inputsBlock.open, inputsBlock.close, inputName, newline);
+        bounds = locateMacroGroupBounds(updated, result) || bounds;
+        toolBlock = findToolBlockInGroup(updated, bounds.groupOpenIndex, bounds.groupCloseIndex, toolName) || toolBlock;
+        inputsBlock = findInputsInTool(updated, toolBlock.open, toolBlock.close) || inputsBlock;
+        inputBlock = findInputBlockInInputs(updated, inputsBlock.open, inputsBlock.close, inputName);
+      }
+      if (!inputBlock) return { text: updated, changed: false };
+      const indent = (getLineIndent(updated, inputBlock.open) || '') + '\t';
+      let body = updated.slice(inputBlock.open + 1, inputBlock.close);
+      const original = body;
+      body = removeControlProp(body, 'Value');
+      body = upsertControlProp(body, 'SourceOp', `"${escapeQuotes(switchName)}"`, indent, newline);
+      body = upsertControlProp(body, 'Source', '"Output"', indent, newline);
+      if (body === original) return { text: updated, changed: false };
+      updated = updated.slice(0, inputBlock.open + 1) + body + updated.slice(inputBlock.close);
+      return { text: updated, changed: true };
+    } catch (_) {
+      return { text, changed: false };
+    }
+  }
+
+  function applyPresetPathSwitchExportPatches(text, result, presetRuntime, eol, options = {}) {
+    try {
+      if (!text || !result || options?.safeEditExport === true) return text;
+      const plans = Array.isArray(presetRuntime?.pathSwitchPlan) ? presetRuntime.pathSwitchPlan : [];
+      if (!plans.length) return text;
+      let updated = text;
+      const newline = eol || '\n';
+      let createdTools = 0;
+      let rewiredTargets = 0;
+      let upsertedInputs = 0;
+      plans.forEach((plan) => {
+        try {
+          const switchName = String(plan?.switchToolName || '').trim();
+          const literals = Array.isArray(plan?.literals) ? plan.literals : [];
+          if (!switchName || !literals.length) return;
+          const ensuredTool = ensurePresetPathSwitchToolInGroup(
+            updated,
+            result,
+            switchName,
+            plan?.defaultIndex,
+            literals.length,
+            newline
+          );
+          updated = ensuredTool.text;
+          if (ensuredTool.created) createdTools += 1;
+          let switchToolBlock = ensuredTool.toolBlock;
+          if (!switchToolBlock) return;
+          const countWrite = upsertPresetPathSwitchInputValue(
+            updated,
+            result,
+            switchName,
+            switchToolBlock,
+            'NumberOfInputs',
+            String(Math.max(2, literals.length || 2)),
+            newline
+          );
+          updated = countWrite.text;
+          switchToolBlock = countWrite.toolBlock || switchToolBlock;
+          if (countWrite.changed) upsertedInputs += 1;
+          const sourceWrite = upsertPresetPathSwitchInputValue(
+            updated,
+            result,
+            switchName,
+            switchToolBlock,
+            'Source',
+            String(Math.max(0, Number(plan?.defaultIndex) || 0)),
+            newline
+          );
+          updated = sourceWrite.text;
+          switchToolBlock = sourceWrite.toolBlock || switchToolBlock;
+          if (sourceWrite.changed) upsertedInputs += 1;
+          literals.forEach((literal, idx) => {
+            const inputWrite = upsertPresetPathSwitchInputValue(
+              updated,
+              result,
+              switchName,
+              switchToolBlock,
+              `Input${idx}`,
+              String(literal || 'Polyline {}'),
+              newline
+            );
+            updated = inputWrite.text;
+            switchToolBlock = inputWrite.toolBlock || switchToolBlock;
+            if (inputWrite.changed) upsertedInputs += 1;
+          });
+          const rewired = rewirePresetPathTargetInputToSwitch(
+            updated,
+            result,
+            plan?.sourceOp,
+            plan?.sourceInput,
+            switchName,
+            newline
+          );
+          updated = rewired.text;
+          if (rewired.changed) rewiredTargets += 1;
+        } catch (_) {}
+      });
+      try {
+        if (typeof diagnosticsController?.isEnabled === 'function' && diagnosticsController.isEnabled()) {
+          logDiag?.(`[Preset path switch] plans=${plans.length}, tools=${createdTools}, inputs=${upsertedInputs}, rewired=${rewiredTargets}`);
+        }
+      } catch (_) {}
       return updated;
     } catch (_) {
       return text;
@@ -8730,6 +8978,7 @@ function hideDetailDrawer() {
         resolveMacroGroupSourceOp(state.originalText, state.parseResult)
           || String(state.parseResult.macroName || state.parseResult.macroNameOriginal || '').trim()
       );
+      hydrateRoutingInputsState(state.originalText, state.parseResult);
       updateDataMenuState();
       syncDataLinkPanel();
       syncOperatorSelect();
@@ -10042,7 +10291,7 @@ async function handleFile(file) {
       body.className = 'form-body';
       const note = document.createElement('p');
       note.className = 'detail-default-note';
-      note.textContent = 'Sheet must be shared as “Anyone with the link”.';
+      note.textContent = 'Sheet must be shared as "Anyone with the link".';
       body.appendChild(note);
       const label = document.createElement('label');
       label.textContent = 'Google Sheets URL';
@@ -10802,8 +11051,151 @@ async function handleFile(file) {
       .replace(/\n/g, '\\n');
   }
 
+  function compactPolylinePresetLiteral(rawValue) {
+    try {
+      const raw = String(rawValue == null ? '' : rawValue);
+      const trimmed = raw.trim();
+      if (!/^polyline\b/i.test(trimmed)) return raw;
+      let out = trimmed
+        .replace(/\r\n?/g, '\n')
+        .replace(/\s+/g, ' ')
+        .replace(/\s*([{}(),=])\s*/g, '$1')
+        .trim();
+      if (!out) return raw;
+      return out;
+    } catch (_) {
+      return String(rawValue == null ? '' : rawValue);
+    }
+  }
+
+  function normalizePresetPayloadValue(rawValue) {
+    try {
+      const raw = String(rawValue == null ? '' : rawValue);
+      const compact = compactPolylinePresetLiteral(raw);
+      return String(compact == null ? '' : compact);
+    } catch (_) {
+      return String(rawValue == null ? '' : rawValue);
+    }
+  }
+
+  function isPolylinePresetLiteral(rawValue) {
+    try {
+      const trimmed = String(rawValue == null ? '' : rawValue).trim();
+      if (!trimmed) return false;
+      if (/^Polyline\s*\{/i.test(trimmed)) return true;
+      if (/^\{\s*(?:Closed\s*=|Points\s*=)/i.test(trimmed)) return true;
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function normalizePolylinePresetLiteralForSwitch(rawValue) {
+    try {
+      const normalized = normalizePresetPayloadValue(rawValue);
+      let trimmed = String(normalized == null ? '' : normalized).trim();
+      if (!trimmed) return '';
+      if (/^Polyline\s*\{/i.test(trimmed)) return trimmed;
+      if (trimmed.startsWith('{')) return `Polyline ${trimmed}`;
+      return '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function sanitizePresetPathSwitchToken(value) {
+    return String(value || '').replace(/[^A-Za-z0-9_]/g, '_').replace(/^_+|_+$/g, '');
+  }
+
+  function collectKnownToolNamesForPresetSwitch(result) {
+    try {
+      const names = new Set();
+      if (Array.isArray(result?.entries)) {
+        result.entries.forEach((entry) => {
+          const sourceOp = String(entry?.sourceOp || '').trim();
+          if (sourceOp) names.add(sourceOp);
+        });
+      }
+      if (result?.luaToolTypes && typeof result.luaToolTypes.forEach === 'function') {
+        result.luaToolTypes.forEach((_type, toolName) => {
+          const name = String(toolName || '').trim();
+          if (name) names.add(name);
+        });
+      }
+      return names;
+    } catch (_) {
+      return new Set();
+    }
+  }
+
+  function makeUniquePresetPathSwitchToolName(baseName, takenNames) {
+    try {
+      const base = sanitizePresetPathSwitchToken(baseName) || 'FMR_PresetPathSwitch';
+      const taken = takenNames instanceof Set ? takenNames : new Set();
+      if (!taken.has(base)) {
+        taken.add(base);
+        return base;
+      }
+      let n = 2;
+      while (taken.has(`${base}${n}`)) n += 1;
+      const next = `${base}${n}`;
+      taken.add(next);
+      return next;
+    } catch (_) {
+      return 'FMR_PresetPathSwitch';
+    }
+  }
+
+  function buildPresetPathSwitchPlan(result, payload, runtimeTargets, presetNames, defaultIndex = 0) {
+    try {
+      if (!Array.isArray(runtimeTargets) || !runtimeTargets.length) return [];
+      if (!Array.isArray(presetNames) || !presetNames.length) return [];
+      const presetObj = payload?.presets && typeof payload.presets === 'object' ? payload.presets : {};
+      const baseObj = payload?.base && typeof payload.base === 'object' ? payload.base : {};
+      const takenNames = collectKnownToolNamesForPresetSwitch(result);
+      const plan = [];
+      runtimeTargets.forEach((target) => {
+        const key = String(target?.key || '').trim();
+        const sourceOp = String(target?.sourceOp || '').trim();
+        const sourceInput = String(target?.sourceInput || '').trim();
+        if (!key || !sourceOp || !sourceInput) return;
+        const pathLikeTarget = isPathControlId(sourceInput)
+          || isPathControlId(target?.runtimeId)
+          || isPathControlId(key);
+        if (!pathLikeTarget) return;
+        const byPreset = presetNames.map((name) => {
+          const values = presetObj?.[name] || {};
+          if (Object.prototype.hasOwnProperty.call(values, key)) return normalizePolylinePresetLiteralForSwitch(values[key]);
+          if (Object.prototype.hasOwnProperty.call(baseObj, key)) return normalizePolylinePresetLiteralForSwitch(baseObj[key]);
+          return '';
+        });
+        const firstValid = byPreset.find((item) => isPolylinePresetLiteral(item)) || '';
+        if (!firstValid) return;
+        const literals = byPreset.map((item) => (isPolylinePresetLiteral(item) ? item : firstValid));
+        const unique = new Set(literals.map((item) => String(item || '').trim()));
+        if (unique.size <= 1) return;
+        const switchToolName = makeUniquePresetPathSwitchToolName(
+          `${sourceOp}_${sourceInput}_PresetPathSwitch`,
+          takenNames
+        );
+        plan.push({
+          key,
+          sourceOp,
+          sourceInput,
+          runtimeId: String(target?.runtimeId || '').trim(),
+          switchToolName,
+          defaultIndex: Math.max(0, Number(defaultIndex) || 0),
+          literals,
+        });
+      });
+      return plan;
+    } catch (_) {
+      return [];
+    }
+  }
+
   function serializePresetLuaValue(entry, rawValue) {
-    const raw = rawValue == null ? '' : String(rawValue);
+    const raw = normalizePresetPayloadValue(rawValue);
     const trimmed = raw.trim();
     const inputControl = normalizeInputControlValue(
       entry?.controlMeta?.inputControl || entry?.controlMetaOriginal?.inputControl || entry?.inputControl
@@ -10840,6 +11232,28 @@ async function handleFile(file) {
     return `"${escapeLuaString(raw)}"`;
   }
 
+  function isUnsafePresetRuntimeConstructorLiteral(literal, target) {
+    try {
+      const trimmed = String(literal || '').trim();
+      if (!trimmed) return false;
+      if (/^Polyline\s*\{/i.test(trimmed)) return true;
+      if (/^Path\s*\{/i.test(trimmed)) return true;
+      const constructorLike = /^[A-Za-z_][A-Za-z0-9_]*\s*[\(\{]/.test(trimmed);
+      if (!constructorLike) return false;
+      if (/^FuID\s*\(/i.test(trimmed)) return false;
+      const idHint = [
+        target?.runtimeId,
+        target?.key,
+        target?.valueMeta?.source,
+        target?.valueMeta?.id,
+      ].map((v) => String(v || '').toLowerCase()).join(' ');
+      if (/(^|[^a-z])(polyline|path|mask)([^a-z]|$)/i.test(idHint)) return true;
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   function resolvePresetRuntimeTargets(result, scopeCandidates) {
     try {
       const targets = [];
@@ -10864,6 +11278,8 @@ async function handleFile(file) {
           key,
           runtimeId,
           targetType: resolved.targetType,
+          sourceOp: String(resolved.scopeEntry?.sourceOp || resolved.entry?.sourceOp || '').trim(),
+          sourceInput: String(resolved.scopeEntry?.source || resolved.entry?.source || '').trim(),
           valueMeta,
         });
       });
@@ -10881,7 +11297,18 @@ async function handleFile(file) {
       if (!scopeEntries.length || !presetNames.length) return '';
       const runtimeTargets = resolvePresetRuntimeTargets(result, scopeEntries);
       if (!runtimeTargets.length) return '';
+      const traceRuntime = !!FMR_PRESET_RUNTIME_TRACE;
+      const pathSwitchByKey = new Map();
+      (Array.isArray(payload?.pathSwitchPlan) ? payload.pathSwitchPlan : []).forEach((item) => {
+        const key = String(item?.key || '').trim();
+        const switchToolName = String(item?.switchToolName || '').trim();
+        if (!key || !switchToolName) return;
+        pathSwitchByKey.set(key, {
+          switchToolName,
+        });
+      });
       const variationByKey = new Map();
+      const skippedUnsafe = [];
       runtimeTargets.forEach((target) => {
         const seen = new Set();
         presetNames.forEach((name) => {
@@ -10893,20 +11320,57 @@ async function handleFile(file) {
         variationByKey.set(target.key, seen.size > 1);
       });
       const lines = [];
-      lines.push(`local preset = math.floor(tonumber(tool:GetInput("${escapeLuaString(selectorInputId || FMR_PRESET_SELECT_CONTROL)}")) or 0)`);
+      lines.push('local __ok, __err = pcall(function()');
+      lines.push(`  local preset = math.floor(tonumber(tool:GetInput("${escapeLuaString(selectorInputId || FMR_PRESET_SELECT_CONTROL)}")) or 0)`);
       presetNames.forEach((name, idx) => {
         const values = presetObj?.[name] || {};
-        lines.push(`${idx === 0 ? 'if' : 'elseif'} preset == ${idx} then`);
+        lines.push(`  ${idx === 0 ? 'if' : 'elseif'} preset == ${idx} then`);
         runtimeTargets.forEach((target) => {
+          const pathSwitch = pathSwitchByKey.get(String(target.key || '').trim());
+          if (pathSwitch?.switchToolName) {
+            lines.push('    do');
+            lines.push(`      local __switchName = "${escapeLuaString(pathSwitch.switchToolName)}"`);
+            lines.push(`      local __switchIndex = ${idx}`);
+            lines.push('      local __comp = comp or (tool and tool.Comp) or nil');
+            lines.push('      local __switchTool = nil');
+            lines.push('      if __comp and __comp.FindTool and __switchName ~= "" then');
+            lines.push('        local __okFind, __found = pcall(function() return __comp:FindTool(__switchName) end)');
+            lines.push('        if __okFind then __switchTool = __found end');
+            lines.push('      end');
+            lines.push('      if __switchTool then');
+            lines.push('        pcall(function() __switchTool.Source = __switchIndex end)');
+            lines.push('        pcall(function() __switchTool:SetInput("Source", __switchIndex) end)');
+            if (traceRuntime) {
+              lines.push(`        print("[Preset runtime dbg] switch=${escapeLuaString(pathSwitch.switchToolName)} index=" .. tostring(__switchIndex))`);
+            }
+            lines.push('      end');
+            lines.push('    end');
+            return;
+          }
           if (!Object.prototype.hasOwnProperty.call(values, target.key)) return;
           const literal = serializePresetLuaValue(target.valueMeta, values[target.key]);
           const variesAcrossPresets = !!variationByKey.get(target.key);
           const isConstructorLike = /^[A-Za-z_][A-Za-z0-9_]*\s*[\(\{]/.test(String(literal || '').trim());
+          const unsafeConstructor = isUnsafePresetRuntimeConstructorLiteral(literal, target);
+          if (unsafeConstructor && !FMR_PRESET_RUNTIME_INCLUDE_CONSTRUCTORS) {
+            skippedUnsafe.push(String(target.runtimeId || target.key || 'unknown'));
+            return;
+          }
           if (isConstructorLike && !variesAcrossPresets) return;
-          lines.push(`  tool["${escapeLuaString(target.runtimeId)}"] = ${literal}`);
+          lines.push(`    tool["${escapeLuaString(target.runtimeId)}"] = ${literal}`);
         });
       });
+      lines.push('  end');
+      lines.push('end)');
+      lines.push('if not __ok and __err then');
+      lines.push('  print(__err)');
       lines.push('end');
+      if (skippedUnsafe.length && typeof logDiag === 'function') {
+        try {
+          const unique = [...new Set(skippedUnsafe)];
+          logDiag(`[Preset runtime] skipped unsafe constructor assignments: ${unique.join(', ')}`);
+        } catch (_) {}
+      }
       return lines.join('\n').trim();
     } catch (_) {
       return '';
@@ -10936,14 +11400,17 @@ async function handleFile(file) {
   function upsertPresetSelectorControl(text, result, presetNames, script, eol, defaultIndex = 0) {
     try {
       const safeDefaultIndex = Math.max(0, Number(defaultIndex) || 0);
+      const scriptLiteral = script && script.trim()
+        ? buildSettingLuaScriptLiteral(script, { longThreshold: 900 })
+        : '';
       const lines = buildControlDefinitionLines('combo', {
         name: 'Preset',
         page: 'Controls',
         comboOptions: presetNames,
       });
       lines.push(`INP_Default = ${safeDefaultIndex},`);
-      if (script && script.trim()) {
-        lines.push(`INPS_ExecuteOnChange = "${escapeSettingString(script)}",`);
+      if (scriptLiteral) {
+        lines.push(`INPS_ExecuteOnChange = ${scriptLiteral},`);
       }
       return upsertGroupUserControl(text, result, FMR_PRESET_SELECT_CONTROL, {
         createLines: lines,
@@ -10957,8 +11424,8 @@ async function handleFile(file) {
           next = upsertControlProp(next, 'ICS_ControlPage', '"Controls"', indent, newline);
           next = removeControlListPropEntries(next, 'CCS_AddString');
           next = appendControlListEntries(next, 'CCS_AddString', presetNames, indent, newline);
-          next = script && script.trim()
-            ? upsertControlProp(next, 'INPS_ExecuteOnChange', `"${escapeSettingString(script)}"`, indent, newline)
+          next = scriptLiteral
+            ? upsertControlProp(next, 'INPS_ExecuteOnChange', scriptLiteral, indent, newline)
             : removeControlProp(next, 'INPS_ExecuteOnChange');
           return next;
         },
@@ -11326,6 +11793,767 @@ async function handleFile(file) {
     }
     applyNodeControlMeta(result.entries[idx], meta);
     return idx;
+  }
+
+  function sanitizeRoutingInputId(value) {
+    try {
+      let out = String(value || '').trim().replace(/[^A-Za-z0-9_]/g, '_');
+      out = out.replace(/_+/g, '_');
+      out = out.replace(/^_+/, '');
+      const inputMatch = /^input_*(\d+)$/i.exec(out);
+      if (inputMatch) out = `Input${Number(inputMatch[1])}`;
+      if (!out) return '';
+      if (!isIdentStart(out[0])) out = `_${out}`;
+      return out;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function makeUniqueRoutingInputId(base, used) {
+    const taken = used instanceof Set ? used : new Set();
+    const cleanBase = sanitizeRoutingInputId(base) || 'Input';
+    const inputMatch = /^Input(\d+)$/i.exec(cleanBase);
+    if (inputMatch) {
+      let n = Number(inputMatch[1]);
+      if (!Number.isFinite(n) || n <= 0) n = 1;
+      let candidate = `Input${n}`;
+      while (taken.has(candidate)) {
+        n += 1;
+        candidate = `Input${n}`;
+      }
+      return candidate;
+    }
+    if (!taken.has(cleanBase)) return cleanBase;
+    let i = 2;
+    while (taken.has(`${cleanBase}_${i}`)) i += 1;
+    return `${cleanBase}_${i}`;
+  }
+
+  function normalizeRoutingInputRows(rows, options = {}) {
+    const opts = options && typeof options === 'object' ? options : {};
+    const allowEmptyMacroInput = opts.allowEmptyMacroInput === true;
+    const out = [];
+    (rows || []).forEach((row) => {
+      if (!row) return;
+      const sourceOp = String(row.sourceOp || '').trim();
+      const source = String(row.source || '').trim();
+      if (!sourceOp || !source) return;
+      const macroInputRaw = String(row.macroInput || '').trim();
+      const macroInput = allowEmptyMacroInput ? sanitizeRoutingInputId(macroInputRaw) : (sanitizeRoutingInputId(macroInputRaw) || '');
+      out.push({ macroInput, sourceOp, source });
+    });
+    return out;
+  }
+
+  function routingRowsEqual(a, b) {
+    try {
+      const left = normalizeRoutingInputRows(a || [], { allowEmptyMacroInput: false });
+      const right = normalizeRoutingInputRows(b || [], { allowEmptyMacroInput: false });
+      if (left.length !== right.length) return false;
+      for (let i = 0; i < left.length; i += 1) {
+        const l = left[i];
+        const r = right[i];
+        if (!l || !r) return false;
+        if (l.macroInput !== r.macroInput) return false;
+        if (l.sourceOp !== r.sourceOp) return false;
+        if (l.source !== r.source) return false;
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function ensureRoutingInputsState(result) {
+    if (!result || typeof result !== 'object') return { rows: [], managed: new Set() };
+    const rows = normalizeRoutingInputRows(result.routingInputs || [], { allowEmptyMacroInput: false });
+    const managed = result.routingManagedNames instanceof Set
+      ? new Set(result.routingManagedNames)
+      : new Set(rows.map((row) => row.macroInput).filter(Boolean));
+    result.routingInputs = rows;
+    result.routingManagedNames = managed;
+    return { rows, managed };
+  }
+
+  function setRoutingInputsState(result, rows, options = {}) {
+    if (!result || typeof result !== 'object') return [];
+    const opts = options && typeof options === 'object' ? options : {};
+    const preserveManagedHistory = opts.preserveManagedHistory !== false;
+    const normalized = normalizeRoutingInputRows(rows || [], { allowEmptyMacroInput: true });
+    const prevManaged = preserveManagedHistory
+      ? (result.routingManagedNames instanceof Set ? new Set(result.routingManagedNames) : new Set())
+      : new Set();
+    const used = new Set();
+    const nextRows = [];
+    normalized.forEach((row) => {
+      const fallback = sanitizeRoutingInputId(`${row.sourceOp}_${row.source}`) || 'Input';
+      const macroInput = makeUniqueRoutingInputId(row.macroInput || fallback, used);
+      used.add(macroInput);
+      nextRows.push({
+        macroInput,
+        sourceOp: String(row.sourceOp || '').trim(),
+        source: String(row.source || '').trim(),
+      });
+    });
+    const managed = preserveManagedHistory ? prevManaged : new Set();
+    nextRows.forEach((row) => managed.add(row.macroInput));
+    result.routingInputs = nextRows;
+    result.routingManagedNames = managed;
+    return nextRows;
+  }
+
+  function getPrimaryGroupInputsBlock(text, result) {
+    try {
+      const bounds = locateMacroGroupBounds(text, result);
+      if (!bounds) return null;
+      let blocks = findGroupInputsBlocks(text, bounds.groupOpenIndex, bounds.groupCloseIndex);
+      if (!Array.isArray(blocks) || !blocks.length) {
+        const fallback = findPrimaryInputsBlockFallback(text, bounds.groupOpenIndex, bounds.groupCloseIndex);
+        blocks = fallback ? [fallback] : [];
+      }
+      return Array.isArray(blocks) && blocks.length ? blocks[0] : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function parseRoutingInputsFromText(text, result) {
+    try {
+      if (!text || !result) return [];
+      const block = getPrimaryGroupInputsBlock(text, result);
+      if (!block) return [];
+      const entries = parseOrderedBlockEntries(text, block.openIndex, block.closeIndex);
+      const rows = [];
+      entries.forEach((entry) => {
+        if (!entry || !entry.name) return;
+        const type = getOrderedBlockEntryType(text, entry);
+        if (type !== 'Input' && type !== 'InstanceInput') return;
+        const routing = extractRoutingInputFromEntry(text, entry);
+        if (!routing) return;
+        rows.push({
+          macroInput: sanitizeRoutingInputId(entry.name),
+          sourceOp: String(routing.sourceOp).trim(),
+          source: String(routing.source).trim(),
+        });
+      });
+      return rows;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function hydrateRoutingInputsState(text, result) {
+    try {
+      if (!result) return;
+      const rows = parseRoutingInputsFromText(text, result);
+      setRoutingInputsState(result, rows, { preserveManagedHistory: false });
+    } catch (_) {
+      ensureRoutingInputsState(result);
+    }
+  }
+
+  function isLikelyRoutingTargetControlId(idRaw) {
+    try {
+      const id = String(idRaw || '').trim();
+      if (!id) return false;
+      const key = id.toLowerCase();
+      if (
+        key === 'input' ||
+        key === 'background' ||
+        key === 'foreground' ||
+        key === 'effectmask' ||
+        key === 'mask' ||
+        key === 'sceneinput'
+      ) return true;
+      if (key === 'source') return false;
+      if (/^input\d+$/.test(key)) return true;
+      if (/^background\d+$/.test(key)) return true;
+      if (/^foreground\d+$/.test(key)) return true;
+      if (/^mask\d+$/.test(key)) return true;
+      if (/^image\d+$/.test(key)) return true;
+      if (/^materialinput\d*$/.test(key)) return true;
+      if (/^layer\d+\.(?:foreground|center|mask)$/.test(key)) return true;
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function isMaskRoutingTargetControlId(idRaw) {
+    try {
+      const key = String(idRaw || '').trim().toLowerCase();
+      if (!key) return false;
+      if (key === 'mask' || key === 'effectmask') return true;
+      if (/^mask\d*$/.test(key)) return true;
+      if (/^effectmask\d*$/.test(key)) return true;
+      if (/^layer\d+\.mask$/.test(key)) return true;
+      if (/\.mask$/.test(key)) return true;
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function flattenRoutingNodeControls(node, options = {}) {
+    const includeConnected = options && options.includeConnected === true;
+    const includeMaskInputs = options && options.includeMaskInputs === true;
+    const out = [];
+    const seen = new Set();
+    const pushControl = (idRaw, nameRaw, meta = null) => {
+      const id = String(idRaw || '').trim();
+      if (!id) return;
+      if (/^group:controlGroup:/i.test(id)) return;
+      if (!isLikelyRoutingTargetControlId(id)) return;
+      const isConnected = !!meta?.isConnected;
+      const isMaskInput = isMaskRoutingTargetControlId(id);
+      if (!includeConnected && isConnected) return;
+      if (!includeMaskInputs && isMaskInput) return;
+      if (seen.has(id)) return;
+      seen.add(id);
+      out.push({
+        id,
+        name: String(nameRaw || '').trim() || humanizeName(id),
+        isConnected,
+        isMaskInput,
+        inputSourceOp: String(meta?.inputSourceOp || '').trim() || null,
+        inputSource: String(meta?.inputSource || '').trim() || null,
+      });
+    };
+    (node?.controls || []).forEach((control) => {
+      if (!control) return;
+      if (Array.isArray(control.channels) && control.channels.length) {
+        control.channels.forEach((channel) => {
+          if (!channel) return;
+          pushControl(channel.id, channel.name, channel);
+        });
+        return;
+      }
+      pushControl(control.id, control.name, control);
+    });
+    return out;
+  }
+
+  function buildRoutingNodeCandidates(result, options = {}) {
+    const nodes = Array.isArray(result?.nodes) ? result.nodes : [];
+    const out = [];
+    nodes.forEach((node) => {
+      if (!node || node.isMacroRoot) return;
+      if (node.isModifier) return;
+      if (node.external) return;
+      const sourceOp = String(node.name || '').trim();
+      if (!sourceOp) return;
+      const controls = flattenRoutingNodeControls(node, options);
+      if (!controls.length) return;
+      out.push({
+        sourceOp,
+        label: `${sourceOp} (${String(node.type || 'Node').trim() || 'Node'})`,
+        controls,
+      });
+    });
+    return out;
+  }
+
+  function buildManualRoutingRow(existingRows = []) {
+    const usedNumbers = new Set();
+    (existingRows || []).forEach((row) => {
+      const label = String(row?.macroInput || '').trim();
+      const match = /^Input\s+(\d+)$/i.exec(label);
+      if (match) usedNumbers.add(Number(match[1]));
+    });
+    let next = 1;
+    while (usedNumbers.has(next)) next += 1;
+    return {
+      macroInput: `Input ${next}`,
+      sourceOp: '',
+      source: '',
+    };
+  }
+
+  function isDefaultRoutingMacroInputLabel(value) {
+    try {
+      return /^input\s*\d+$/i.test(String(value || '').trim());
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function openRoutingIOModal() {
+    if (!state.parseResult) {
+      error('Load a macro before opening Routing.');
+      return;
+    }
+    try { nodesPane?.parseAndRenderNodes?.(); } catch (_) {}
+    const result = state.parseResult;
+    const active = getActiveDocument();
+    if (active) storeDocumentSnapshot(active);
+    const allCandidates = buildRoutingNodeCandidates(result, { includeConnected: true });
+    if (!allCandidates.length) {
+      error('No node inputs found for routing.');
+      return;
+    }
+    let showConnected = false;
+    let showMaskInputs = false;
+    let candidateByNode = new Map();
+    const getVisibleCandidates = () => buildRoutingNodeCandidates(result, {
+      includeConnected: showConnected,
+      includeMaskInputs: showMaskInputs,
+    });
+    const seedState = ensureRoutingInputsState(result);
+    let rows = seedState.rows.length
+      ? seedState.rows.map((row) => ({ ...row }))
+      : [];
+    const overlay = document.createElement('div');
+    overlay.className = 'add-control-modal csv-modal';
+    const modal = document.createElement('form');
+    modal.className = 'add-control-form routing-io-modal';
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+
+    const header = document.createElement('header');
+    const headerText = document.createElement('div');
+    const eyebrow = document.createElement('div');
+    eyebrow.className = 'eyebrow';
+    eyebrow.textContent = 'Routing';
+    const title = document.createElement('h3');
+    title.textContent = 'Macro IO Routing';
+    headerText.appendChild(eyebrow);
+    headerText.appendChild(title);
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.innerHTML = '&times;';
+    closeBtn.setAttribute('aria-label', 'Close');
+    header.appendChild(headerText);
+    header.appendChild(closeBtn);
+
+    const body = document.createElement('div');
+    body.className = 'form-body';
+    const hint = document.createElement('p');
+    hint.className = 'form-hint';
+    hint.textContent = 'Choose which internal node inputs should be wired as macro-level Input routes.';
+    body.appendChild(hint);
+
+    const filterRow = document.createElement('div');
+    filterRow.className = 'routing-io-filters';
+    const buildSwitch = (labelText, checked) => {
+      const wrap = document.createElement('label');
+      wrap.className = 'pane-switch';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = !!checked;
+      const slider = document.createElement('span');
+      slider.className = 'slider';
+      slider.setAttribute('aria-hidden', 'true');
+      const label = document.createElement('span');
+      label.className = 'label';
+      label.textContent = labelText;
+      wrap.appendChild(input);
+      wrap.appendChild(slider);
+      wrap.appendChild(label);
+      return { wrap, input };
+    };
+    const connectedSwitch = buildSwitch('Show connected inputs', showConnected);
+    const maskSwitch = buildSwitch('Show mask inputs', showMaskInputs);
+    filterRow.appendChild(connectedSwitch.wrap);
+    filterRow.appendChild(maskSwitch.wrap);
+    body.appendChild(filterRow);
+
+    const suggestedWrap = document.createElement('div');
+    suggestedWrap.className = 'routing-io-suggested-wrap';
+    const suggestedHead = document.createElement('div');
+    suggestedHead.className = 'routing-io-suggested-head';
+    suggestedHead.textContent = 'Suggested Inputs';
+    const suggestedList = document.createElement('div');
+    suggestedList.className = 'routing-io-suggested-list';
+    suggestedWrap.appendChild(suggestedHead);
+    suggestedWrap.appendChild(suggestedList);
+    body.appendChild(suggestedWrap);
+
+    const manualHead = document.createElement('div');
+    manualHead.className = 'routing-io-manual-head';
+    const manualHeadTitle = document.createElement('span');
+    manualHeadTitle.textContent = 'Manual Inputs';
+    const manualHeadActions = document.createElement('div');
+    manualHeadActions.className = 'routing-io-manual-actions';
+    const flipABBtn = document.createElement('button');
+    flipABBtn.type = 'button';
+    flipABBtn.className = 'routing-io-flip';
+    flipABBtn.textContent = 'Flip A/B';
+    manualHeadActions.appendChild(flipABBtn);
+    manualHead.appendChild(manualHeadTitle);
+    manualHead.appendChild(manualHeadActions);
+    body.appendChild(manualHead);
+
+    const tableWrap = document.createElement('div');
+    tableWrap.className = 'routing-io-table-wrap detail-combo-options-input';
+    const table = document.createElement('div');
+    table.className = 'routing-io-table';
+    tableWrap.appendChild(table);
+    body.appendChild(tableWrap);
+
+    const bodyActions = document.createElement('div');
+    bodyActions.className = 'detail-actions';
+    const addRowBtn = document.createElement('button');
+    addRowBtn.type = 'button';
+    addRowBtn.textContent = 'Add Input';
+    bodyActions.appendChild(addRowBtn);
+    body.appendChild(bodyActions);
+
+    const actions = document.createElement('footer');
+    actions.className = 'modal-actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.textContent = 'Cancel';
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.className = 'primary';
+    saveBtn.textContent = 'Save Routing';
+    actions.appendChild(cancelBtn);
+    actions.appendChild(saveBtn);
+
+    const routeKey = (sourceOp, source) => `${String(sourceOp || '').trim()}::${String(source || '').trim()}`;
+    const findRouteRowIndex = (sourceOp, source) => rows.findIndex((row) => routeKey(row?.sourceOp, row?.source) === routeKey(sourceOp, source));
+    const maybeRenumberDefaultRows = () => {
+      try {
+        if (!Array.isArray(rows) || !rows.length) return;
+        if (!rows.every((row) => isDefaultRoutingMacroInputLabel(row?.macroInput))) return;
+        rows = rows.map((row, idx) => ({
+          ...row,
+          macroInput: `Input ${idx + 1}`,
+        }));
+      } catch (_) {}
+    };
+    const refreshManualActions = () => {
+      flipABBtn.hidden = rows.length !== 2;
+      flipABBtn.disabled = rows.length !== 2;
+    };
+    const renderSuggested = (visibleCandidates) => {
+      suggestedList.innerHTML = '';
+      const items = [];
+      visibleCandidates.forEach((candidate) => {
+        const sourceOp = String(candidate?.sourceOp || '').trim();
+        if (!sourceOp) return;
+        const controls = Array.isArray(candidate?.controls) ? candidate.controls : [];
+        controls.forEach((control) => {
+          const source = String(control?.id || '').trim();
+          if (!source) return;
+          items.push({
+            sourceOp,
+            source,
+            nodeLabel: String(candidate?.label || sourceOp).trim(),
+            controlName: String(control?.name || source).trim() || source,
+            isConnected: !!control?.isConnected,
+            isMaskInput: !!control?.isMaskInput,
+          });
+        });
+      });
+      if (!items.length) {
+        suggestedHead.textContent = 'Suggested Inputs';
+        const empty = document.createElement('div');
+        empty.className = 'routing-io-empty';
+        empty.textContent = 'No suggested inputs with current filters.';
+        suggestedList.appendChild(empty);
+        return;
+      }
+      items.sort((a, b) => {
+        const opCmp = String(a.sourceOp || '').localeCompare(String(b.sourceOp || ''));
+        if (opCmp !== 0) return opCmp;
+        return String(a.source || '').localeCompare(String(b.source || ''));
+      });
+      const selectedCount = items.filter((item) => findRouteRowIndex(item.sourceOp, item.source) >= 0).length;
+      suggestedHead.textContent = `Suggested Inputs (${selectedCount}/${items.length} selected)`;
+      items.forEach((item) => {
+        const row = document.createElement('label');
+        row.className = 'routing-io-suggested-item';
+        const toggle = document.createElement('input');
+        toggle.type = 'checkbox';
+        toggle.checked = findRouteRowIndex(item.sourceOp, item.source) >= 0;
+        row.classList.toggle('is-selected', !!toggle.checked);
+        const text = document.createElement('div');
+        text.className = 'routing-io-suggested-text';
+        const title = document.createElement('div');
+        title.className = 'routing-io-suggested-title';
+        const tags = [];
+        if (item.isConnected) tags.push('connected');
+        if (item.isMaskInput) tags.push('mask');
+        title.textContent = tags.length
+          ? `${item.controlName} [${tags.join(', ')}]`
+          : item.controlName;
+        const meta = document.createElement('div');
+        meta.className = 'routing-io-suggested-meta';
+        meta.textContent = `${item.sourceOp}.${item.source}`;
+        text.appendChild(title);
+        text.appendChild(meta);
+        row.appendChild(toggle);
+        row.appendChild(text);
+        toggle.addEventListener('change', () => {
+          const idx = findRouteRowIndex(item.sourceOp, item.source);
+          if (toggle.checked) {
+            if (idx < 0) {
+              const seed = buildManualRoutingRow(rows);
+              rows.push({
+                macroInput: String(seed?.macroInput || '').trim() || `Input ${rows.length + 1}`,
+                sourceOp: item.sourceOp,
+                source: item.source,
+              });
+            }
+          } else if (idx >= 0) {
+            rows.splice(idx, 1);
+          }
+          maybeRenumberDefaultRows();
+          renderRows();
+        });
+        suggestedList.appendChild(row);
+      });
+    };
+
+    const moveRoutingRow = (fromIdx, toIdx) => {
+      try {
+        if (!Array.isArray(rows) || rows.length < 2) return;
+        if (!Number.isFinite(fromIdx) || !Number.isFinite(toIdx)) return;
+        if (fromIdx < 0 || fromIdx >= rows.length) return;
+        if (toIdx < 0 || toIdx >= rows.length || toIdx === fromIdx) return;
+        const [moved] = rows.splice(fromIdx, 1);
+        rows.splice(toIdx, 0, moved);
+        maybeRenumberDefaultRows();
+        renderRows();
+      } catch (_) {}
+    };
+
+    const renderRows = () => {
+      const visibleCandidates = getVisibleCandidates();
+      candidateByNode = new Map(visibleCandidates.map((item) => [item.sourceOp, item]));
+      renderSuggested(visibleCandidates);
+      table.innerHTML = '';
+      const addHead = (text) => {
+        const cell = document.createElement('div');
+        cell.className = 'routing-io-head';
+        cell.textContent = text;
+        table.appendChild(cell);
+      };
+      addHead('Order');
+      addHead('Macro Input');
+      addHead('Node');
+      addHead('Target Input');
+      addHead('');
+      if (!rows.length) {
+        refreshManualActions();
+        const empty = document.createElement('div');
+        empty.className = 'routing-io-empty';
+        if (visibleCandidates.length) {
+          empty.textContent = 'No inputs defined. Click Add Input to create one.';
+        } else if (!showConnected && !showMaskInputs) {
+          empty.textContent = 'No open non-mask inputs found. Enable Show connected inputs or Show mask inputs.';
+        } else if (!showConnected && showMaskInputs) {
+          empty.textContent = 'No open inputs found. Enable Show connected inputs to include occupied sockets.';
+        } else if (showConnected && !showMaskInputs) {
+          empty.textContent = 'No non-mask inputs found. Enable Show mask inputs.';
+        } else {
+          empty.textContent = 'No inputs found for routing.';
+        }
+        empty.style.gridColumn = '1 / -1';
+        table.appendChild(empty);
+        return;
+      }
+      refreshManualActions();
+      rows.forEach((row, idx) => {
+        const handleCell = document.createElement('div');
+        handleCell.className = 'routing-io-cell routing-io-cell-handle';
+        const orderBtns = document.createElement('div');
+        orderBtns.className = 'routing-io-order-buttons';
+        const moveUpBtn = document.createElement('button');
+        moveUpBtn.type = 'button';
+        moveUpBtn.className = 'routing-io-order-btn';
+        moveUpBtn.title = 'Move up';
+        moveUpBtn.textContent = '^';
+        moveUpBtn.disabled = idx === 0;
+        moveUpBtn.addEventListener('click', () => moveRoutingRow(idx, idx - 1));
+        const moveDownBtn = document.createElement('button');
+        moveDownBtn.type = 'button';
+        moveDownBtn.className = 'routing-io-order-btn';
+        moveDownBtn.title = 'Move down';
+        moveDownBtn.textContent = 'v';
+        moveDownBtn.disabled = idx >= rows.length - 1;
+        moveDownBtn.addEventListener('click', () => moveRoutingRow(idx, idx + 1));
+        orderBtns.appendChild(moveUpBtn);
+        orderBtns.appendChild(moveDownBtn);
+        handleCell.appendChild(orderBtns);
+        table.appendChild(handleCell);
+
+        const macroCell = document.createElement('div');
+        macroCell.className = 'routing-io-cell';
+        const macroInput = document.createElement('input');
+        macroInput.type = 'text';
+        macroInput.value = row.macroInput || '';
+        macroInput.placeholder = 'InputName';
+        macroInput.addEventListener('input', () => {
+          rows[idx].macroInput = macroInput.value;
+        });
+        macroCell.appendChild(macroInput);
+        table.appendChild(macroCell);
+
+        const nodeCell = document.createElement('div');
+        nodeCell.className = 'routing-io-cell';
+        const nodeSelect = document.createElement('select');
+        const currentNode = String(row.sourceOp || '').trim();
+        const hasCurrentNode = candidateByNode.has(currentNode);
+        const chooseNode = document.createElement('option');
+        chooseNode.value = '';
+        chooseNode.textContent = 'Select node...';
+        nodeSelect.appendChild(chooseNode);
+        if (!hasCurrentNode && currentNode) {
+          const missing = document.createElement('option');
+          missing.value = currentNode;
+          missing.textContent = `${currentNode} (missing)`;
+          nodeSelect.appendChild(missing);
+        }
+        visibleCandidates.forEach((candidate) => {
+          const opt = document.createElement('option');
+          opt.value = candidate.sourceOp;
+          opt.textContent = candidate.label;
+          nodeSelect.appendChild(opt);
+        });
+        nodeSelect.value = hasCurrentNode ? currentNode : (currentNode || '');
+        nodeCell.appendChild(nodeSelect);
+        table.appendChild(nodeCell);
+
+        const portCell = document.createElement('div');
+        portCell.className = 'routing-io-cell';
+        const portSelect = document.createElement('select');
+        const syncPortOptions = () => {
+          const selectedNode = String(nodeSelect.value || '').trim();
+          const controls = candidateByNode.get(selectedNode)?.controls || [];
+          portSelect.innerHTML = '';
+          const choosePort = document.createElement('option');
+          choosePort.value = '';
+          choosePort.textContent = selectedNode ? 'Select input...' : 'Select node first...';
+          portSelect.appendChild(choosePort);
+          const currentPort = String(rows[idx].source || '').trim();
+          const hasCurrentPort = controls.some((control) => String(control.id || '').trim() === currentPort);
+          if (!hasCurrentPort && currentPort) {
+            const missing = document.createElement('option');
+            missing.value = currentPort;
+            missing.textContent = `${currentPort} (missing)`;
+            portSelect.appendChild(missing);
+          }
+          controls.forEach((control) => {
+            const opt = document.createElement('option');
+            opt.value = control.id;
+            const tags = [];
+            if (control.isConnected) tags.push('connected');
+            if (control.isMaskInput) tags.push('mask');
+            const suffix = tags.length ? ` [${tags.join(', ')}]` : '';
+            opt.textContent = `${control.name} (${control.id})${suffix}`;
+            portSelect.appendChild(opt);
+          });
+          const fallback = hasCurrentPort ? currentPort : '';
+          portSelect.value = fallback;
+          rows[idx].sourceOp = selectedNode;
+          rows[idx].source = fallback;
+        };
+        syncPortOptions();
+        nodeSelect.addEventListener('change', syncPortOptions);
+        portSelect.addEventListener('change', () => {
+          rows[idx].sourceOp = String(nodeSelect.value || '').trim();
+          rows[idx].source = String(portSelect.value || '').trim();
+        });
+        portCell.appendChild(portSelect);
+        table.appendChild(portCell);
+
+        const removeCell = document.createElement('div');
+        removeCell.className = 'routing-io-cell';
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'routing-io-remove';
+        removeBtn.textContent = 'Remove';
+        removeBtn.addEventListener('click', () => {
+          rows.splice(idx, 1);
+          maybeRenumberDefaultRows();
+          renderRows();
+        });
+        removeCell.appendChild(removeBtn);
+        table.appendChild(removeCell);
+        if (idx < rows.length - 1) {
+          const divider = document.createElement('div');
+          divider.className = 'routing-io-row-divider';
+          table.appendChild(divider);
+        }
+      });
+    };
+
+    addRowBtn.addEventListener('click', () => {
+      rows.push(buildManualRoutingRow(rows));
+      maybeRenumberDefaultRows();
+      renderRows();
+    });
+    flipABBtn.addEventListener('click', () => {
+      if (rows.length !== 2) return;
+      const a = rows[0];
+      const b = rows[1];
+      const aOp = String(a?.sourceOp || '').trim();
+      const aSrc = String(a?.source || '').trim();
+      rows[0].sourceOp = String(b?.sourceOp || '').trim();
+      rows[0].source = String(b?.source || '').trim();
+      rows[1].sourceOp = aOp;
+      rows[1].source = aSrc;
+      renderRows();
+    });
+    connectedSwitch.input.addEventListener('change', () => {
+      showConnected = !!connectedSwitch.input.checked;
+      renderRows();
+    });
+    maskSwitch.input.addEventListener('change', () => {
+      showMaskInputs = !!maskSwitch.input.checked;
+      renderRows();
+    });
+
+    const close = () => {
+      try { overlay.remove(); } catch (_) {}
+    };
+    let overlayPointerDown = false;
+    overlay.addEventListener('mousedown', (ev) => {
+      overlayPointerDown = ev.target === overlay;
+    });
+    overlay.addEventListener('click', (ev) => {
+      if (ev.target === overlay && overlayPointerDown) close();
+      overlayPointerDown = false;
+    });
+    closeBtn.addEventListener('click', close);
+    cancelBtn.addEventListener('click', close);
+    modal.addEventListener('submit', (ev) => ev.preventDefault());
+
+    saveBtn.addEventListener('click', () => {
+      const nextRowsRaw = normalizeRoutingInputRows(rows, { allowEmptyMacroInput: true });
+      const usedNames = new Set();
+      const nextRows = [];
+      nextRowsRaw.forEach((row) => {
+        const base = row.macroInput || sanitizeRoutingInputId(`${row.sourceOp}_${row.source}`) || 'Input';
+        const macroInput = makeUniqueRoutingInputId(base, usedNames);
+        usedNames.add(macroInput);
+        nextRows.push({
+          macroInput,
+          sourceOp: String(row.sourceOp || '').trim(),
+          source: String(row.source || '').trim(),
+        });
+      });
+      const prevRows = ensureRoutingInputsState(result).rows;
+      if (routingRowsEqual(prevRows, nextRows)) {
+        close();
+        return;
+      }
+      pushHistory('routing io');
+      setRoutingInputsState(result, nextRows, { preserveManagedHistory: true });
+      markContentDirty();
+      info(`Routing updated (${nextRows.length} input${nextRows.length === 1 ? '' : 's'}).`);
+      close();
+    });
+
+    modal.appendChild(header);
+    modal.appendChild(body);
+    modal.appendChild(actions);
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    renderRows();
   }
 
   function openPresetEngineModal() {
@@ -11718,6 +12946,9 @@ async function handleFile(file) {
       const rootPosByKey = new Map(rootEligible.map((item, idx) => [item.key, idx]));
       const scopeEntries = buildPresetScopeEntriesForKeys(rootResult, scopeKeys);
       const base = captureScopeValuesFromSnapshot(rootSnap, rootResult, scopeEntries);
+      Object.keys(base).forEach((key) => {
+        base[key] = normalizePresetPayloadValue(base[key]);
+      });
       const presets = {};
       const usedPresetNames = new Set();
       const warnings = [];
@@ -11749,7 +12980,9 @@ async function handleFile(file) {
             values[key] = base[key];
             return;
           }
-          values[key] = getPresetScopeValueFromSnapshot(variantSnap, variantResult, variantScopeEntry);
+          values[key] = normalizePresetPayloadValue(
+            getPresetScopeValueFromSnapshot(variantSnap, variantResult, variantScopeEntry)
+          );
           matched += 1;
         });
         const presetName = makeUniquePresetName(row.nameInput.value || getDocDisplayName(row.doc, candidateDocs), usedPresetNames);
@@ -12974,6 +14207,9 @@ async function handleFile(file) {
     if (addUtilityNodeBtn) {
       addUtilityNodeBtn.disabled = !state.parseResult;
     }
+    if (routingBtn) {
+      routingBtn.disabled = !state.parseResult;
+    }
   }
 
   function countRecognizedInputs(entries) {
@@ -13618,7 +14854,107 @@ async function handleFile(file) {
   const FMR_PRESET_DATA_CONTROL = 'FMR_PresetData';
   const FMR_PRESET_SCRIPT_CONTROL = 'FMR_PresetScript';
   const FMR_PRESET_SELECT_CONTROL = 'FMR_Preset';
+  // Diagnostic safety gate: constructor-style values (Polyline{}, FuID{}, etc.)
+  // are the remaining likely blocker for Fusion load stability in preset OnChange.
+  const FMR_PRESET_RUNTIME_INCLUDE_CONSTRUCTORS = false;
+  // Temporary deep tracing for preset runtime path assignment behavior in Fusion console.
+  const FMR_PRESET_RUNTIME_TRACE = false;
+  // Hidden preset blob controls are parse-fragile in some Fusion builds.
+  // Keep this off by default and drive runtime from direct selector script.
+  const FMR_PRESET_EMBED_HIDDEN_BLOBS = false;
+  // Keep hidden preset blobs well under Fusion's practical per-line parser limits.
+  const FMR_HIDDEN_TEXT_CHUNK_SIZE = 900;
+  const FMR_HIDDEN_TEXT_MAX_CHUNKS = 64;
+  const FMR_PRESET_DIRECT_SCRIPT_MAX = 1200;
   const FMR_BUILD_MARKER = 'preset-debug-2026-02-28-a';
+
+  function getChunkedControlId(baseId, chunkIndex) {
+    const base = String(baseId || '').trim();
+    const idx = Number(chunkIndex) || 1;
+    if (!base || idx <= 1) return base;
+    return `${base}_${idx}`;
+  }
+
+  function splitEscapedSettingIntoChunks(escapedValue, chunkSize = FMR_HIDDEN_TEXT_CHUNK_SIZE) {
+    try {
+      const src = String(escapedValue || '');
+      const size = Math.max(256, Number(chunkSize) || FMR_HIDDEN_TEXT_CHUNK_SIZE);
+      if (!src) return [];
+      const out = [];
+      let cursor = 0;
+      while (cursor < src.length) {
+        out.push(src.slice(cursor, cursor + size));
+        cursor += size;
+      }
+      return out;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function listChunkedControlIds(result, baseId) {
+    try {
+      const base = String(baseId || '').trim();
+      if (!base) return [];
+      const controls = Array.isArray(result?.groupUserControls) ? result.groupUserControls : [];
+      const matches = controls
+        .map((control) => String(control?.id || '').trim())
+        .filter((id) => id && (id === base || id.startsWith(`${base}_`)));
+      return Array.from(new Set(matches)).sort((a, b) => {
+        const ai = a === base ? 1 : (Number(a.slice(base.length + 1)) || 9999);
+        const bi = b === base ? 1 : (Number(b.slice(base.length + 1)) || 9999);
+        return ai - bi;
+      });
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function removeChunkedControlSeries(text, result, baseId) {
+    try {
+      let next = String(text || '');
+      const base = String(baseId || '').trim();
+      if (!base) return next;
+      const known = listChunkedControlIds(result, base);
+      if (known.length) {
+        known.forEach((id) => {
+          next = removeUserControlBlockById(next, result, id);
+        });
+        return next;
+      }
+      for (let i = 1; i <= FMR_HIDDEN_TEXT_MAX_CHUNKS; i += 1) {
+        const id = getChunkedControlId(base, i);
+        const updated = removeUserControlBlockById(next, result, id);
+        if (updated === next && i > 1) break;
+        next = updated;
+      }
+      return next;
+    } catch (_) {
+      return text;
+    }
+  }
+
+  function collectChunkedControlDefaultValue(result, baseId) {
+    try {
+      const base = String(baseId || '').trim();
+      if (!base) return '';
+      const controls = Array.isArray(result?.groupUserControls) ? result.groupUserControls : [];
+      const chunks = [];
+      controls.forEach((control) => {
+        const id = String(control?.id || '').trim();
+        if (!id || (id !== base && !id.startsWith(`${base}_`))) return;
+        const idx = id === base ? 1 : (Number(id.slice(base.length + 1)) || NaN);
+        if (!Number.isFinite(idx) || idx < 1) return;
+        const value = typeof control?.defaultValue === 'string' ? control.defaultValue : '';
+        chunks.push({ idx, value });
+      });
+      if (!chunks.length) return '';
+      chunks.sort((a, b) => a.idx - b.idx);
+      return chunks.map((item) => item.value || '').join('');
+    } catch (_) {
+      return '';
+    }
+  }
 
   function extractHiddenDataLink(text, result) {
     try {
@@ -13691,20 +15027,28 @@ async function handleFile(file) {
 
   function extractHiddenPresetData(text, result) {
     try {
-      const parsedPresetControl = getParsedGroupUserControlById(result, FMR_PRESET_DATA_CONTROL);
-      if (parsedPresetControl && typeof parsedPresetControl.defaultValue === 'string' && parsedPresetControl.defaultValue.trim()) {
-        return JSON.parse(parsedPresetControl.defaultValue);
+      const parsedValue = collectChunkedControlDefaultValue(result, FMR_PRESET_DATA_CONTROL);
+      if (parsedValue && parsedValue.trim()) {
+        return JSON.parse(parsedValue);
       }
       if (!text) return null;
-      const body = getGroupUserControlBodyById(text, result, FMR_PRESET_DATA_CONTROL);
-      if (!body) return null;
-      const raw = extractControlPropValue(body, 'INP_Default');
-      if (!raw) return null;
-      let json = raw.trim();
-      if (json.startsWith('"') && json.endsWith('"')) {
-        json = unescapeSettingString(json.slice(1, -1));
+      let assembled = '';
+      for (let i = 1; i <= FMR_HIDDEN_TEXT_MAX_CHUNKS; i += 1) {
+        const controlId = getChunkedControlId(FMR_PRESET_DATA_CONTROL, i);
+        const body = getGroupUserControlBodyById(text, result, controlId);
+        if (!body) {
+          if (i === 1) return null;
+          break;
+        }
+        const raw = extractControlPropValue(body, 'INP_Default');
+        if (!raw) continue;
+        let chunk = raw.trim();
+        if (chunk.startsWith('"') && chunk.endsWith('"')) {
+          chunk = unescapeSettingString(chunk.slice(1, -1));
+        }
+        assembled += String(chunk || '');
       }
-      json = (json || '').trim();
+      const json = String(assembled || '').trim();
       if (!json) return null;
       return JSON.parse(json);
     } catch (_) {
@@ -13771,27 +15115,42 @@ async function handleFile(file) {
 
   function upsertHiddenPresetDataControl(text, result, data, eol) {
     try {
-      const safeJson = data ? `"${escapeSettingString(JSON.stringify(data))}"` : '';
-      return upsertGroupUserControl(text, result, FMR_PRESET_DATA_CONTROL, {
-        createLines: [
-          'LINKS_Name = "FMR Preset Data",',
-          'INPID_InputControl = "TextEditControl",',
-          'ICS_ControlPage = "Controls",',
-          'IC_Visible = false,',
-          `INP_Default = ${safeJson || '""'},`,
-        ],
-        updateBody: (body, indent, newline) => {
-          let next = body;
-          next = upsertControlProp(next, 'LINKS_Name', '"FMR Preset Data"', indent, newline);
-          next = upsertControlProp(next, 'INPID_InputControl', '"TextEditControl"', indent, newline);
-          next = upsertControlProp(next, 'ICS_ControlPage', '"Controls"', indent, newline);
-          next = upsertControlProp(next, 'IC_Visible', 'false', indent, newline);
-          next = data
-            ? upsertControlProp(next, 'INP_Default', safeJson, indent, newline)
-            : removeControlProp(next, 'INP_Default');
-          return next;
-        },
-      }, eol || '\n');
+      let next = String(text || '');
+      const encoded = data ? escapeSettingString(JSON.stringify(data)) : '';
+      const chunks = splitEscapedSettingIntoChunks(encoded, FMR_HIDDEN_TEXT_CHUNK_SIZE);
+      if (!chunks.length) {
+        return removeChunkedControlSeries(next, result, FMR_PRESET_DATA_CONTROL);
+      }
+      chunks.slice(0, FMR_HIDDEN_TEXT_MAX_CHUNKS).forEach((chunk, index) => {
+        const chunkIdx = index + 1;
+        const controlId = getChunkedControlId(FMR_PRESET_DATA_CONTROL, chunkIdx);
+        const label = chunkIdx === 1 ? 'FMR Preset Data' : `FMR Preset Data ${chunkIdx}`;
+        const defaultText = `"${String(chunk || '')}"`;
+        next = upsertGroupUserControl(next, result, controlId, {
+          createLines: [
+            `LINKS_Name = "${label}",`,
+            'INPID_InputControl = "TextEditControl",',
+            'LINKID_DataType = "Text",',
+            'ICS_ControlPage = "Controls",',
+            'IC_Visible = false,',
+            `INP_Default = ${defaultText},`,
+          ],
+          updateBody: (body, indent, newline) => {
+            let bodyNext = body;
+            bodyNext = upsertControlProp(bodyNext, 'LINKS_Name', `"${label}"`, indent, newline);
+            bodyNext = upsertControlProp(bodyNext, 'INPID_InputControl', '"TextEditControl"', indent, newline);
+            bodyNext = upsertControlProp(bodyNext, 'LINKID_DataType', '"Text"', indent, newline);
+            bodyNext = upsertControlProp(bodyNext, 'ICS_ControlPage', '"Controls"', indent, newline);
+            bodyNext = upsertControlProp(bodyNext, 'IC_Visible', 'false', indent, newline);
+            bodyNext = upsertControlProp(bodyNext, 'INP_Default', defaultText, indent, newline);
+            return bodyNext;
+          },
+        }, eol || '\n');
+      });
+      for (let i = chunks.length + 1; i <= FMR_HIDDEN_TEXT_MAX_CHUNKS; i += 1) {
+        next = removeUserControlBlockById(next, result, getChunkedControlId(FMR_PRESET_DATA_CONTROL, i));
+      }
+      return next;
     } catch (_) {
       return text;
     }
@@ -13799,31 +15158,72 @@ async function handleFile(file) {
 
   function upsertHiddenPresetScriptControl(text, result, script, eol) {
     try {
-      const defaultText = script && script.trim() ? `"${escapeSettingString(script)}"` : '';
-      return upsertGroupUserControl(text, result, FMR_PRESET_SCRIPT_CONTROL, {
-        createLines: [
-          'LINKS_Name = "FMR Preset Script",',
-          'INPID_InputControl = "TextEditControl",',
-          'LINKID_DataType = "Text",',
-          'ICS_ControlPage = "Controls",',
-          'IC_Visible = false,',
-          `INP_Default = ${defaultText || '""'},`,
-        ],
-        updateBody: (body, indent, newline) => {
-          let next = body;
-          next = upsertControlProp(next, 'LINKS_Name', '"FMR Preset Script"', indent, newline);
-          next = upsertControlProp(next, 'INPID_InputControl', '"TextEditControl"', indent, newline);
-          next = upsertControlProp(next, 'LINKID_DataType', '"Text"', indent, newline);
-          next = upsertControlProp(next, 'ICS_ControlPage', '"Controls"', indent, newline);
-          next = upsertControlProp(next, 'IC_Visible', 'false', indent, newline);
-          next = script && script.trim()
-            ? upsertControlProp(next, 'INP_Default', defaultText, indent, newline)
-            : removeControlProp(next, 'INP_Default');
-          return next;
-        },
-      }, eol || '\n');
+      let next = String(text || '');
+      const encoded = script && script.trim() ? escapeSettingString(script) : '';
+      const chunks = splitEscapedSettingIntoChunks(encoded, FMR_HIDDEN_TEXT_CHUNK_SIZE);
+      if (!chunks.length) {
+        return removeChunkedControlSeries(next, result, FMR_PRESET_SCRIPT_CONTROL);
+      }
+      chunks.slice(0, FMR_HIDDEN_TEXT_MAX_CHUNKS).forEach((chunk, index) => {
+        const chunkIdx = index + 1;
+        const controlId = getChunkedControlId(FMR_PRESET_SCRIPT_CONTROL, chunkIdx);
+        const label = chunkIdx === 1 ? 'FMR Preset Script' : `FMR Preset Script ${chunkIdx}`;
+        const defaultText = `"${String(chunk || '')}"`;
+        next = upsertGroupUserControl(next, result, controlId, {
+          createLines: [
+            `LINKS_Name = "${label}",`,
+            'INPID_InputControl = "TextEditControl",',
+            'LINKID_DataType = "Text",',
+            'ICS_ControlPage = "Controls",',
+            'IC_Visible = false,',
+            `INP_Default = ${defaultText},`,
+          ],
+          updateBody: (body, indent, newline) => {
+            let bodyNext = body;
+            bodyNext = upsertControlProp(bodyNext, 'LINKS_Name', `"${label}"`, indent, newline);
+            bodyNext = upsertControlProp(bodyNext, 'INPID_InputControl', '"TextEditControl"', indent, newline);
+            bodyNext = upsertControlProp(bodyNext, 'LINKID_DataType', '"Text"', indent, newline);
+            bodyNext = upsertControlProp(bodyNext, 'ICS_ControlPage', '"Controls"', indent, newline);
+            bodyNext = upsertControlProp(bodyNext, 'IC_Visible', 'false', indent, newline);
+            bodyNext = upsertControlProp(bodyNext, 'INP_Default', defaultText, indent, newline);
+            return bodyNext;
+          },
+        }, eol || '\n');
+      });
+      for (let i = chunks.length + 1; i <= FMR_HIDDEN_TEXT_MAX_CHUNKS; i += 1) {
+        next = removeUserControlBlockById(next, result, getChunkedControlId(FMR_PRESET_SCRIPT_CONTROL, i));
+      }
+      return next;
     } catch (_) {
       return text;
+    }
+  }
+
+  function buildPresetScriptLauncherScript() {
+    try {
+      const lines = [];
+      lines.push(`local src = tostring(tool:GetInput("${escapeLuaString(FMR_PRESET_SCRIPT_CONTROL)}") or "")`);
+      lines.push(`for i = 2, ${Math.max(2, Number(FMR_HIDDEN_TEXT_MAX_CHUNKS) || 64)} do`);
+      lines.push(`  local part = tool:GetInput("${escapeLuaString(FMR_PRESET_SCRIPT_CONTROL)}_" .. i)`);
+      lines.push('  if part == nil then break end');
+      lines.push('  src = src .. tostring(part)');
+      lines.push('end');
+      lines.push('if src ~= "" then');
+      lines.push('  local compile = loadstring or load');
+      lines.push('  if type(compile) ~= "function" then return end');
+      lines.push('  local okCompile, fnOrErr = pcall(compile, src)');
+      lines.push('  if not okCompile then');
+      lines.push('    print(fnOrErr)');
+      lines.push('  elseif type(fnOrErr) == "function" then');
+      lines.push('    local okRun, runErr = pcall(fnOrErr)');
+      lines.push('    if not okRun then print(runErr) end');
+      lines.push('  elseif fnOrErr then');
+      lines.push('    print(fnOrErr)');
+      lines.push('  end');
+      lines.push('end');
+      return lines.join('\n');
+    } catch (_) {
+      return '';
     }
   }
 
@@ -13835,8 +15235,8 @@ async function handleFile(file) {
     try {
       let next = String(text || '');
       next = removeUserControlBlockById(next, result, FMR_PRESET_SELECT_CONTROL);
-      next = removeUserControlBlockById(next, result, FMR_PRESET_DATA_CONTROL);
-      next = removeUserControlBlockById(next, result, FMR_PRESET_SCRIPT_CONTROL);
+      next = removeChunkedControlSeries(next, result, FMR_PRESET_DATA_CONTROL);
+      next = removeChunkedControlSeries(next, result, FMR_PRESET_SCRIPT_CONTROL);
       return next;
     } catch (_) {
       return text;
@@ -14096,7 +15496,12 @@ async function handleFile(file) {
     refreshGroupUserControlState(updated);
     updated = ensureGroupInputsBlock(updated, result, eol);
     updated = rewritePrimaryInputsBlock(updated, result, eol, options);
+    updated = ensureRoutingSourceInputsMaterialized(updated, result, eol);
+    updated = rewriteMacroRoutingInputsBlock(updated, result, eol, options);
     updated = applyPathDrawModeExportPatches(updated, result, eol, options);
+    if (options.includePresetRuntime === true) {
+      updated = applyPresetPathSwitchExportPatches(updated, result, presetRuntime, eol, options);
+    }
     updated = ensureActiveToolName(updated, exportMacroName || (result?.macroName || result?.macroNameOriginal || '').trim(), eol);
     updated = normalizeGroupUserControlsBlocks(updated, result, eol);
     refreshGroupUserControlState(updated);
@@ -14104,16 +15509,36 @@ async function handleFile(file) {
       updated = removePresetRuntimeControls(updated, result);
       refreshGroupUserControlState(updated);
       if (presetRuntime) {
-        updated = upsertHiddenPresetDataControl(updated, result, presetRuntime.payload, eol);
-        refreshGroupUserControlState(updated);
-        updated = upsertPresetSelectorControl(
-          updated,
-          result,
-          presetRuntime.presetNames,
-          presetRuntime.script,
-          eol,
-          presetRuntime.defaultIndex,
-        );
+        const runtimeScript = String(presetRuntime.script || '');
+        if (FMR_PRESET_EMBED_HIDDEN_BLOBS) {
+          updated = upsertHiddenPresetDataControl(updated, result, presetRuntime.payload, eol);
+          refreshGroupUserControlState(updated);
+          const useScriptLauncher = runtimeScript.length > FMR_PRESET_DIRECT_SCRIPT_MAX;
+          if (useScriptLauncher) {
+            updated = upsertHiddenPresetScriptControl(updated, result, runtimeScript, eol);
+            refreshGroupUserControlState(updated);
+          } else {
+            updated = upsertHiddenPresetScriptControl(updated, result, '', eol);
+            refreshGroupUserControlState(updated);
+          }
+          updated = upsertPresetSelectorControl(
+            updated,
+            result,
+            presetRuntime.presetNames,
+            useScriptLauncher ? buildPresetScriptLauncherScript() : runtimeScript,
+            eol,
+            presetRuntime.defaultIndex,
+          );
+        } else {
+          updated = upsertPresetSelectorControl(
+            updated,
+            result,
+            presetRuntime.presetNames,
+            runtimeScript,
+            eol,
+            presetRuntime.defaultIndex,
+          );
+        }
         refreshGroupUserControlState(updated);
       }
     }
@@ -14168,7 +15593,8 @@ async function handleFile(file) {
             })
             .filter(Boolean)
         );
-        logDiag(`[Export debug:${debugContext}] engine=${hasEngine}, scope=${scopeLen}, presets=${presetLen}, fileMetaPath=${hasFileMetaPath}, marker=${hasBuildMarker ? 1 : 0}, fileMetaMarker=${hasFileMetaMarker ? 1 : 0}, presetControl=${hasPresetSelector ? 1 : 0}, emptyGroupUc=${emptyUcCount}, groupUcBlocks=${groupUcBlocks}, groupUcControls=${groupUcControls}, groupUcDupes=${groupUcDupes}, groupUcUnknown=${groupUcUnknown}, groupUcIssues=${groupUcIssues}, groupUcMutationIssues=${groupUcMutationIssues}, quickSetEntries=${quickSetEntryUnique.size}, quickSetOutput=${quickSetOutputUnique.size}`);
+        const pathSwitchCount = Array.isArray(presetRuntime?.pathSwitchPlan) ? presetRuntime.pathSwitchPlan.length : 0;
+        logDiag(`[Export debug:${debugContext}] engine=${hasEngine}, scope=${scopeLen}, presets=${presetLen}, fileMetaPath=${hasFileMetaPath}, marker=${hasBuildMarker ? 1 : 0}, fileMetaMarker=${hasFileMetaMarker ? 1 : 0}, presetControl=${hasPresetSelector ? 1 : 0}, emptyGroupUc=${emptyUcCount}, groupUcBlocks=${groupUcBlocks}, groupUcControls=${groupUcControls}, groupUcDupes=${groupUcDupes}, groupUcUnknown=${groupUcUnknown}, groupUcIssues=${groupUcIssues}, groupUcMutationIssues=${groupUcMutationIssues}, quickSetEntries=${quickSetEntryUnique.size}, quickSetOutput=${quickSetOutputUnique.size}, pathSwitch=${pathSwitchCount}`);
         (exportStructure?.issues || []).forEach((issue) => {
           logDiag(`[Export structure] ${issue.message}`);
         });
@@ -14337,6 +15763,255 @@ async function handleFile(file) {
             return e ? `${e.sourceOp || ''}::${e.source || ''}` : `?${i}`;
           });
           logDiag(`[Inputs] rewritten order=${orderedKeys.join(', ')}`);
+        } catch (_) {}
+      }
+      return text.slice(0, idx) + replacement + text.slice(after);
+    } catch (_) {
+      return text;
+    }
+  }
+
+  function extractRoutingInputFromEntry(text, entry) {
+    try {
+      if (!text || !entry || !Number.isFinite(entry.blockOpen) || !Number.isFinite(entry.blockClose)) return null;
+      const body = text.slice(entry.blockOpen + 1, entry.blockClose);
+      const sourceOp = unquoteSettingValue(extractControlPropValue(body, 'SourceOp'));
+      const source = unquoteSettingValue(extractControlPropValue(body, 'Source'));
+      if (!sourceOp || !source) return null;
+      return {
+        sourceOp: String(sourceOp).trim(),
+        source: String(source).trim(),
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function buildRoutingInputChunk(row, entryIndent, newline) {
+    const sourceOp = escapeQuotes(String(row?.sourceOp || '').trim());
+    const source = escapeQuotes(String(row?.source || '').trim());
+    const macroInput = sanitizeRoutingInputId(row?.macroInput || '');
+    if (!macroInput || !sourceOp || !source) return '';
+    return [
+      `${entryIndent}${macroInput} = InstanceInput {`,
+      `${entryIndent}\tSourceOp = "${sourceOp}",`,
+      `${entryIndent}\tSource = "${source}",`,
+      `${entryIndent}},`,
+    ].filter(Boolean).join(newline);
+  }
+
+  function insertToolInputStubBlock(text, inputsOpen, inputsClose, controlName, eol) {
+    try {
+      if (!text || !controlName) return text;
+      const nl = eol || '\n';
+      const itemIndent = (getLineIndent(text, inputsOpen) || '') + '\t';
+      const inputId = formatToolInputId(controlName);
+      if (!inputId) return text;
+      const block = `${itemIndent}${inputId} = Input {  },`;
+      let cursor = Math.max(inputsOpen + 1, inputsClose - 1);
+      while (cursor > inputsOpen && /\s/.test(text[cursor])) cursor -= 1;
+      const prev = text[cursor];
+      const isEmptyInputs = prev === '{';
+      const needsSeparatorComma = !isEmptyInputs && prev !== ',';
+      const needsLeadingNl = text[inputsClose - 1] !== '\n' && text[inputsClose - 1] !== '\r';
+      const prefix = needsLeadingNl ? nl : '';
+      const separator = needsSeparatorComma ? ',' : '';
+      return text.slice(0, inputsClose) + separator + prefix + block + nl + text.slice(inputsClose);
+    } catch (_) {
+      return text;
+    }
+  }
+
+  function ensureInputsBlockInToolBlock(text, toolBlock, eol) {
+    try {
+      if (!toolBlock) return { text, toolBlock: null, inputsBlock: null };
+      const newline = eol || '\n';
+      const existing = findInputsInTool(text, toolBlock.open, toolBlock.close);
+      if (existing) return { text, toolBlock, inputsBlock: existing };
+      const indent = (getLineIndent(text, toolBlock.open) || '') + '\t';
+      const insertPos = toolBlock.close;
+      let insertPrefix = '';
+      let probe = insertPos - 1;
+      while (probe >= toolBlock.open && /\s/.test(text[probe])) probe--;
+      if (probe >= toolBlock.open && text[probe] !== '{' && text[probe] !== ',') {
+        insertPrefix = ',';
+      }
+      const snippet = `${insertPrefix}${newline}${indent}Inputs = {${newline}${indent}},${newline}`;
+      const updated = text.slice(0, insertPos) + snippet + text.slice(insertPos);
+      const open = insertPos + snippet.indexOf('{');
+      const close = insertPos + snippet.lastIndexOf('}');
+      const delta = snippet.length;
+      return {
+        text: updated,
+        toolBlock: { open: toolBlock.open, close: toolBlock.close + delta },
+        inputsBlock: { open, close },
+      };
+    } catch (_) {
+      return { text, toolBlock: null, inputsBlock: null };
+    }
+  }
+
+  function ensureRoutingSourceInputsMaterialized(text, result, eol) {
+    try {
+      if (!text || !result) return text;
+      const routingState = ensureRoutingInputsState(result);
+      const rows = normalizeRoutingInputRows(routingState.rows || [], { allowEmptyMacroInput: false });
+      if (!Array.isArray(rows) || !rows.length) return text;
+      let updated = text;
+      let inserted = 0;
+      rows.forEach((row) => {
+        try {
+          const sourceOp = String(row?.sourceOp || '').trim();
+          const source = String(row?.source || '').trim();
+          if (!sourceOp || !source) return;
+          const bounds = locateMacroGroupBounds(updated, result);
+          if (!bounds) return;
+          let toolBlock = findToolBlockInGroup(updated, bounds.groupOpenIndex, bounds.groupCloseIndex, sourceOp);
+          if (!toolBlock) return;
+          const ensured = ensureInputsBlockInToolBlock(updated, toolBlock, eol || '\n');
+          updated = ensured.text;
+          toolBlock = ensured.toolBlock || toolBlock;
+          const inputsBlock = ensured.inputsBlock || findInputsInTool(updated, toolBlock.open, toolBlock.close);
+          if (!inputsBlock) return;
+          const exists = findInputBlockInInputs(updated, inputsBlock.open, inputsBlock.close, source);
+          if (exists) return;
+          updated = insertToolInputStubBlock(updated, inputsBlock.open, inputsBlock.close, source, eol || '\n');
+          inserted += 1;
+        } catch (_) {}
+      });
+      if (typeof logDiag === 'function' && diagnosticsController?.isEnabled?.()) {
+        try { logDiag(`[Routing Inputs] source-stubs inserted=${inserted}`); } catch (_) {}
+      }
+      return updated;
+    } catch (_) {
+      return text;
+    }
+  }
+
+  function rewriteMacroRoutingInputsBlock(text, result, eol, options = {}) {
+    try {
+      if (!text || !result) return text;
+      const routingState = ensureRoutingInputsState(result);
+      const desiredRows = Array.isArray(routingState.rows) ? routingState.rows : [];
+      const managedNames = routingState.managed instanceof Set ? routingState.managed : new Set();
+      if (!desiredRows.length && !managedNames.size) return text;
+
+      const block = getPrimaryGroupInputsBlock(text, result);
+      if (!block || !Number.isFinite(block.inputsHeaderStart) || !Number.isFinite(block.openIndex) || !Number.isFinite(block.closeIndex)) return text;
+      const idx = block.inputsHeaderStart;
+      const braceOpen = block.openIndex;
+      const braceClose = block.closeIndex;
+
+      let after = braceClose + 1;
+      let trailingWhitespace = '';
+      while (after < text.length && /\s/.test(text[after])) {
+        trailingWhitespace += text[after];
+        after += 1;
+      }
+      let hasComma = false;
+      if (text[after] === ',') {
+        hasComma = true;
+        after += 1;
+        while (after < text.length && /\s/.test(text[after])) {
+          trailingWhitespace += text[after];
+          after += 1;
+        }
+      }
+
+      const existingEntries = parseOrderedBlockEntries(text, braceOpen, braceClose) || [];
+      const existingInputByName = new Map();
+      existingEntries.forEach((entry) => {
+        if (!entry || !entry.name) return;
+        const type = getOrderedBlockEntryType(text, entry);
+        if (type !== 'Input' && type !== 'InstanceInput') return;
+        const routing = extractRoutingInputFromEntry(text, entry);
+        if (!routing) return;
+        existingInputByName.set(entry.name, { entry, routing });
+      });
+      const desiredByName = new Map();
+      desiredRows.forEach((row) => {
+        const key = sanitizeRoutingInputId(row?.macroInput || '');
+        if (!key) return;
+        desiredByName.set(key, {
+          macroInput: key,
+          sourceOp: String(row?.sourceOp || '').trim(),
+          source: String(row?.source || '').trim(),
+        });
+      });
+      if (!desiredByName.size && !managedNames.size) return text;
+
+      let needsRewrite = false;
+      managedNames.forEach((name) => {
+        const key = sanitizeRoutingInputId(name);
+        if (!key || desiredByName.has(key)) return;
+        if (existingInputByName.has(key)) needsRewrite = true;
+      });
+      if (!needsRewrite) {
+        desiredByName.forEach((desired, name) => {
+          const existingWrap = existingInputByName.get(name);
+          if (!existingWrap || !existingWrap.entry) {
+            needsRewrite = true;
+            return;
+          }
+          const current = existingWrap.routing || extractRoutingInputFromEntry(text, existingWrap.entry);
+          if (!current) {
+            needsRewrite = true;
+            return;
+          }
+          if (String(current.sourceOp) !== String(desired.sourceOp) || String(current.source) !== String(desired.source)) {
+            needsRewrite = true;
+          }
+        });
+      }
+      if (!needsRewrite) return text;
+
+      const blockIndent = getLineIndent(text, idx) || '';
+      const innerIndent = blockIndent + '\t';
+      const entryIndent = innerIndent + '\t';
+      const newline = eol || detectNewline(text) || '\n';
+      const outputSegments = [];
+      const consumed = new Set();
+
+      existingEntries.forEach((entry) => {
+        if (!entry) return;
+        const type = getOrderedBlockEntryType(text, entry);
+        if (type === 'Input' || type === 'InstanceInput') {
+          const routing = extractRoutingInputFromEntry(text, entry);
+          const key = sanitizeRoutingInputId(entry.name);
+          if (routing && key && desiredByName.has(key)) {
+            const chunk = buildRoutingInputChunk(desiredByName.get(key), entryIndent, newline);
+            if (chunk) outputSegments.push({ index: null, chunk });
+            consumed.add(key);
+            return;
+          }
+          if (routing && key && managedNames.has(key)) {
+            return;
+          }
+        }
+        const preservedRaw = extractOrderedBlockEntryChunk(text, entry);
+        const preservedChunk = ensureTrailingComma(reindent(preservedRaw, entryIndent, eol));
+        if (preservedChunk && preservedChunk.trim().length) {
+          outputSegments.push({ index: null, chunk: preservedChunk });
+        }
+      });
+
+      desiredByName.forEach((row, key) => {
+        if (consumed.has(key)) return;
+        const chunk = buildRoutingInputChunk(row, entryIndent, newline);
+        if (chunk) outputSegments.push({ index: null, chunk });
+      });
+
+      const header = `${blockIndent}Inputs = ordered() {`;
+      const inner = outputSegments.length
+        ? newline + newline + outputSegments.map((segment) => segment.chunk).join(newline) + newline + innerIndent
+        : '';
+      let replacement = `${header}${inner}${blockIndent}}`;
+      if (hasComma) replacement += ',';
+      replacement += trailingWhitespace || newline;
+
+      if (typeof logDiag === 'function' && diagnosticsController?.isEnabled?.()) {
+        try {
+          logDiag(`[Routing Inputs] managed=${managedNames.size}, output=${desiredByName.size}`);
         } catch (_) {}
       }
       return text.slice(0, idx) + replacement + text.slice(after);
@@ -14734,6 +16409,55 @@ async function handleFile(file) {
         .replace(/\\\\/g, '\\');
     } catch(_) { return s; }
   }
+
+  function decodeLuaLongStringLiteral(literal) {
+    try {
+      const value = String(literal || '').trim();
+      const open = /^\[(=*)\[/.exec(value);
+      if (!open) return null;
+      const eq = open[1] || '';
+      const closeToken = `]${eq}]`;
+      const contentStart = open[0].length;
+      const closeIndex = value.lastIndexOf(closeToken);
+      if (closeIndex < contentStart) return null;
+      return value.slice(contentStart, closeIndex);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function buildLuaLongStringLiteral(text) {
+    try {
+      const src = String(text || '');
+      for (let eqCount = 0; eqCount <= 8; eqCount += 1) {
+        const eq = '='.repeat(eqCount);
+        const open = `[${eq}[`;
+        const close = `]${eq}]`;
+        if (!src.includes(close)) {
+          return `${open}${src}${close}`;
+        }
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function buildSettingLuaScriptLiteral(script, options = {}) {
+    try {
+      const src = String(script || '');
+      if (!src.trim()) return '';
+      const longThreshold = Math.max(256, Number(options?.longThreshold) || 1200);
+      const preferLong = !!options?.preferLong || src.length >= longThreshold;
+      if (preferLong) {
+        const longLiteral = buildLuaLongStringLiteral(src);
+        if (longLiteral) return longLiteral;
+      }
+      return `"${escapeSettingString(src)}"`;
+    } catch (_) {
+      return `"${escapeSettingString(String(script || ''))}"`;
+    }
+  }
   // Build canonical YouTube launcher with explicit parts to ensure escapes
   function buildBuiltinYouTubeLine2() {
     try {
@@ -15009,6 +16733,8 @@ async function handleFile(file) {
       if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
         return unescapeSettingString(trimmed.slice(1, -1));
       }
+      const longDecoded = decodeLuaLongStringLiteral(trimmed);
+      if (longDecoded != null) return longDecoded;
       return trimmed;
     } catch (_) {
       return null;
@@ -15261,11 +16987,24 @@ async function handleFile(file) {
     try {
       const id = String(controlId || '').trim();
       if (!id) return false;
+      if (id.startsWith(`${FMR_PRESET_DATA_CONTROL}_`)) return true;
+      if (id.startsWith(`${FMR_PRESET_SCRIPT_CONTROL}_`)) return true;
       return id === FMR_FILE_META_CONTROL
         || id === FMR_DATA_LINK_CONTROL
         || id === FMR_PRESET_DATA_CONTROL
         || id === FMR_PRESET_SCRIPT_CONTROL
         || id === FMR_PRESET_SELECT_CONTROL;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function isMacroControlLeakedIntoInputs(text, controlId) {
+    try {
+      const id = String(controlId || '').trim();
+      if (!id || !text) return false;
+      const re = new RegExp(`(^|\\n|\\r)\\s*${escapeRegex(id)}\\s*=\\s*InstanceInput\\s*\\{`, 'm');
+      return re.test(String(text));
     } catch (_) {
       return false;
     }
@@ -15292,7 +17031,10 @@ async function handleFile(file) {
       (result?.entries || []).forEach((entry) => {
         if (!entry) return;
         if (!isMacroLayerOnlyControlId(entry.source)) return;
-        leakedMacroIds.push(String(entry.source));
+        const id = String(entry.source || '').trim();
+        if (!id) return;
+        if (!isMacroControlLeakedIntoInputs(text, id)) return;
+        leakedMacroIds.push(id);
       });
       leakedMacroIds.forEach((id) => {
         issues.push({
@@ -16286,6 +18028,8 @@ async function handleFile(file) {
       if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
         return unescapeSettingString(value.slice(1, -1));
       }
+      const longDecoded = decodeLuaLongStringLiteral(value);
+      if (longDecoded != null) return longDecoded;
       return value;
     } catch (_) {
       return null;
@@ -16309,8 +18053,8 @@ async function handleFile(file) {
         if (!values || typeof values !== 'object') return;
         const cleanValues = {};
         scope.forEach((key) => {
-          if (values[key] == null) return;
-          cleanValues[key] = String(values[key]);
+      if (values[key] == null) return;
+          cleanValues[key] = normalizePresetPayloadValue(values[key]);
         });
         if (Object.keys(cleanValues).length) {
           presets[cleanName] = cleanValues;
@@ -16320,7 +18064,7 @@ async function handleFile(file) {
       const baseObj = engine.base && typeof engine.base === 'object' ? engine.base : {};
       scope.forEach((key) => {
         if (baseObj[key] == null) return;
-        base[key] = String(baseObj[key]);
+        base[key] = normalizePresetPayloadValue(baseObj[key]);
       });
       if (!scope.length && !Object.keys(presets).length) return null;
       const activePreset = String(engine.activePreset || '').trim();
@@ -16351,9 +18095,17 @@ async function handleFile(file) {
       if (!runtimeTargets.length) return null;
       const defaultPresetName = String(payload.activePreset || presetNames[0] || '').trim();
       const defaultIndex = Math.max(0, presetNames.indexOf(defaultPresetName));
+      const pathSwitchPlan = buildPresetPathSwitchPlan(
+        result,
+        { ...payload, scopeEntries },
+        runtimeTargets,
+        presetNames,
+        defaultIndex
+      );
       const script = buildPresetApplyOnChangeScript(result, {
         ...payload,
         scopeEntries,
+        pathSwitchPlan,
       }, FMR_PRESET_SELECT_CONTROL);
       if (!script) return null;
       return {
@@ -16363,6 +18115,7 @@ async function handleFile(file) {
         },
         presetNames,
         defaultIndex,
+        pathSwitchPlan,
         script,
       };
     } catch (_) {
@@ -18314,7 +20067,18 @@ function applyBlendCheckboxesToTool(text, bounds, toolName, controls, eol, resul
       while (cursor < body.length && /\s/.test(body[cursor])) cursor++;
       if (cursor >= body.length) return null;
       const valueStart = cursor;
-      if (body[cursor] === '"') {
+      if (body[cursor] === '[') {
+        const longOpen = /^\[(=*)\[/.exec(body.slice(cursor));
+        if (longOpen) {
+          const eq = longOpen[1] || '';
+          const closeToken = `]${eq}]`;
+          const contentStart = cursor + longOpen[0].length;
+          const closeIndex = body.indexOf(closeToken, contentStart);
+          cursor = closeIndex >= 0 ? closeIndex + closeToken.length : body.length;
+        } else {
+          while (cursor < body.length && !/[,\r\n}]/.test(body[cursor])) cursor++;
+        }
+      } else if (body[cursor] === '"') {
         cursor++;
         let escaped = false;
         while (cursor < body.length) {
@@ -19892,6 +21656,8 @@ end
       });
       for (const entry of (state.parseResult.entries || [])) {
         if (!entry || !isMacroLayerOnlyControlId(entry.source)) continue;
+        const leaked = isMacroControlLeakedIntoInputs(state.originalText || state.parseResult.originalText || '', entry.source);
+        if (!leaked) continue;
         issues.push({
           type: 'macro-control-leaked-into-inputs',
           control: entry.source,
